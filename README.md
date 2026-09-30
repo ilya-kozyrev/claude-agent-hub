@@ -55,7 +55,7 @@ flowchart LR
         a2["reviewer"]
         a3["migrator"]
     end
-    subgraph files["Hub home — $AGENT_HUB_HOME (default ~/.claude/agent-mail)"]
+    subgraph files["Hub home — $AGENT_HUB_HOME (default ~/.claude/agent-hub)"]
         brief[/"agents/&lt;role&gt;/brief.md"/]
         inbox[/"agents/&lt;role&gt;/inbox.md"/]
         log[/"agents/&lt;role&gt;/log.jsonl + meta.json"/]
@@ -140,6 +140,11 @@ Requirements: macOS or Linux, Python 3.10+ (standard library only), the `claude`
 /plugin marketplace add ilya-kozyrev/claude-agent-hub
 /plugin install agent-hub@claude-agent-hub
 ```
+
+> **Permissions.** Headless agents run with `--permission-mode bypassPermissions` by default: a `claude -p` run has
+> nobody to approve a prompt, and any other mode silently stalls on the first blocked tool. Treat every agent as a
+> process with your user's rights — say in its brief what it must not touch, run it in a worktree or sandbox, or set
+> `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
 
 While the plugin is enabled its `bin/` is on the Bash tool's `PATH`, so Claude can call `agent`, `jlog`, `jwait` and the
 rest directly. To use them in your own terminal too, add the plugin's `bin/` to your `PATH` or symlink the tools.
@@ -227,7 +232,7 @@ visible, contestable. At session start a hook prints one line per stage: open, o
 ## File layout
 
 ```text
-$AGENT_HUB_HOME/                      default ~/.claude/agent-mail
+$AGENT_HUB_HOME/                      default ~/.claude/agent-hub
 ├── board.md                          lock board (lock)
 ├── lock-rules.json                   optional: extra commands the lock hook guards
 ├── .jwait-state/<caller>.json        what each jwait caller has already seen
@@ -253,7 +258,7 @@ $AGENT_HUB_HOME/                      default ~/.claude/agent-mail
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_HUB_HOME` | `~/.claude/agent-mail` | The hub home above. |
+| `AGENT_HUB_HOME` | `~/.claude/agent-hub` | The hub home above. |
 | `HUB_STAGE` | `default` | Stage when `--stage` is not given. |
 | `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically). |
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. |

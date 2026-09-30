@@ -10,7 +10,7 @@
 The holder is $CLAUDE_CODE_SESSION_ID; --owner-name defaults to this session's sidebar title.
 A kind already held by another session's active lock is refused unless --force (a handover:
 the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to "*"
-(every repo). Board: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-mail/board.md.
+(every repo). Board: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-hub/board.md.
 """
 from __future__ import annotations
 

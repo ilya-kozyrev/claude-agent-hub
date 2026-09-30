@@ -1,6 +1,6 @@
 """Shared helpers for the hub tools: jlog, jwait, roles, hub, agent, agent-top.
 
-Layout under the hub home ($AGENT_HUB_HOME, default ~/.claude/agent-mail):
+Layout under the hub home ($AGENT_HUB_HOME, default ~/.claude/agent-hub):
   <stage>/coordinator/work/journal-YYYY-MM-DD.md   stage journal, one line per event:
                                                    "- HH:MM [tag] text" (hub time zone, see below)
   <stage>/roles.json                               role registry (tool `roles`)
@@ -51,9 +51,9 @@ TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
 
 
 def root() -> Path:
-    """The hub home: $AGENT_HUB_HOME, else ~/.claude/agent-mail."""
+    """The hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub."""
     raw = os.environ.get("AGENT_HUB_HOME")
-    return Path(raw).expanduser() if raw else Path.home() / ".claude" / "agent-mail"
+    return Path(raw).expanduser() if raw else Path.home() / ".claude" / "agent-hub"
 
 
 def child_env(extra: Optional[dict] = None) -> dict:

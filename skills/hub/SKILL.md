@@ -6,7 +6,7 @@ description: Tools and rules for a stage hub (coordinator) session that runs hea
 # Stage hub: tools and rules
 
 A **stage** is one stream of work (a release, a migration, a sprint) with its own directory under the hub home
-(`$AGENT_HUB_HOME`, default `~/.claude/agent-mail`). The **hub** is the one interactive session that plans the stage,
+(`$AGENT_HUB_HOME`, default `~/.claude/agent-hub`). The **hub** is the one interactive session that plans the stage,
 writes briefs, spawns headless agents and answers them. Everything they share is a file:
 
 | File | Written by | Read by |

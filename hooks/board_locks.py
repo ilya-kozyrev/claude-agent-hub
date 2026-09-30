@@ -165,7 +165,7 @@ def load_rules() -> dict:
     """Custom rules; a missing file means built-ins only. A broken file raises (the hook fails open)."""
     path = os.environ.get("AGENT_HUB_LOCK_RULES")
     if not path:
-        home = os.environ.get("AGENT_HUB_HOME") or os.path.join(os.path.expanduser("~"), ".claude", "agent-mail")
+        home = os.environ.get("AGENT_HUB_HOME") or os.path.join(os.path.expanduser("~"), ".claude", "agent-hub")
         path = os.path.join(home, "lock-rules.json")
     try:
         with open(path, encoding="utf-8") as fh:

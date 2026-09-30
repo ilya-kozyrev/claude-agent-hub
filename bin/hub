@@ -30,7 +30,7 @@ target state is already there is skipped as "already done", so a re-run finishes
 handoff writes a pre-filled HANDOFF-hub-<stage>-YYYY-MM-DD-HHMM.md with the facts filled in and TODO where the
 hub must write; it releases nothing. Environment facts (versions, deploys, open PRs) come from an optional
 executable <stage>/handoff-facts.sh that prints Markdown table rows "| What | State | Where it shows |".
-Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-mail. Exit: 0 ok, 1 step failed, 2 usage.
+Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub. Exit: 0 ok, 1 step failed, 2 usage.
 """
 from __future__ import annotations
 

@@ -7,7 +7,7 @@ Writes "- HH:MM [tag] text" (hub time zone) to
 <hub home>/<stage>/coordinator/work/journal-YYYY-MM-DD.md and prints the line.
 Tag: --tag, else $HUB_TAG, else this session's tag in the role registry
 (`roles`, matched by $CLAUDE_CODE_SESSION_ID), else an error.
-Stage: --stage, else $HUB_STAGE, else "default". Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-mail.
+Stage: --stage, else $HUB_STAGE, else "default". Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub.
 Exit: 0 written, 1 write failed, 2 usage (no tag, empty text).
 """
 from __future__ import annotations

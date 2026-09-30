@@ -35,7 +35,7 @@ Usage:
   ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision)
   ask summary
 add / decided / close / done stamp the time themselves (hub time zone, `--at` overrides) and print a ready
-journal line. Env: AGENT_HUB_HOME (default ~/.claude/agent-mail), AGENT_HUB_TZ, ASK_BY (default author).
+journal line. Env: AGENT_HUB_HOME (default ~/.claude/agent-hub), AGENT_HUB_TZ, ASK_BY (default author).
 """
 from __future__ import annotations
 

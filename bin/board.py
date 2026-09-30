@@ -15,7 +15,7 @@ A lock record:
   taken_at    ISO 8601
   took_over_from  owner_name of the previous holder when taken with --force
 
-Board path: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-mail/board.md.
+Board path: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-hub/board.md.
 Python 3.10+ stdlib only: the PreToolUse hook imports this module and must stay fast.
 """
 from __future__ import annotations
