@@ -1,0 +1,1717 @@
+#!/usr/bin/env python3
+"""agent-top — live console for the headless agents: who is alive, what each one does now, what it said.
+
+  agent-top [--stage S ...] [--all] [--interval 1.5] [--read-only]   interactive (curses)
+  agent-top --once [--stage S ...] [--all] [--width N] [--agent R] [--lines N]   text picture, no curses
+  agent-top --json [--stage S ...] [--all] [--agent R] [--feed N]     the same data for scripts
+  agent-top --widget [--stage S ...] [--all]                          HTML fragment for the chat widget (skill /agent-top)
+
+Shows every agent of every stage (<hub home>/<stage>/agents/<R>/): state (live / done / error / died — decided as
+`agent status` does: the pid is alive AND its command line holds the session id; else the last `result` event of
+the log), age of the last log event, model turns, context size, cost of the finished runs, the current action
+(the last tool_use with no tool_result yet), the last thing the agent said, unread inbox messages. Enter opens an
+agent: live feed of its log (thoughts ✎, commands ▸, short results ◂), brief, inbox. `j` — stage journal with a
+filter, `s` — locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
+`agent send` / `agent stop` after a y/N confirmation; nothing else is ever written.
+
+Keys: ↑↓ select/scroll · ⏎ open · Esc back · Tab tab · j journal · s summary · a all agents · m message · x stop ·
+r refresh · ? help · q quit.  --read-only disables m and x.
+Logs are read incrementally from the last offset (log.jsonl reaches several MB): only assistant/result lines are
+parsed, a log over $AGENT_TOP_SCAN_MAX bytes (8 MB) is scanned from its tail and its turn count is marked with +.
+Files of agents are never opened for writing.
+Env: AGENT_HUB_HOME (hub home, default ~/.claude/agent-mail), AGENT_HUB_TZ (time zone of clocks and the journal,
+default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB), NO_COLOR.
+Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
+"""
+from __future__ import annotations
+
+import argparse
+import curses
+import datetime as dt
+import html
+import json
+import locale
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import unicodedata
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+BIN = hc.BIN
+STALE_S = 300                     # a live agent silent this long is flagged "quiet"
+RECENT_S = 24 * 3600              # finished agents older than this are hidden without --all / `a`
+SCAN_MAX = int(os.environ.get("AGENT_TOP_SCAN_MAX") or 8 * 1024 * 1024)
+FEED_TAIL_BYTES = 400_000
+FEED_MAX_ITEMS = 4000
+ARCHIVE_RE = re.compile(r"^(?P<role>.+)\.(?:failed-)?\d{8}-\d{6}$")
+_TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"(\w+)"')
+_RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` events with "duration_api_ms" first
+_TOOL_ID_RE = re.compile(rb'"tool_use_id"\s*:\s*"([^"]+)"')
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_DONE_RE = re.compile(r"\bDONE\b")
+ASK_LINE_RE = re.compile(r"^(\S+) — open (\d+), overdue (\d+)")
+
+
+# ---------------------------------------------------------------- text helpers
+
+def cw(ch: str) -> int:
+    if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def dispw(s: str) -> int:
+    return sum(cw(c) for c in s)
+
+
+def clip(s: str, w: int, ellipsis: bool = True) -> str:
+    """Cut to display width w; an ellipsis marks the cut."""
+    if w <= 0:
+        return ""
+    if dispw(s) <= w:
+        return s
+    out, used = [], 0
+    room = w - 1 if ellipsis else w
+    for ch in s:
+        c = cw(ch)
+        if used + c > room:
+            break
+        out.append(ch)
+        used += c
+    return "".join(out) + ("…" if ellipsis else "")
+
+
+def pad(s: str, w: int) -> str:
+    s = clip(s, w)
+    return s + " " * (w - dispw(s))
+
+
+def wrap(s: str, w: int, first: str = "", rest: str = "", max_lines: int = 0) -> list:
+    """Greedy word wrap by display width; `first`/`rest` are the indents of the first and the next lines."""
+    w = max(w, 8)
+    lines, cur, indent = [], "", first
+    for word in s.split(" "):
+        while dispw(word) > w - dispw(indent):  # a word longer than the line: hard cut
+            room = w - dispw(indent) - (1 if cur else 0)
+            if cur and room >= 6:
+                head = clip(word, room, ellipsis=False)
+                lines.append(indent + cur + " " + head)
+                word, cur, indent = word[len(head):], "", rest
+                continue
+            if cur:
+                lines.append(indent + cur)
+                cur, indent = "", rest
+                continue
+            head = clip(word, w - dispw(indent), ellipsis=False) or word[:1]
+            lines.append(indent + head)
+            word, indent = word[len(head):], rest
+        if not word:
+            continue
+        if cur and dispw(indent) + dispw(cur) + 1 + dispw(word) > w:
+            lines.append(indent + cur)
+            cur, indent = word, rest
+        else:
+            cur = f"{cur} {word}" if cur else word
+    if cur or not lines:
+        lines.append(indent + cur)
+    if max_lines and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = clip(lines[-1] + " …", w)
+    return lines
+
+
+def one_line(s: str) -> str:
+    return " ".join(_CTRL_RE.sub(" ", s).split())
+
+
+def text_lines(s: str, max_lines: int = 12) -> list:
+    """Paragraph lines of a message: blanks collapsed, control characters gone."""
+    out = []
+    for ln in s.splitlines():
+        ln = " ".join(_CTRL_RE.sub(" ", ln).split())
+        if ln or (out and out[-1]):
+            out.append(ln)
+    while out and not out[-1]:
+        out.pop()
+    return out[:max_lines] + (["…"] if len(out) > max_lines else [])
+
+
+def num(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def pct(w) -> str:
+    try:
+        return f"{int(round(100 * float(w.get('utilization') or 0)))}%"
+    except (TypeError, ValueError, AttributeError):
+        return "?"
+
+
+def fmt_age(s) -> str:
+    if s is None:
+        return "—"
+    s = max(0, int(s))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h{s % 3600 // 60:02d}"
+    return f"{s // 86400}d"
+
+
+def fmt_k(n) -> str:
+    if not n:
+        return "—"
+    return str(n) if n < 1000 else (f"{n / 1000:.0f}k" if n < 1_000_000 else f"{n / 1_000_000:.1f}M")
+
+
+def fmt_cost(c) -> str:
+    return "—" if c is None else f"${c:.2f}"
+
+
+def tildify(p: str) -> str:
+    home = str(Path.home())
+    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+
+
+def hhmmss(ts) -> str:
+    return dt.datetime.fromtimestamp(ts, hc.TZ).strftime("%H:%M:%S") if ts else ""
+
+
+def parse_ts(raw):
+    if not isinstance(raw, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def short_model(m: str, effort) -> str:
+    m = re.sub(r"-\d{8}$", "", (m or "?").replace("claude-", ""))
+    eff = {"low": "lo", "medium": "md", "high": "hi", "xhigh": "xh", "max": "mx"}.get(effort or "", "")
+    return m + ("/" + eff if eff else "")
+
+
+def tool_brief(name: str, inp) -> tuple:
+    """(headline, detail) of a tool call: what the agent is doing, and the command behind it."""
+    inp = inp if isinstance(inp, dict) else {}
+
+    def s(k):
+        v = inp.get(k)
+        return v.strip() if isinstance(v, str) else ""
+
+    if name == "Bash":
+        cmd, desc = s("command"), s("description")
+        return (desc, one_line(cmd)) if desc else (one_line(cmd.splitlines()[0] if cmd else ""), "")
+    if name in ("Read", "Write", "Edit", "NotebookEdit"):
+        return tildify(s("file_path") or s("notebook_path")), ""
+    if name in ("Grep", "Glob"):
+        return (s("pattern") + (f"  in {tildify(s('path'))}" if s("path") else "")), ""
+    if name in ("Agent", "Task"):
+        return f"{s('subagent_type') or 'agent'}: {s('description')}", one_line(s("prompt"))[:300]
+    if name == "Skill":
+        return s("skill"), ""
+    if name in ("WebFetch", "WebSearch", "ToolSearch"):
+        return s("url") or s("query"), ""
+    for v in inp.values():
+        if isinstance(v, str) and v.strip():
+            return one_line(v)[:200], ""
+    return "", ""
+
+
+def tool_label(name: str) -> str:
+    return name if not name.startswith("mcp__") else "…".join(name.split("__")[-2:])
+
+
+# ---------------------------------------------------------------- log scanning
+
+class LogState:
+    """Everything the list needs from one log.jsonl, kept incrementally: only new complete lines are read."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.reset()
+
+    def reset(self):
+        self.ino, self.offset, self.size, self.mtime = None, 0, 0, 0.0
+        self.turn_ids, self.sub_ids, self.n_anon = set(), set(), 0
+        self.events = self.inits = self.tool_calls = 0
+        self.pending = {}                 # tool_use_id -> {"tool", "text", "detail", "ts"}
+        self.last_text, self.last_text_ts = "", None
+        self.last_tool = None
+        self.ctx = 0
+        self.last_result, self.cost_sum, self.n_results = None, None, 0
+        self.running = False              # an init after the last result: a run is (or was) in progress
+        self.inbox_touch, self.done_at = -1, -1
+        self.truncated = False
+        self.rate, self.rate_mtime = None, 0.0
+
+    @property
+    def turns(self) -> int:
+        return len(self.turn_ids) + self.n_anon
+
+    @property
+    def sub_turns(self) -> int:
+        return len(self.sub_ids)
+
+    def update(self) -> None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            self.reset()
+            return
+        if st.st_ino != self.ino or st.st_size < self.offset:
+            self.reset()
+            self.ino = st.st_ino
+        self.size, self.mtime = st.st_size, st.st_mtime
+        skip_partial = False
+        if self.offset == 0 and st.st_size > SCAN_MAX:
+            self.offset, self.truncated, skip_partial = st.st_size - SCAN_MAX, True, True
+        if st.st_size <= self.offset:
+            return
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self.offset)
+                if skip_partial:
+                    self.offset += len(fh.readline())
+                while True:
+                    line = fh.readline()
+                    if not line or not line.endswith(b"\n"):
+                        break               # EOF or a line still being written: wait for the rest
+                    self._feed(self.offset, line)
+                    self.offset += len(line)
+        except OSError:
+            return
+
+    def _feed(self, pos: int, line: bytes) -> None:
+        typ = event_type(line)
+        if not typ:
+            return
+        if typ == b"assistant":
+            ev = _loads(line)
+            if ev:
+                self._assistant(pos, ev)
+        elif typ == b"user":
+            for tid in _TOOL_ID_RE.findall(line):
+                self.pending.pop(tid.decode("utf-8", "replace"), None)
+        elif typ == b"result":
+            ev = _loads(line)
+            if ev:
+                self.last_result, self.running = ev, False
+                self.n_results += 1
+                cost = ev.get("total_cost_usd")
+                if isinstance(cost, (int, float)):
+                    self.cost_sum = (self.cost_sum or 0.0) + cost
+                if _DONE_RE.search(str(ev.get("result") or "")):
+                    self.done_at = pos
+                self.pending.clear()
+            self.events += 1
+            return
+        elif typ == b"system":
+            if re.search(rb'"subtype"\s*:\s*"init"', line[:300]):
+                self.running, self.inits = True, self.inits + 1
+                self.pending.clear()
+        elif typ == b"rate_limit_event":
+            ev = _loads(line)
+            if ev and isinstance(ev.get("rate_limit_info"), dict):
+                self.rate, self.rate_mtime = ev["rate_limit_info"], self.mtime
+        self.events += 1
+
+    def _assistant(self, pos: int, ev: dict) -> None:
+        msg = ev.get("message") or {}
+        if ev.get("parent_tool_use_id"):     # a sub-agent's chatter is not this agent's turn
+            if msg.get("id"):
+                self.sub_ids.add(msg["id"])
+            return
+        mid = msg.get("id")
+        if mid:
+            self.turn_ids.add(mid)
+        else:
+            self.n_anon += 1
+        usage = msg.get("usage")
+        if isinstance(usage, dict):
+            ctx = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            if ctx:
+                self.ctx = ctx
+        ts = parse_ts(ev.get("timestamp"))
+        for b in msg.get("content") or []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "text" and str(b.get("text") or "").strip():
+                self.last_text, self.last_text_ts = one_line(b["text"])[:700], ts
+            elif b.get("type") == "tool_use":
+                name = str(b.get("name") or "?")
+                head, detail = tool_brief(name, b.get("input"))
+                rec = {"tool": name, "text": head, "detail": detail, "ts": ts}
+                self.pending[str(b.get("id"))] = rec
+                self.last_tool = rec
+                self.tool_calls += 1
+                if "inbox.md" in json.dumps(b.get("input"), ensure_ascii=False):
+                    self.inbox_touch = pos
+
+    def action(self):
+        """The tool the agent is inside right now (the newest tool_use with no result yet), or None."""
+        return list(self.pending.values())[-1] if self.pending else None
+
+
+def event_type(line: bytes) -> bytes:
+    m = _TYPE_RE.match(line)
+    if m:
+        return m.group(1)
+    return b"result" if _RESULT_RE.search(line) else b""
+
+
+def _loads(line: bytes):
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        return None
+    return ev if isinstance(ev, dict) else None
+
+
+class Item:
+    __slots__ = ("ts", "kind", "text", "detail", "sub", "tool_id", "tool")
+
+    def __init__(self, ts, kind, text, detail="", sub=False, tool_id="", tool=""):
+        self.ts, self.kind, self.text, self.detail, self.sub, self.tool_id, self.tool = ts, kind, text, detail, sub, tool_id, tool
+
+
+class Feed:
+    """Feed of one agent's log: the last FEED_TAIL_BYTES on the first read, then only what was appended."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.items, self.tool_names, self.done_ids = [], {}, set()
+        self.ino, self.offset, self.version, self.truncated = None, 0, 0, False
+
+    def update(self) -> None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return
+        if st.st_ino != self.ino or st.st_size < self.offset:
+            self.items, self.tool_names, self.done_ids, self.offset, self.truncated = [], {}, set(), 0, False
+            self.ino = st.st_ino
+        if st.st_size <= self.offset:
+            return
+        try:
+            with open(self.path, "rb") as fh:
+                if self.offset == 0 and st.st_size > FEED_TAIL_BYTES:
+                    self.offset, self.truncated = st.st_size - FEED_TAIL_BYTES, True
+                    fh.seek(self.offset)
+                    self.offset += len(fh.readline())
+                fh.seek(self.offset)
+                while True:
+                    line = fh.readline()
+                    if not line or not line.endswith(b"\n"):
+                        break
+                    self.offset += len(line)
+                    if event_type(line) in (b"assistant", b"user", b"result", b"system"):
+                        ev = _loads(line)
+                        if ev:
+                            self.items.extend(self._items(ev))
+        except OSError:
+            return
+        del self.items[:-FEED_MAX_ITEMS]
+        self.version += 1
+
+    def _items(self, ev: dict) -> list:
+        typ, ts, sub = ev.get("type"), parse_ts(ev.get("timestamp")), bool(ev.get("parent_tool_use_id"))
+        out = []
+        if typ == "assistant":
+            for b in (ev.get("message") or {}).get("content") or []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and str(b.get("text") or "").strip():
+                    out.append(Item(ts, "text", b["text"], sub=sub))
+                elif b.get("type") == "tool_use":
+                    name = str(b.get("name") or "?")
+                    head, detail = tool_brief(name, b.get("input"))
+                    self.tool_names[b.get("id")] = name
+                    out.append(Item(ts, "tool", head, detail, sub, str(b.get("id")), name))
+        elif typ == "user":
+            content = (ev.get("message") or {}).get("content")
+            if isinstance(content, str) and content.strip():
+                out.append(Item(ts, "input", content, sub=sub))
+            for b in content if isinstance(content, list) else []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_result":
+                    self.done_ids.add(str(b.get("tool_use_id")))
+                    c = b.get("content")
+                    if isinstance(c, list):
+                        c = "\n".join(str(x.get("text", "")) for x in c if isinstance(x, dict))
+                    lines = [ln.strip() for ln in str(c or "").splitlines() if ln.strip()]
+                    head = lines[0] if lines else "(empty)"
+                    more = f"  (+{len(lines) - 1} lines)" if len(lines) > 1 else ""
+                    out.append(Item(ts, "result_err" if b.get("is_error") else "result", head + more, sub=sub,
+                                    tool=self.tool_names.get(b.get("tool_use_id"), "")))
+                elif b.get("type") == "text" and str(b.get("text") or "").strip():
+                    out.append(Item(ts, "input", b["text"], sub=sub))
+        elif typ == "result":
+            bits = [str(ev.get("subtype") or "result") + (", error" if ev.get("is_error") else "")]
+            if ev.get("num_turns") is not None:
+                bits.append(f"turns {ev['num_turns']}")
+            if isinstance(ev.get("total_cost_usd"), (int, float)):
+                bits.append(f"${ev['total_cost_usd']:.2f}")
+            if isinstance(ev.get("duration_ms"), (int, float)):
+                bits.append(fmt_age(ev["duration_ms"] / 1000))
+            out.append(Item(ts, "end", ", ".join(bits), str(ev.get("result") or "")))
+        elif typ == "system" and ev.get("subtype") == "init":
+            out.append(Item(ts, "init", "session start"))
+        return out
+
+
+# ---------------------------------------------------------------- collecting
+
+def process_table():
+    """{pid: command line} of every process, or None when `ps` is unusable."""
+    try:
+        r = subprocess.run(["ps", "-ww", "-axo", "pid=,command="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    table = {}
+    for ln in r.stdout.splitlines():
+        parts = ln.strip().split(None, 1)
+        if len(parts) == 2 and parts[0].isdigit():
+            table[int(parts[0])] = parts[1]
+    return table or None
+
+
+def is_alive(meta: dict, table) -> bool:
+    pid, sid = meta.get("pid"), meta.get("session_id") or ""
+    if not isinstance(pid, int) or not pid:
+        return False
+    if table is None:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
+    return bool(sid) and sid in table.get(pid, "")   # a reused pid runs another command line
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def discover_stages(only) -> list:
+    if only:
+        return [hc.check_stage(s) for s in only]
+    root = hc.root()
+    try:
+        names = sorted(d.name for d in root.iterdir() if d.is_dir() and hc.STAGE_RE.fullmatch(d.name)
+                       and ((d / "agents").is_dir() or (d / "roles.json").exists()))
+    except OSError:
+        names = []
+    return names
+
+
+class External:
+    """`ask summary` / `ask list` results, refreshed in a thread so a slow register never freezes the screen."""
+    TTL = 20.0
+
+    def __init__(self):
+        self.data, self.at, self.busy = {}, 0.0, False
+
+    def poll(self, stages: list, wait: bool = False) -> dict:
+        if not self.busy and time.monotonic() - self.at > self.TTL:
+            self.busy = True
+            t = threading.Thread(target=self._fetch, args=(list(stages),), daemon=True)
+            t.start()
+            if wait:
+                t.join(30)
+        return self.data
+
+    def _fetch(self, stages: list) -> None:
+        try:
+            out = {}
+            r = self._ask(["summary"])
+            for ln in (r or "").splitlines():
+                m = ASK_LINE_RE.match(ln)
+                if m and m.group(1) in stages:
+                    out[m.group(1)] = {"open": int(m.group(2)), "overdue": int(m.group(3)), "line": ln.strip(), "items": []}
+            for stage, q in out.items():
+                if q["open"]:
+                    lst = self._ask(["list", "--stage", stage, "--open"])
+                    q["items"] = [ln.rstrip() for ln in (lst or "").splitlines() if ln.strip()][:12]
+            self.data = out
+        finally:
+            self.at, self.busy = time.monotonic(), False
+
+    @staticmethod
+    def _ask(args: list):
+        try:
+            r = subprocess.run([sys.executable, str(BIN / "ask")] + args, capture_output=True, text=True, timeout=20,
+                               env=hc.child_env())
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+
+class Collector:
+    def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
+        self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
+        self.logs, self.journal_cache = {}, {}
+        self.ext = External()
+        self.feed = None
+
+    # -- agents
+    def log_state(self, path: Path) -> LogState:
+        st = self.logs.get(path)
+        if st is None:
+            st = self.logs[path] = LogState(path)
+        st.update()
+        return st
+
+    def snapshot(self, wait_ext: bool = False) -> dict:
+        now = time.time()
+        stages = discover_stages(self.stages_arg)
+        table = process_table()
+        agents, roles_by_stage, rate = [], {}, None
+        for stage in stages:
+            try:
+                reg = hc.roles_load(stage)
+            except hc.Failure:
+                reg = {"roles": {}}
+            roles_by_stage[stage] = reg["roles"]
+            base = hc.root() / stage / "agents"
+            for mp in sorted(base.glob("*/meta.json")) if base.is_dir() else []:
+                info = self._agent(stage, mp, reg["roles"], table, now)
+                if info:
+                    agents.append(info)
+                    r = info.pop("_rate")
+                    if r and (rate is None or r[1] > rate[1]):
+                        rate = r
+        agents.sort(key=lambda a: (a["group"], a["stage"], a["role"], a["dir_name"]))
+        counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
+        locks = self._locks(now)
+        roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
+        return {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
+                "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles,
+                "questions": self.ext.poll(stages, wait=wait_ext),
+                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None)}
+
+    def _agent(self, stage: str, meta_path: Path, registry: dict, table, now: float):
+        meta = read_json(meta_path)
+        if not isinstance(meta, dict):
+            return None
+        d = meta_path.parent
+        m = ARCHIVE_RE.match(d.name)
+        archived = bool(m)
+        alive = is_alive(meta, table)
+        log = d / "log.jsonl"
+        try:
+            mtime = log.stat().st_mtime
+        except OSError:
+            mtime = None
+        if not self.show_all and (archived or (not alive and (mtime is None or now - mtime > RECENT_S))):
+            return None
+        ls = self.log_state(log)
+        res = ls.last_result
+        if alive:
+            state = "live"
+        elif res and not ls.running:
+            state = "error" if (res.get("is_error") or res.get("subtype") != "success") else "done"
+        else:
+            state = "dead"
+        age = None if mtime is None else max(0, now - mtime)
+        unread = [u for u in meta.get("inbox_unread") or []
+                  if isinstance(u, dict) and max(ls.inbox_touch, ls.done_at) < num(u.get("log_offset"))]
+        act = ls.action() if alive else None
+        role = meta.get("role") or (m.group("role") if m else d.name)
+        return {
+            "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
+            "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
+            "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
+            "quiet": bool(alive and age is not None and age > self.stale_s),
+            "alive": alive, "pid": meta.get("pid"), "session_id": meta.get("session_id"),
+            "retired": d.name not in registry, "archived": archived,
+            "age_s": None if age is None else int(age),
+            "last_event_at": None if mtime is None else dt.datetime.fromtimestamp(mtime, hc.TZ).isoformat(timespec="seconds"),
+            "started_at": meta.get("started_at"), "runs": len(meta.get("runs") or []),
+            "turns": ls.turns, "sub_turns": ls.sub_turns, "turns_approx": ls.truncated, "ctx_tokens": ls.ctx or None,
+            "cost_usd": None if ls.cost_sum is None else round(ls.cost_sum, 4),
+            "result": None if not res else {"subtype": res.get("subtype"), "is_error": bool(res.get("is_error")),
+                                            "num_turns": res.get("num_turns"), "text": str(res.get("result") or "")[:400]},
+            "action": None if not act else {"tool": act["tool"], "text": act["text"], "detail": act["detail"],
+                                            "elapsed_s": None if not act["ts"] else max(0, int(now - act["ts"]))},
+            "last_text": ls.last_text, "unread": [{"at": u.get("at"), "msg": u.get("msg")} for u in unread],
+            "cwd": meta.get("cwd"), "log_path": str(log), "log_bytes": ls.size, "brief_path": str(d / "brief.md"),
+            "inbox_path": str(d / "inbox.md"), "report_path": meta.get("report"),
+            "_rate": (ls.rate, ls.rate_mtime) if ls.rate else None,
+        }
+
+    # -- locks / roles
+    def _locks(self, now: float) -> list:
+        import board
+        try:
+            recs = board.load()
+        except (board.BoardError, ValueError, OSError):
+            return []
+        at = board.now()
+        return [{"kind": r["kind"], "repo": r.get("repo") or board.DEFAULT_REPO, "owner_name": r.get("owner_name") or "?",
+                 "until": r["until"], "active": board.is_active(r, at), "why": r.get("why") or "",
+                 "value": r.get("value") or ""} for r in recs]
+
+    def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
+        lines = self.journal_lines(stage, 0) + self.journal_lines(stage, 1)
+        out = []
+        for name, rec in roles.items():
+            tag = rec.get("tag") or name
+            last = None
+            for day_off, hhmm, t, _ in reversed(lines):
+                if hc.tag_is(t, tag):
+                    hh, mm = map(int, hhmm.split(":"))
+                    day = hc.now().date() - dt.timedelta(days=day_off)
+                    last = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
+                    break
+            ag = next((a for a in agents if a["stage"] == stage and a["dir_name"] == name), None)
+            out.append({"role": name, "kind": rec.get("kind"), "tag": tag, "title": rec.get("title") or "",
+                        "pid": rec.get("pid"), "state": ag["state"] if ag else None,
+                        "journal_age_s": None if last is None else max(0, int(now - last))})
+        out.sort(key=lambda r: (r["role"] != "hub", r["role"]))
+        return out
+
+    # -- journal
+    def journal_lines(self, stage: str, day_off: int) -> list:
+        """[(day_off, "HH:MM", tag, text)] of one day's journal of the stage; re-read only when the file changed."""
+        path = hc.journal_path(stage, hc.now().date() - dt.timedelta(days=day_off))
+        try:
+            st = os.stat(path)
+        except OSError:
+            return []
+        sig = (st.st_size, st.st_mtime)
+        cached = self.journal_cache.get(path)
+        if cached and cached[0] == sig:
+            return cached[1]
+        lines = []
+        try:
+            with open(path, "rb") as fh:
+                if st.st_size > 400_000:
+                    fh.seek(st.st_size - 400_000)
+                    fh.readline()
+                raw = fh.read().decode("utf-8", "replace")
+        except OSError:
+            return []
+        for ln in raw.splitlines():
+            p = hc.parse_journal_line(ln)
+            if p:
+                lines.append((day_off, p[0], p[1], p[2]))
+        self.journal_cache[path] = (sig, lines)
+        return lines
+
+    def journal(self, stages: list, day_off: int = 0) -> list:
+        """Merged lines of the stages for one day: [(stage, "HH:MM", tag, text)] in time order."""
+        merged = []
+        for s in stages:
+            merged += [(s, hh, tag, text) for _, hh, tag, text in self.journal_lines(s, day_off)]
+        merged.sort(key=lambda r: (int(r[1].split(":")[0]) * 60 + int(r[1].split(":")[1])))
+        return merged
+
+
+def find_agent(snap: dict, name: str):
+    """An agent by dir name or role: the live one, else the freshest entry that is not archived."""
+    cands = [a for a in snap["agents"] if name in (a["dir_name"], a["role"])]
+    cands.sort(key=lambda a: (a["archived"], a["group"]))
+    return cands[0] if cands else None
+
+
+# ---------------------------------------------------------------- rendering: rows are lists of (text, style)
+
+GLYPH = {"live": ("●", "live"), "done": ("✓", "done"), "error": ("✗", "err"), "dead": ("✗", "err")}
+WORD = {"live": "live", "done": "done", "error": "error", "dead": "died"}
+
+
+class Row:
+    __slots__ = ("segs", "fill")
+
+    def __init__(self, segs, fill=None):
+        self.segs, self.fill = segs, fill
+
+    def text(self) -> str:
+        return "".join(t for t, _ in self.segs)
+
+    def fit(self, width: int) -> "Row":
+        """The same row cut to `width` display cells."""
+        segs, used = [], 0
+        for t, st in self.segs:
+            t = clip(t, width - used, ellipsis=False)
+            segs.append((t, st))
+            used += dispw(t)
+        return Row(segs, self.fill)
+
+
+def R(*segs, fill=None) -> Row:
+    return Row([s if isinstance(s, tuple) else (s, "norm") for s in segs], fill)
+
+
+def wrap_rows(text: str, width: int, style: str = "norm", first: str = "", rest: str = "", max_lines: int = 0) -> list:
+    return [R((ln, style)) for ln in wrap(text, width, first, rest, max_lines)]
+
+
+def action_text(a: dict) -> str:
+    act = a["action"]
+    if not act:
+        return ""
+    el = act["elapsed_s"]
+    return f"▸ {tool_label(act['tool'])}: {act['text']}" + (f"  ({fmt_age(el)})" if el and el >= 10 else "")
+
+
+def what_now(a: dict) -> tuple:
+    """(text, style) for the last column of the list."""
+    if a["alive"]:
+        if a["action"]:
+            return action_text(a), "norm"
+        return ("⋯ " + a["last_text"] if a["last_text"] else "⋯ thinking"), "dim"
+    if a["result"] and a["state"] in ("done", "error"):
+        return (a["last_text"] or a["result"]["text"] or a["result"]["subtype"] or ""), "dim"
+    return (a["last_text"] or "no process, no result — died or was killed"), ("dim" if a["last_text"] else "err")
+
+
+def header_row(snap: dict, width: int, view_label: str) -> Row:
+    c = snap["counts"]
+    locks = sum(1 for lk in snap["locks"] if lk["active"])
+    q_open = sum(q["open"] for q in snap["questions"].values())
+    q_over = sum(q["overdue"] for q in snap["questions"].values())
+    bits = [(" agent-top ", "head_b"), (f"● {c['live']} ", "head_live"), (f"✓ {c['done']} ", "head"),
+            (f"✗ {c['error'] + c['dead']} ", "head_err" if c["error"] + c["dead"] else "head")]
+    if view_label:
+        bits.append((view_label + " ", "head_b"))
+    # optional pieces, dropped from the end when the terminal is narrow
+    opt = [(f"{'/'.join(snap['stages']) or '—'} ", "head"), (f"· locks {locks} ", "head"),
+           (f"· questions {q_open}" + (f" (overdue {q_over})" if q_over else "") + " ", "head_err" if q_over else "head")]
+    lim = snap.get("limits")
+    if lim and isinstance(lim["info"], dict):
+        w = lim["info"].get("unifiedWindows") or {}
+        parts = [f"{lab} {pct(w[k])}" for k, lab in (("five_hour", "5h"), ("seven_day", "7d")) if isinstance(w.get(k), dict)]
+        if parts:
+            opt.append(("· limit " + " ".join(parts) + " ", "head"))
+    clock = dt.datetime.fromtimestamp(snap["now"], hc.TZ).strftime("%H:%M:%S") + " "
+    while opt and sum(dispw(t) for t, _ in bits + opt) + dispw(clock) > width:
+        opt.pop()
+    bits += opt
+    fillw = max(0, width - sum(dispw(t) for t, _ in bits) - dispw(clock))
+    return Row(bits + [(" " * fillw, "head"), (clock, "head")], fill="head")
+
+
+def list_layout(width: int, multi: bool) -> list:
+    """Columns [(name, width)] that fit; the last text column takes what is left."""
+    cols = [("glyph", 2), ("role", 10)]
+    if multi:
+        cols.insert(1, ("stage", 8))
+    optional = [("state", 7, 90), ("tag", 15, 122), ("model", 14, 100), ("age", 6, 0), ("turns", 5, 0),
+                ("ctx", 5, 78), ("cost", 6, 96), ("unread", 3, 60)]
+    for name, w, min_w in optional:
+        if width >= min_w:
+            cols.append((name, w))
+    # The task (meta title) says what the agent is for; the role name alone does not. It takes a share
+    # of what is left and splits it evenly with the "now" column.
+    rest = width - sum(w for _, w in cols)
+    if rest >= 32:
+        cols.insert(cols.index(("role", 10)) + 1, ("task", min(44, rest // 2)))
+    return cols
+
+
+def rj(s: str, w: int) -> str:
+    """Right-aligned in w-1 cells plus a gap."""
+    s = clip(s, w - 1, ellipsis=False)
+    return " " * (w - 1 - dispw(s)) + s + " "
+
+
+def task_text(a: dict) -> str:
+    """The agent's title without the trailing "(tag)" that `agent spawn` appends: the tag has its own column."""
+    t = one_line(a["title"] or "")
+    tag = a["tag"] or ""
+    if tag and t.endswith(f"({tag})"):
+        t = t[: -len(tag) - 2].rstrip()
+    return t or "—"
+
+
+def cell(a: dict, name: str, w: int):
+    if name == "glyph":
+        g, st = GLYPH[a["state"]]
+        return g + " ", ("warn" if a["quiet"] else st)
+    if name == "stage":
+        return pad(a["stage"], w), "dim"
+    if name == "role":
+        return pad(a["role"] + ("*" if a["archived"] else ""), w), "bold"
+    if name == "state":
+        return pad("quiet" if a["quiet"] else WORD[a["state"]], w), ("warn" if a["quiet"] else GLYPH[a["state"]][1])
+    if name == "tag":
+        return pad(a["tag"], w), "dim"
+    if name == "task":
+        return pad(clip(task_text(a), w - 1), w), "norm"
+    if name == "model":
+        return pad(short_model(a["model"], a["effort"]), w), "dim"
+    if name == "age":
+        return rj(fmt_age(a["age_s"]), w), ("warn" if a["quiet"] else "norm")
+    if name == "turns":
+        return rj(f"{a['turns']}{'+' if a['turns_approx'] else ''}", w), "norm"
+    if name == "ctx":
+        return rj(fmt_k(a["ctx_tokens"]), w), "dim"
+    if name == "cost":
+        return rj(fmt_cost(a["cost_usd"]), w), "dim"
+    if name == "unread":
+        return pad(f"✉{len(a['unread'])}" if a["unread"] else "", w), "warn"
+    return " " * w, "norm"
+
+
+def list_head_row(cols: list, width: int) -> Row:
+    titles = {"glyph": "", "stage": "STAGE", "role": "ROLE", "task": "TASK", "state": "STATUS", "tag": "TAG", "model": "MODEL",
+              "age": "AGE", "turns": "TURN", "ctx": "CTX", "cost": "$", "unread": "✉"}
+    segs = []
+    for name, w in cols:
+        t = titles[name]
+        segs.append((rj(t, w) if name in ("age", "turns", "ctx", "cost") else pad(t, w), "dim_u"))
+    used = sum(w for _, w in cols)
+    segs.append((pad("NOW / LAST", max(0, width - used)), "dim_u"))
+    return Row(segs, fill="dim_u")
+
+
+def agent_row(a: dict, cols: list, width: int, selected: bool) -> Row:
+    segs = [cell(a, name, w) for name, w in cols]
+    used = sum(w for _, w in cols)
+    text, st = what_now(a)
+    segs.append((pad(one_line(text), max(0, width - used)), st))
+    if selected:
+        return Row([(t, "sel") for t, _ in segs], fill="sel")
+    return Row(segs)
+
+
+def detail_rows(a, width: int) -> list:
+    """The pane under the list: the selected agent's title, current action, last thought, unread."""
+    if not a:
+        return []
+    rows = [R(("─" * width, "dim"))]
+    head = f" {a['role']} · {a['tag']} · {short_model(a['model'], a['effort'])} · {WORD[a['state']]}" + \
+           (f" pid {a['pid']}" if a["alive"] else "") + f" · {fmt_age(a['age_s'])} ago"
+    rows.append(R((clip(head, width), "bold")))
+    if a["title"]:
+        rows.append(R((clip(" " + a["title"], width), "dim")))
+    if a["action"]:
+        rows += wrap_rows(action_text(a), width, "live", " ", "   ", 2)
+    if a["last_text"]:
+        rows += wrap_rows(a["last_text"], width, "norm", " ✎ ", "   ", 3)
+    if a["unread"]:
+        u = a["unread"][0]
+        rows += wrap_rows(f"✉ {len(a['unread'])} unread since {(u['at'] or '')[11:16]}: {u['msg']}", width, "warn", " ", "   ", 2)
+    return rows
+
+
+def list_rows(snap: dict, width: int, sel_key, height=None, detail: bool = True) -> tuple:
+    """(rows, index of the selected agent row) for the list view; height=None — no windowing (--once)."""
+    agents = snap["agents"]
+    multi = len({a["stage"] for a in agents}) > 1
+    cols = list_layout(width, multi)
+    rows = [list_head_row(cols, width)]
+    if not agents:
+        rows.append(R((" no agents (a — show all, including old ones)", "dim")))
+        return rows, -1
+    sel_i = next((i for i, a in enumerate(agents) if (a["stage"], a["dir_name"]) == sel_key), 0)
+    body = [agent_row(a, cols, width, i == sel_i and height is not None) for i, a in enumerate(agents)]
+    dpane = detail_rows(agents[sel_i], width) if (detail and height is not None and height >= 16) else []
+    if height is None:
+        return rows + body, sel_i
+    room = max(1, height - len(rows) - len(dpane))
+    start = min(max(0, sel_i - room + 1), max(0, len(body) - room)) if sel_i >= room else 0
+    visible = body[start:start + room]
+    blank = [R(("", "norm"))] * (room - len(visible)) if dpane else []
+    return rows + visible + blank + dpane, sel_i - start + len(rows)
+
+
+def card_rows(a: dict, width: int) -> list:
+    rows = []
+    g, st = GLYPH[a["state"]]
+    state = ("quiet " if a["quiet"] else "") + WORD[a["state"]] + (f" pid {a['pid']}" if a["alive"] else "")
+    rows.append(R((f" {g} ", st), (a["role"], "bold"), (f" · {a['stage']} · {short_model(a['model'], a['effort'])} · ", "dim"),
+                  (state, st), (f" · {fmt_age(a['age_s'])} ago", "warn" if a["quiet"] else "dim")))
+    bits = [f"tag {a['tag']}", f"turns {a['turns']}{'+' if a['turns_approx'] else ''}" + (f" (+{a['sub_turns']} sub-agent turns)" if a["sub_turns"] else ""), f"ctx {fmt_k(a['ctx_tokens'])}",
+            f"$ {fmt_cost(a['cost_usd'])}", f"runs {a['runs']}"]
+    rows += wrap_rows(" · ".join(bits), width, "dim", " ", "   ")
+    if a["title"]:
+        rows += wrap_rows(a["title"], width, "dim", " ", "   ", 2)
+    if a["cwd"]:
+        rows.append(R((clip(" cwd " + tildify(a["cwd"]), width), "dim")))
+    if a["action"]:
+        rows += wrap_rows(action_text(a), width, "live", " ", "   ", 2)
+    elif a["alive"]:
+        rows.append(R((" ⋯ waiting for the model", "dim")))
+    if a["state"] in ("done", "error") and a["result"]:
+        r = a["result"]
+        rows += wrap_rows(f"result: {r['subtype']}{', error' if r['is_error'] else ''} — {one_line(r['text'])[:300]}", width,
+                          "err" if r["is_error"] else "done", " ", "   ", 3)
+    if a["state"] == "dead":
+        rows.append(R((" no process, no result — died or was killed; agent send without text resumes it", "err")))
+    for u in a["unread"][:3]:
+        rows += wrap_rows(f"✉ unread ({(u['at'] or '')[11:16]}): {u['msg']}", width, "warn", " ", "   ", 2)
+    return rows
+
+
+def feed_rows(feed: Feed, width: int, live: bool, now: float) -> list:
+    rows = []
+    tw = 9 if width >= 60 else 0
+    for it in feed.items:
+        t = (hhmmss(it.ts) + " ") if tw else ""
+        t = t.ljust(tw)
+        mark = "  ↳ " if it.sub else ""
+        first, rest = t + mark, " " * (tw + len(mark))
+        w = width
+        if it.kind == "text":
+            ls = text_lines(it.text, 14)
+            for i, ln in enumerate(ls):
+                rows += wrap_rows(ln, w, "norm", (first + "✎ ") if i == 0 else rest + "  ", rest + "  ")
+        elif it.kind == "tool":
+            pending = it.tool_id not in feed.done_ids
+            suffix = ""
+            if pending and live and it.ts:
+                suffix = f"  ⏳ {fmt_age(now - it.ts)}"
+            rows += wrap_rows(f"{tool_label(it.tool)}: {it.text}{suffix}", w, "tool_p" if pending and live else "tool",
+                              first + "▸ ", rest + "  ", 3)
+            if it.detail:
+                rows += wrap_rows(it.detail, w, "dim", rest + "  $ ", rest + "    ", 3)
+        elif it.kind in ("result", "result_err"):
+            rows += wrap_rows(it.text, w, "err" if it.kind == "result_err" else "dim", rest + "◂ ", rest + "  ", 2)
+        elif it.kind == "input":
+            for i, ln in enumerate(text_lines(it.text, 6)):
+                rows += wrap_rows(ln, w, "warn", (first + "→ ") if i == 0 else rest + "  ", rest + "  ")
+        elif it.kind == "end":
+            rows += wrap_rows(f"end of run: {it.text}", w, "bold", first + "■ ", rest + "  ")
+        elif it.kind == "init":
+            rows += wrap_rows(it.text, w, "dim", first + "⚙ ", rest + "  ")
+    if feed.truncated:
+        rows.insert(0, R((clip(f"… showing only the log tail (last {FEED_TAIL_BYTES // 1000} KB)", width), "dim")))
+    return rows or [R(("(log is empty)", "dim"))]
+
+
+def brief_rows(path: str, width: int, unread_msgs=()) -> list:
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(300_000).decode("utf-8", "replace")
+    except OSError:
+        return [R(("(no such file)", "dim"))]
+    rows = []
+    for ln in raw.splitlines():
+        ln = _CTRL_RE.sub(" ", ln).rstrip()
+        st = "warn" if unread_msgs and any(m and m in ln for m in unread_msgs) else "norm"
+        rows += wrap_rows(ln, width, st, "", "  ") if ln.strip() else [R(("", "norm"))]
+    return rows
+
+
+def journal_rows(lines: list, width: int, multi: bool, flt: str, tag_flt) -> tuple:
+    rows, shown = [], 0
+    f = flt.lower()
+    for stage, hhmm, tag, text in lines:
+        if tag_flt and not (hc.tag_is(tag, tag_flt) or hc.mentions(text, tag_flt)):
+            continue
+        if f and f not in f"[{tag}] {text}".lower():
+            continue
+        shown += 1
+        lead = f"{hhmm} " + (f"{stage[:7]:7} " if multi else "")
+        head = f"[{tag}] "
+        body = wrap(text, width - dispw(lead) - dispw(head) if width > 50 else width, "", "")
+        segs_first = [(lead, "dim"), (head, tag_style(tag))]
+        rows.append(Row(segs_first + [(clip(body[0], max(0, width - dispw(lead) - dispw(head))), "norm")]))
+        indent = " " * (dispw(lead) + 2)
+        for ln in body[1:]:
+            rows.append(R((indent + ln, "norm")))
+    return rows, shown
+
+
+def tag_style(tag: str) -> str:
+    return "tag%d" % (sum(ord(c) for c in tag.split("/")[0]) % 6)
+
+
+def summary_rows(snap: dict, width: int) -> list:
+    rows = [R(("Locks (lock list)", "bold_u"))]
+    if not snap["locks"]:
+        rows.append(R(("  no locks", "dim")))
+    for lk in snap["locks"]:
+        st = "norm" if lk["active"] else "dim"
+        rows += wrap_rows(f"{lk['kind']} {lk['repo']} until {lk['until'][:16].replace('T', ' ')}"
+                          f"{'' if lk['active'] else ' (expired)'} — {lk['owner_name']}: {lk['why']}", width, st, "  ", "    ", 3)
+    rows += [R(("", "norm")), R(("Owner questions (ask summary)", "bold_u"))]
+    if not snap["questions"]:
+        rows.append(R(("  no data (ask is unavailable or there is no register)", "dim")))
+    for stage, q in snap["questions"].items():
+        rows += wrap_rows(q["line"], width, "err" if q["overdue"] else "norm", "  ", "    ")
+        for ln in q["items"][:8]:
+            rows += wrap_rows(ln, width, "dim", "    ", "      ", 2)
+    rows += [R(("", "norm")), R(("Roles and hub (roles)", "bold_u"))]
+    for stage, rl in snap["roles"].items():
+        rows.append(R((f"  {stage}", "bold")))
+        for r in rl:
+            hub = "* " if r["role"] == "hub" else "  "
+            state = WORD.get(r["state"], r["kind"] or "") if r["state"] else (r["kind"] or "")
+            rows += wrap_rows(f"{hub}{r['role']} [{r['tag']}] {state}  journal "
+                              + (f"{fmt_age(r['journal_age_s'])} ago" if r["journal_age_s"] is not None else "—") + f"  {r['title']}",
+                              width, "norm" if r["role"] == "hub" else "dim", "   ", "     ", 2)
+    lim = snap.get("limits")
+    if lim and isinstance(lim["info"], dict):
+        rows += [R(("", "norm")), R(("Plan limits (latest rate_limit event in the logs)", "bold_u"))]
+        for k, lab in (("five_hour", "5 hours"), ("seven_day", "week")):
+            w = (lim["info"].get("unifiedWindows") or {}).get(k)
+            if isinstance(w, dict):
+                reset = w.get("resetsAt")
+                rows.append(R((f"  {lab}: {pct(w)}"
+                               + (f", resets {dt.datetime.fromtimestamp(reset, hc.TZ):%m-%d %H:%M}" if isinstance(reset, (int, float)) else "")
+                               + f"  (from the agents' logs; the freshest log was updated {fmt_age(snap['now'] - lim['seen_at'])} ago)", "norm")))
+    return rows
+
+
+HELP = [
+    "agent-top — what the agents are doing", "",
+    "List",
+    "  ↑ ↓ / PgUp PgDn / Home End   select an agent",
+    "  ⏎                            open the agent: log feed, brief, inbox",
+    "  j                            stage journal (/ — filter, t — by the agent's tag, , . — day back/forward)",
+    "  s                            summary: locks, owner questions, roles, plan limits",
+    "  a                            all agents / only live and recent ones (24 h)",
+    "  m                            message the agent (agent send) — with confirmation",
+    "  x                            stop the agent (agent stop) — with confirmation",
+    "  r                            refresh now;  ?  this help;  q  quit",
+    "Agent",
+    "  Tab / 1 2 3                  feed · brief · inbox",
+    "  ↑ ↓ PgUp PgDn Home           scroll; End — follow the tail again",
+    "  [ ]                          previous / next agent;  Esc — back",
+    "Marks: ● live  ✓ done  ✗ died/error  yellow ● — live but quiet > 5 min;  ✉N — unread inbox messages",
+    "       ▸ command  ◂ result  ✎ thought  ⏳ command still running  * — archive folder of an old run",
+    "Cost sums the results of finished runs; a live agent has none yet, so its context size (ctx) is shown.",
+]
+
+
+def help_rows(width: int) -> list:
+    rows = []
+    for ln in HELP:
+        rows += wrap_rows(ln, width, "bold" if ln and not ln.startswith(" ") else "norm", "", "    ")
+    return rows
+
+
+def render_once(snap: dict, coll: Collector, width: int, agent=None, lines: int = 25, tail_journal: int = 8) -> str:
+    def txt(rows):
+        return [r.fit(width).text().rstrip() for r in rows]
+
+    out = txt([header_row(snap, width, "")])
+    out += txt(list_rows(snap, width, None)[0])
+    if agent:
+        a = find_agent(snap, agent)
+        out += ["", "─" * min(width, 60)]
+        out += txt(card_rows(a, width))
+        feed = Feed(Path(a["log_path"]))
+        feed.update()
+        fr = txt(feed_rows(feed, width, a["alive"], snap["now"]))
+        out += ["", f"feed (last {min(lines, len(fr))} lines):"] + fr[-lines:]
+    else:
+        out += [""] + txt(summary_rows(snap, width))
+        jl = coll.journal(snap["stages"], 0)
+        multi = len({s for s, *_ in jl}) > 1
+        jr, _ = journal_rows(jl, width, multi, "", None)
+        out += ["", f"Journal (last {min(tail_journal, len(jr))} lines):"] + txt(jr[-tail_journal:])
+    return "\n".join(out) + "\n"
+
+
+WIDGET_STATE = {"live": ("live", "success"), "done": ("done", "secondary"), "error": ("error", "danger"),
+                "dead": ("died", "danger")}
+
+
+def render_widget(snap: dict) -> str:
+    """An HTML fragment for the chat widget (skill /agent-top): host CSS variables only, no scripts."""
+    e = html.escape
+    c = snap["counts"]
+    locks = [lk for lk in snap["locks"] if lk["active"]]
+    q_open = sum(q["open"] for q in snap["questions"].values())
+    q_over = sum(q["overdue"] for q in snap["questions"].values())
+    lim = (snap.get("limits") or {}).get("info") or {}
+    win = lim.get("unifiedWindows") or {}
+
+    def metric(label, value, tone=""):
+        col = f"color: var(--text-{tone});" if tone else ""
+        return f'<div class="m"><div class="s">{e(label)}</div><div class="v" style="{col}">{e(value)}</div></div>'
+
+    def use_tone(w):
+        u = float((w or {}).get("utilization") or 0)
+        return "danger" if u >= 0.9 else ("warning" if u >= 0.7 else "")
+
+    bad = c["error"] + c["dead"]
+    cards = [metric("running", str(c["live"]), "success" if c["live"] else ""), metric("done", str(c["done"])),
+             metric("failed", str(bad), "danger" if bad else ""),
+             metric("owner questions", f"{q_open}" + (f" / overdue {q_over}" if q_over else ""), "danger" if q_over else "")]
+    for k, lab in (("five_hour", "limit 5 h"), ("seven_day", "limit week")):
+        if isinstance(win.get(k), dict):
+            cards.append(metric(lab, pct(win[k]), use_tone(win[k])))
+    out = [f'<h2 class="sr-only">Agents of stages {e(", ".join(snap["stages"]) or "—")}: {c["live"]} running, '
+           f'{c["done"]} done, {bad} failed.</h2>',
+           '<style>.at .m{background:var(--surface-1);border-radius:var(--radius);padding:10px 12px}'
+           '.at .v{font-size:20px;font-weight:500}.at .s{font-size:12px;color:var(--text-secondary)}'
+           '.at .r{display:grid;grid-template-columns:72px minmax(0,1fr);gap:4px 12px;padding:8px 0;border-top:0.5px solid var(--border)}'
+           '.at .n{font-size:14px}.at .x{font-size:11px;color:var(--text-muted)}'
+           '.at .w{font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+           '</style><div class="at">',
+           '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:0 0 1rem">',
+           *cards, '</div>']
+    multi = len(snap["stages"]) > 1
+    rows = []
+    for a in snap["agents"]:
+        word, tone = WIDGET_STATE[a["state"]]
+        if a["quiet"]:
+            word, tone = "quiet", "warning"
+        now, _ = what_now(a)
+        meta = [short_model(a["model"], a["effort"]), f"{fmt_age(a['age_s'])} ago", f"{a['turns']} turn{'' if a['turns'] == 1 else 's'}"]
+        if a["cost_usd"] is not None:
+            meta.append(fmt_cost(a["cost_usd"]))
+        if a["unread"]:
+            meta.append(f"unread {len(a['unread'])}")
+        role = (a["stage"] + "/" if multi else "") + a["role"]
+        rows.append(
+            f'<div class="r"><div><div class="n" style="font-weight:500">{e(role)}</div>'
+            f'<div class="s" style="color:var(--text-{tone})">{e(word)}</div></div>'
+            f'<div style="min-width:0"><div class="n">{e(task_text(a))}</div><div class="w">{e(clip(one_line(now), 140))}</div>'
+            f'<div class="x">{e(" · ".join(meta))}</div></div></div>')
+    out += rows or ['<div class="s">No agents.</div>']
+    if locks:
+        out.append('<div class="s" style="margin-top:1rem">'
+                   + "<br>".join(e(f"lock {lk['kind']} {lk['repo']} — {lk['owner_name']}, until {(lk['until'] or '')[5:16].replace('T', ' ')}")
+                                 for lk in locks) + '</div>')
+    # No buttons and no scripts: in the Claude Code desktop tab sendPrompt() from a widget reaches nothing,
+    # so the widget names the commands instead.
+    out.append(f'<div class="x" style="margin-top:8px">snapshot {e(hhmmss(snap["now"]))} · an agent\'s feed — '
+               f'/agent-top &lt;role&gt; or agent-top --once --agent &lt;role&gt;</div></div>')
+    return "\n".join(out) + "\n"
+
+
+def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> dict:
+    agents = [{k: v for k, v in a.items() if not k.startswith("_")} for a in snap["agents"]]
+    out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "counts": snap["counts"], "agents": agents,
+           "roles": snap["roles"], "locks": snap["locks"], "questions": snap["questions"], "limits": snap["limits"],
+           "journal_tail": [{"stage": s, "time": hh, "tag": t, "text": x} for s, hh, t, x in coll.journal(snap["stages"], 0)[-20:]]}
+    if agent:
+        a = find_agent(snap, agent)
+        feed = Feed(Path(a["log_path"]))
+        feed.update()
+        out["feed"] = {"agent": a["dir_name"], "stage": a["stage"], "items": [
+            {"at": hhmmss(it.ts) or None, "kind": it.kind, "sub": it.sub, "tool": it.tool or None, "text": it.text[:600],
+             "detail": it.detail[:400] or None} for it in feed.items[-feed_n:]]}
+    return out
+
+
+# ---------------------------------------------------------------- curses UI
+
+def key_name(ch) -> str:
+    if isinstance(ch, str):
+        return {"\n": "enter", "\r": "enter", "\x1b": "esc", "\x7f": "bs", "\x08": "bs", "\t": "tab"}.get(ch, ch)
+    return {curses.KEY_UP: "up", curses.KEY_DOWN: "down", curses.KEY_PPAGE: "pgup", curses.KEY_NPAGE: "pgdn",
+            curses.KEY_HOME: "home", curses.KEY_END: "end", curses.KEY_LEFT: "left", curses.KEY_RIGHT: "right",
+            curses.KEY_BACKSPACE: "bs", curses.KEY_ENTER: "enter", curses.KEY_DC: "del", curses.KEY_RESIZE: "resize"}.get(ch, "")
+
+
+class Scroll:
+    def __init__(self):
+        self.pos, self.follow, self.n, self.h = 0, True, 0, 1
+
+    def window(self, n: int, h: int) -> int:
+        self.n, self.h = n, max(1, h)
+        maxpos = max(0, n - self.h)
+        if self.follow:
+            self.pos = maxpos
+        self.pos = min(max(0, self.pos), maxpos)
+        return self.pos
+
+    def key(self, k: str) -> None:
+        maxpos = max(0, self.n - self.h)
+        step = {"up": -1, "down": 1, "pgup": -(self.h - 1), "pgdn": self.h - 1}.get(k)
+        if step is not None:
+            self.follow = False
+            self.pos = min(max(0, self.pos + step), maxpos)
+        elif k == "home":
+            self.follow, self.pos = False, 0
+        elif k == "end":
+            self.follow = True
+        if self.pos >= maxpos and k in ("down", "pgdn"):
+            self.follow = True
+
+
+class App:
+    def __init__(self, cfg, coll: Collector):
+        self.cfg, self.coll = cfg, coll
+        self.view, self.tab, self.sel_key, self.prev_view = "list", "feed", None, "list"
+        self.scroll = {n: Scroll() for n in ("feed", "brief", "inbox", "journal", "summary", "help")}
+        self.snap, self.dirty = None, True
+        self.toast, self.toast_until, self.toast_style = "", 0.0, "norm"
+        self.mode, self.inp, self.confirm = None, None, None   # mode: input | confirm
+        self.flt, self.tag_flt, self.jday = "", None, 0
+        self.busy = ""
+        self.feed = None
+
+    # -- data
+    def refresh(self):
+        self.snap = self.coll.snapshot()
+        agents = self.snap["agents"]
+        if agents and self.sel_key not in {(a["stage"], a["dir_name"]) for a in agents}:
+            self.sel_key = (agents[0]["stage"], agents[0]["dir_name"])
+        self.dirty = True
+
+    def selected(self):
+        return next((a for a in self.snap["agents"] if (a["stage"], a["dir_name"]) == self.sel_key), None) if self.snap else None
+
+    def say(self, text: str, style: str = "norm", secs: float = 8.0):
+        self.toast, self.toast_style, self.toast_until, self.dirty = text, style, time.monotonic() + secs, True
+
+    # -- screen
+    def build(self, width: int, height: int) -> tuple:
+        snap = self.snap
+        label = {"list": "", "agent": "agent", "journal": "journal", "summary": "summary", "help": "help"}[self.view]
+        rows = [header_row(snap, width, label + " " if label else "")]
+        body_h = height - 2
+        sel_row = -1
+        if self.view == "list":
+            body, sel_row = list_rows(snap, width, self.sel_key, body_h)
+        elif self.view == "agent":
+            body = self._agent_body(width, body_h)
+        elif self.view == "journal":
+            body = self._journal_body(width, body_h)
+        elif self.view == "summary":
+            body = self._windowed("summary", summary_rows(snap, width), body_h)
+        else:
+            body = self._windowed("help", help_rows(width), body_h)
+        rows += [r.fit(width) for r in body[:body_h]]
+        while len(rows) < height - 1:
+            rows.append(R(("", "norm")))
+        rows.append(self._bottom(width))
+        return rows, sel_row
+
+    def _windowed(self, name: str, all_rows: list, h: int) -> list:
+        pos = self.scroll[name].window(len(all_rows), h)
+        return all_rows[pos:pos + h]
+
+    def _agent_body(self, width: int, h: int) -> list:
+        a = self.selected()
+        if not a:
+            return [R(("(no agent)", "dim"))]
+        card = card_rows(a, width)
+        tabs = []
+        for key, name in (("feed", "1 feed"), ("brief", "2 brief"), ("inbox", "3 inbox")):
+            tabs.append((f" {name} ", "sel" if self.tab == key else "dim"))
+        rows = card[:max(3, h // 2)] + [Row(tabs)]
+        room = max(1, h - len(rows))
+        if self.tab == "feed":
+            if self.feed is None or str(self.feed.path) != a["log_path"]:
+                self.feed = Feed(Path(a["log_path"]))
+            self.feed.update()
+            content = feed_rows(self.feed, width, a["alive"], self.snap["now"])
+        elif self.tab == "brief":
+            content = brief_rows(a["brief_path"], width)
+        else:
+            content = brief_rows(a["inbox_path"], width, [u["msg"] for u in a["unread"]])
+        return rows + self._windowed(self.tab, content, room)
+
+    def _journal_body(self, width: int, h: int) -> list:
+        stages = self.snap["stages"]
+        lines = self.coll.journal(stages, self.jday)
+        multi = len({s for s, *_ in lines}) > 1
+        jr, shown = journal_rows(lines, width, multi, self.flt, self.tag_flt)
+        day = "today" if self.jday == 0 else f"{self.jday} d ago"
+        flt = (f" · tag {self.tag_flt}" if self.tag_flt else "") + (f' · "{self.flt}"' if self.flt else "")
+        head = R((clip(f" journal {day}: {shown} of {len(lines)} lines{flt}", width), "dim_u"))
+        return [head] + self._windowed("journal", jr or [R(("  (empty)", "dim"))], h - 1)
+
+    def _bottom(self, width: int) -> Row:
+        if self.mode == "input":
+            cur = self.inp["cur"]
+            buf = "".join(self.inp["buf"][:cur]) + "│" + "".join(self.inp["buf"][cur:])
+            prompt = self.inp["prompt"]
+            room = max(4, width - dispw(prompt) - 1)
+            shown = buf if dispw(buf) <= room else "…" + buf[-(room - 1):]
+            return Row([(prompt, "key"), (pad(shown, room), "norm")], fill="norm")
+        if self.mode == "confirm":
+            return Row([(pad(self.confirm["prompt"], width), "confirm")], fill="confirm")
+        if self.toast and time.monotonic() < self.toast_until:
+            return Row([(pad(" " + self.toast, width), self.toast_style)], fill=self.toast_style)
+        if self.busy:
+            return Row([(pad(" ⏳ " + self.busy, width), "warn")], fill="warn")
+        keys = {
+            "list": [" ↑↓ select  ⏎ agent  j journal  s summary  a all  m message  x stop  ? help  q quit",
+                     " ↑↓ ⏎ agent  j journal  s summary  a all  m x  ? q", " ⏎ j s a m x ? q"],
+            "agent": [" Esc back  Tab tab  ↑↓ scroll  End tail  [ ] agent  m message  x stop  j journal  q quit",
+                      " Esc  Tab  ↑↓  End  [ ]  m x j  q", " Esc Tab ↑↓ q"],
+            "journal": [" Esc back  ↑↓ scroll  / filter  t by tag  c reset  , . day  q quit", " Esc  ↑↓  / t c  , .  q", " Esc / t q"],
+            "summary": [" Esc back  ↑↓ scroll  q quit", " Esc  ↑↓  q", " Esc q"],
+            "help": [" any key — back  q quit", " any — back", " ? q"],
+        }[self.view]
+        text = next((k for k in keys if dispw(k) <= width), keys[-1])
+        if self.cfg.read_only:
+            text = text.replace("m message  x stop  ", "").replace(" m x ", " ")
+        return Row([(pad(text, width), "key")], fill="key")
+
+    # -- keys
+    def on_key(self, ch) -> bool:
+        """Returns True to quit."""
+        k = key_name(ch)
+        if k == "resize":
+            self.dirty = True
+            return False
+        self.dirty = True
+        if self.mode == "input":
+            return self._input_key(ch, k)
+        if self.mode == "confirm":
+            done, self.mode = self.confirm, None
+            if k in ("y", "Y"):
+                self._run_action(done)
+            else:
+                self.say("cancelled", "dim", 3)
+            return False
+        if k == "q":
+            return True
+        if self.view == "help":
+            self.view = self.prev_view
+            return False
+        if k == "?":
+            self.prev_view, self.view = self.view, "help"
+            return False
+        if k == "r":
+            self.refresh()
+            return False
+        if k in ("m", "x"):
+            self._start_action(k)
+            return False
+        if self.view == "list":
+            self._list_key(k)
+        elif self.view == "agent":
+            self._agent_key(k)
+        elif self.view == "journal":
+            self._journal_key(k)
+        else:
+            if k in ("esc", "bs", "left"):
+                self.view = "list"
+            else:
+                self.scroll[self.view].key(k)
+        return False
+
+    def _move(self, delta=None, to=None):
+        agents = self.snap["agents"]
+        if not agents:
+            return
+        i = next((i for i, a in enumerate(agents) if (a["stage"], a["dir_name"]) == self.sel_key), 0)
+        i = to if to is not None else min(max(0, i + delta), len(agents) - 1)
+        self.sel_key = (agents[i]["stage"], agents[i]["dir_name"])
+
+    def _list_key(self, k: str):
+        if k == "up":
+            self._move(-1)
+        elif k == "down":
+            self._move(1)
+        elif k == "pgup":
+            self._move(-10)
+        elif k == "pgdn":
+            self._move(10)
+        elif k == "home":
+            self._move(to=0)
+        elif k == "end":
+            self._move(to=len(self.snap["agents"]) - 1)
+        elif k == "enter" and self.selected():
+            self.view, self.tab = "agent", "feed"
+            self._reset_agent_scroll()
+        elif k == "j":
+            self.view = "journal"
+        elif k == "s":
+            self.view = "summary"
+        elif k == "a":
+            self.coll.show_all = not self.coll.show_all
+            self.say("showing all agents, including old and archived ones" if self.coll.show_all else "only live and recent ones (24 h)", "dim", 4)
+            self.refresh()
+
+    def _reset_agent_scroll(self):
+        for n in ("feed", "brief", "inbox"):
+            self.scroll[n] = Scroll()
+
+    def _agent_key(self, k: str):
+        if k in ("esc", "bs", "left"):
+            self.view = "list"
+        elif k == "tab":
+            order = ["feed", "brief", "inbox"]
+            self.tab = order[(order.index(self.tab) + 1) % 3]
+        elif k in ("1", "2", "3"):
+            self.tab = {"1": "feed", "2": "brief", "3": "inbox"}[k]
+        elif k in ("[", "]"):
+            self._move(-1 if k == "[" else 1)
+            self._reset_agent_scroll()
+            self.feed = None
+        elif k == "j":
+            a = self.selected()
+            self.tag_flt = a["tag"] if a else None
+            self.view = "journal"
+        else:
+            self.scroll[self.tab].key(k)
+
+    def _journal_key(self, k: str):
+        if k in ("esc", "bs", "left"):
+            self.view = "agent" if self.prev_view == "agent" else "list"
+        elif k == "/":
+            self.mode, self.inp = "input", {"prompt": " filter: ", "buf": list(self.flt), "cur": len(self.flt), "on_enter": self._set_filter}
+        elif k == "t":
+            a = self.selected()
+            self.tag_flt = None if self.tag_flt else (a["tag"] if a else None)
+        elif k == "c":
+            self.flt, self.tag_flt = "", None
+        elif k == ",":
+            self.jday += 1
+        elif k == ".":
+            self.jday = max(0, self.jday - 1)
+        else:
+            self.scroll["journal"].key(k)
+
+    def _set_filter(self, text: str):
+        self.flt = text.strip()
+
+    # -- input line
+    def _input_key(self, ch, k: str) -> bool:
+        st = self.inp
+        buf, cur = st["buf"], st["cur"]
+        if k == "esc":
+            self.mode = None
+            self.say("cancelled", "dim", 3)
+        elif k == "enter":
+            self.mode = None
+            text = "".join(buf)
+            st["on_enter"](text)
+        elif k == "bs":
+            if cur:
+                del buf[cur - 1]
+                st["cur"] = cur - 1
+        elif k == "del":
+            if cur < len(buf):
+                del buf[cur]
+        elif k == "left":
+            st["cur"] = max(0, cur - 1)
+        elif k == "right":
+            st["cur"] = min(len(buf), cur + 1)
+        elif k == "home":
+            st["cur"] = 0
+        elif k == "end":
+            st["cur"] = len(buf)
+        elif isinstance(ch, str) and ch.isprintable():
+            buf.insert(cur, ch)
+            st["cur"] = cur + 1
+        return False
+
+    # -- actions (through `agent send` / `agent stop` only)
+    def _start_action(self, k: str):
+        a = self.selected()
+        if self.cfg.read_only:
+            self.say("--read-only mode: actions are disabled", "warn")
+            return
+        if not a:
+            return
+        if a["archived"]:
+            self.say("archive folder of an old run — no actions", "warn")
+            return
+        if k == "m":
+            self.mode = "input"
+            self.inp = {"prompt": f" message to {a['role']}: ", "buf": [], "cur": 0,
+                        "on_enter": lambda text, a=a: self._confirm_send(a, text)}
+        else:
+            what = ("STOP: SIGTERM to the process group, role released, work interrupted" if a["alive"]
+                    else "RELEASE: the process is already gone, release the role")
+            self._ask_confirm(f" {what} — {a['role']} ({a['stage']})? [y/N] ", {"kind": "stop", "a": a})
+
+    def _confirm_send(self, a: dict, text: str):
+        text = one_line(text)
+        if not text:
+            self.say("empty message — cancelled", "dim", 3)
+            return
+        eff = ("live: goes to its inbox, read after a step" if a["alive"]
+               else "no process: the session will be RESUMED, this spends tokens")
+        self._ask_confirm(f' send to {a["role"]} ({eff}): "{clip(text, 60)}"? [y/N] ', {"kind": "send", "a": a, "text": text})
+
+    def _ask_confirm(self, prompt: str, action: dict):
+        self.mode, self.confirm = "confirm", dict(action, prompt=prompt)
+
+    def _run_action(self, act: dict):
+        a = act["a"]
+        agent_bin = os.environ.get("AGENT_TOP_AGENT_BIN") or str(BIN / "agent")
+        if act["kind"] == "send":
+            argv = [agent_bin, "send", a["role"], "--stage", a["stage"], "--", act["text"]]
+            self.busy = f"agent send {a['role']}…"
+        else:
+            argv = [agent_bin, "stop", a["role"], "--stage", a["stage"]]
+            self.busy = f"agent stop {a['role']}…"
+        env = dict(os.environ)
+        if not hc.caller_tag(a["stage"]):
+            env["HUB_TAG"] = "owner"              # journal lines of a message typed here are the owner's
+        threading.Thread(target=self._action_thread, args=(argv, env, a["role"], act["kind"]), daemon=True).start()
+
+    def _action_thread(self, argv: list, env: dict, role: str, kind: str):
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=240)
+            out = (r.stdout.strip().splitlines() or [""])[0] if r.returncode == 0 else (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[-1]
+            self.busy = ""
+            self.say(("✓ " if r.returncode == 0 else "✗ ") + f"{kind} {role}: {one_line(out)}", "ok" if r.returncode == 0 else "err_bar", 12)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self.busy = ""
+            self.say(f"✗ {kind} {role}: {e}", "err_bar", 12)
+
+
+def make_styles() -> dict:
+    A = curses
+    names = ("norm", "dim", "dim_u", "bold", "bold_u", "head", "head_b", "head_live", "head_err", "live", "done", "err", "warn",
+             "sel", "key", "confirm", "ok", "err_bar", "tool", "tool_p", "tag0", "tag1", "tag2", "tag3", "tag4", "tag5")
+    st = {n: A.A_NORMAL for n in names}
+    st.update(dim=A.A_DIM, dim_u=A.A_DIM | A.A_UNDERLINE, bold=A.A_BOLD, bold_u=A.A_BOLD | A.A_UNDERLINE,
+              head=A.A_REVERSE, head_b=A.A_REVERSE | A.A_BOLD, head_live=A.A_REVERSE | A.A_BOLD, head_err=A.A_REVERSE | A.A_BOLD,
+              sel=A.A_REVERSE | A.A_BOLD, key=A.A_REVERSE, confirm=A.A_REVERSE | A.A_BOLD, ok=A.A_REVERSE | A.A_BOLD,
+              err_bar=A.A_REVERSE | A.A_BOLD, warn=A.A_BOLD, err=A.A_BOLD, live=A.A_BOLD, tool_p=A.A_BOLD)
+    if A.has_colors() and not os.environ.get("NO_COLOR"):
+        A.start_color()
+        try:
+            A.use_default_colors()
+            bg = -1
+        except curses.error:
+            bg = A.COLOR_BLACK
+        spec = {"live": (A.COLOR_GREEN, bg, A.A_BOLD), "done": (A.COLOR_CYAN, bg, 0), "err": (A.COLOR_RED, bg, A.A_BOLD),
+                "warn": (A.COLOR_YELLOW, bg, A.A_BOLD), "tool": (A.COLOR_CYAN, bg, 0), "tool_p": (A.COLOR_GREEN, bg, A.A_BOLD),
+                "head": (A.COLOR_WHITE, A.COLOR_BLUE, 0), "head_b": (A.COLOR_WHITE, A.COLOR_BLUE, A.A_BOLD),
+                "head_live": (A.COLOR_GREEN, A.COLOR_BLUE, A.A_BOLD), "head_err": (A.COLOR_YELLOW, A.COLOR_BLUE, A.A_BOLD),
+                "sel": (A.COLOR_BLACK, A.COLOR_CYAN, 0), "key": (A.COLOR_BLACK, A.COLOR_WHITE, 0),
+                "confirm": (A.COLOR_BLACK, A.COLOR_YELLOW, A.A_BOLD), "ok": (A.COLOR_BLACK, A.COLOR_GREEN, 0),
+                "err_bar": (A.COLOR_WHITE, A.COLOR_RED, A.A_BOLD)}
+        for i, (name, (fg, b, extra)) in enumerate(spec.items(), 1):
+            A.init_pair(i, fg, b)
+            st[name] = A.color_pair(i) | extra
+        for j, col in enumerate((A.COLOR_MAGENTA, A.COLOR_CYAN, A.COLOR_YELLOW, A.COLOR_GREEN, A.COLOR_BLUE, A.COLOR_RED)):
+            A.init_pair(40 + j, col, -1 if bg == -1 else A.COLOR_BLACK)
+            st["tag%d" % j] = A.color_pair(40 + j)
+    return st
+
+
+def draw(scr, rows: list, styles: dict, width: int, height: int, sel_row: int):
+    scr.erase()
+    for y, row in enumerate(rows[:height]):
+        x = 0
+        fill = styles.get(row.fill) if row.fill else None
+        if fill is not None:
+            try:
+                scr.addstr(y, 0, " " * (width - 1), fill)
+            except curses.error:
+                pass
+        for text, style in row.segs:
+            room = width - 1 - x
+            if room <= 0:
+                break
+            t = clip(text, room, ellipsis=False)
+            try:
+                scr.addstr(y, x, t, styles.get(style, curses.A_NORMAL))
+            except curses.error:
+                pass
+            x += dispw(t)
+    scr.refresh()
+
+
+def run_ui(cfg) -> int:
+    os.environ.setdefault("ESCDELAY", "25")
+    locale.setlocale(locale.LC_ALL, "")
+    coll = Collector(cfg.stage, cfg.all, cfg.stale)
+    app = App(cfg, coll)
+
+    def loop(scr):
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        styles = make_styles()
+        scr.timeout(150)
+        scr.keypad(True)
+        last = 0.0
+        while True:
+            if app.snap is None or time.monotonic() - last >= cfg.interval:
+                try:
+                    app.refresh()
+                except Exception as e:  # noqa: BLE001 — a console that stays up beats one that dies on an odd file
+                    if app.snap is None:
+                        raise
+                    app.say(f"✗ refresh failed: {e!r}", "err_bar", 5)
+                last = time.monotonic()
+            if app.toast and time.monotonic() >= app.toast_until:
+                app.toast, app.dirty = "", True
+            if app.busy:
+                app.dirty = True
+            if app.dirty:
+                h, w = scr.getmaxyx()
+                if h >= 4 and w >= 20:
+                    try:
+                        rows, sel = app.build(w - 1, h)      # the last column stays free: curses cannot write the corner cell
+                    except Exception as e:  # noqa: BLE001
+                        app.say(f"✗ screen: {e!r}", "err_bar", 5)
+                        rows, sel = [R((clip(f" render error: {e!r}", w - 1), "err"))], -1
+                    draw(scr, rows, styles, w, h, sel)
+                else:
+                    scr.erase()
+                    scr.addstr(0, 0, "window too narrow"[: max(0, w - 1)])
+                    scr.refresh()
+                app.dirty = False
+            try:
+                ch = scr.get_wch()
+            except curses.error:
+                continue
+            if app.on_key(ch):
+                return 0
+
+    return curses.wrapper(loop)
+
+
+# ---------------------------------------------------------------- main
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="agent-top", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--stage", action="append", help="stage (repeatable); default: every stage that has agents or roles")
+    p.add_argument("--all", action="store_true", help="also finished agents older than 24 h and the archive folders of old runs")
+    p.add_argument("--once", action="store_true", help="print a text picture and exit")
+    p.add_argument("--json", action="store_true", help="the same data as JSON, for scripts")
+    p.add_argument("--widget", action="store_true", help="HTML fragment for the chat widget (skill /agent-top)")
+    p.add_argument("--agent", help="with --once/--json: card and feed of this agent (role or folder name)")
+    p.add_argument("--lines", type=int, default=25, help="with --once --agent: feed lines")
+    p.add_argument("--feed", type=int, default=40, help="with --json --agent: feed events")
+    p.add_argument("--width", type=int, help="width of the --once picture (default: the terminal, else 100)")
+    p.add_argument("--interval", type=float, default=1.5, help="refresh period, seconds (1–2)")
+    p.add_argument("--stale", type=int, default=STALE_S, help="a live agent with no log events for longer than this many seconds is marked \"quiet\"")
+    p.add_argument("--read-only", action="store_true", help="disable m (message) and x (stop)")
+    a = p.parse_args(argv)
+    if a.interval < 0.3:
+        raise hc.UsageError("--interval must be at least 0.3 s")
+    if a.once or a.json or a.widget:
+        coll = Collector(a.stage, a.all, a.stale)
+        snap = coll.snapshot(wait_ext=True)
+        if a.agent and not find_agent(snap, a.agent):
+            raise hc.Failure(f"no agent {a.agent!r} (--all includes old ones; stages: {', '.join(snap['stages']) or '—'})")
+        if a.widget:
+            sys.stdout.write(render_widget(snap))
+        elif a.json:
+            print(json.dumps(snapshot_json(snap, coll, a.agent, a.feed), ensure_ascii=False, indent=1, default=str))
+        else:
+            width = a.width or shutil.get_terminal_size((100, 24)).columns
+            sys.stdout.write(render_once(snap, coll, max(40, width), a.agent, a.lines))
+        return 0
+    if not sys.stdout.isatty() or not sys.stdin.isatty():
+        raise hc.UsageError("interactive mode needs a terminal; for scripts use --once or --json")
+    return run_ui(a)
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

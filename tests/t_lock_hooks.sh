@@ -1,0 +1,72 @@
+#!/bin/bash
+# lock CLI and the three hooks: board_locks (PreToolUse Bash), handoff_size (PreToolUse Write|Edit),
+# questions (SessionStart). Positive and negative controls for every decision.
+. "$(dirname "$0")/lib.sh"
+new_home; R=$AGENT_HUB_HOME
+ME=aaaaaaaa-0000-4000-8000-000000000001; OTHER=bbbbbbbb-0000-4000-8000-000000000002
+# ---- lock CLI
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +2h --why "merging #700" --owner-name "merge steward" >/dev/null; check $? 0 "take main-merge"
+CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "mine" >/dev/null 2>&1; check $? 1 "negative: another session's active lock refused"
+CLAUDE_CODE_SESSION_ID=$ME $B/lock release main-merge >/dev/null 2>&1; check $? 1 "negative: release of another's lock refused"
+$B/lock list | grep -q '^main-merge .*active .*merge steward'; check $? 0 "list shows the active lock"
+CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo webapp --until +1h --why "staging refresh" --owner-name "hub" >/dev/null; check $? 0 "take stage for one repo"
+CLAUDE_CODE_SESSION_ID=$ME $B/lock take deploy-window --until 2000-01-01T00:00 --why x >/dev/null 2>&1; check $? 2 "usage: --until in the past"
+$B/lock take stage --until +1h --why x >/dev/null 2>&1; check $? 2 "usage: no session id and no --force"
+grep -q '^```locks' $R/board.md && grep -q '^## Summary' $R/board.md; check $? 0 "board rendered with a locks block and a summary"
+# ---- board_locks hook
+hook(){ python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","session_id":sys.argv[2],"cwd":sys.argv[3],"tool_input":{"command":sys.argv[1]}}))' "$1" "$2" "${3:-/}" | python3 $HOOKS/board_locks.py; }
+deny(){ hook "$@" | grep -q '"permissionDecision": "deny"'; }
+deny "gh pr merge 12 --squash" $ME; check $? 0 "deny: gh pr merge under another's main-merge"
+hook "gh pr merge 12 --squash" $ME | grep -q 'held by \\"merge steward\\"'; check $? 0 "…the reason names the holder"
+deny "gh pr merge 12" $OTHER; check $? 1 "own lock: no decision"
+deny "git push origin HEAD:main" $ME; check $? 0 "deny: push to main"
+deny "git push origin feature-x" $ME; check $? 1 "push to a feature branch: no decision"
+deny "git push --dry-run origin main" $ME; check $? 1 "dry-run push: no decision"
+deny "glab mr merge 5" $ME; check $? 0 "deny: glab mr merge"
+deny "gh api -X PUT repos/acme/webapp/pulls/9/merge" $ME; check $? 0 "deny: merge through the API"
+deny "gh api repos/acme/webapp/pulls/9" $ME; check $? 1 "GET through the API: no decision"
+deny 'echo "gh pr merge 12"' $ME; check $? 1 "quoted text is not a command"
+deny "gh pr merge 12 # lock-ok: merging my own docs PR" $ME; check $? 1 "escape hatch"
+deny "bash -c 'gh pr merge 12'" $ME; check $? 0 "deny inside bash -c"
+# repo scoping: the stage lock guards webapp only
+mkdir -p $R/repos/webapp/.git $R/repos/mobile/.git $R/repos/webapp-wt
+printf 'gitdir: %s/repos/webapp/.git/worktrees/wt\n' $R > $R/repos/webapp-wt/.git
+printf '{"rules":[{"match":"\\\\bmake deploy-staging\\\\b","kinds":["stage"],"action":"staging deploy"}]}\n' > $R/lock-rules.json
+deny "make deploy-staging" $OTHER $R/repos/webapp; check $? 0 "custom rule: deny staging deploy in webapp"
+deny "make deploy-staging" $OTHER $R/repos/mobile; check $? 1 "custom rule: another repo is not guarded"
+deny "make deploy-staging" $OTHER $R/repos/webapp-wt; check $? 0 "a worktree resolves to its main repository"
+deny "make deploy-staging" $ME $R/repos/webapp; check $? 1 "custom rule: own lock passes"
+deny "make build" $OTHER $R/repos/webapp; check $? 1 "unrelated command: no decision"
+# expired lock and a broken board fail open
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock release main-merge >/dev/null
+deny "gh pr merge 12" $ME; check $? 1 "no lock: no decision"
+echo "garbage" > $R/board.md
+hook "gh pr merge 12" $ME > $R/fo.out 2>$R/fo.err; check $? 0 "broken board: exit 0"
+check "$(wc -c < $R/fo.out | tr -d ' ')" 0 "broken board: no decision (fail-open)"
+echo '{"rules": [' > $R/lock-rules.json; echo "" > $R/board.md; rm $R/board.md
+hook "make deploy-staging" $ME $R/repos/webapp > $R/fo2.out 2>/dev/null; check $? 0 "broken rules file: exit 0 (fail-open)"
+# ---- handoff_size hook
+hs(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":"x"*int(sys.argv[2])}}))' "$1" "$2" | python3 $HOOKS/handoff_size.py; }
+hs $R/HANDOFF-hub-stage-a-1.md 16000 | grep -q '"deny"'; check $? 0 "handoff_size: a 16 KB handoff is refused"
+hs $R/HANDOFF-hub-stage-a-1.md 9000 | grep -q '"deny"'; check $? 1 "handoff_size: a 9 KB handoff passes"
+hs $R/notes.md 90000 | grep -q '"deny"'; check $? 1 "handoff_size: other files are not checked"
+printf 'a%.0s' $(seq 1 15000) > $R/HANDOFF-x.md
+python3 -c 'import json,sys; print(json.dumps({"tool_name":"Edit","tool_input":{"file_path":sys.argv[1],"old_string":"aaaa","new_string":"b"*2000}}))' $R/HANDOFF-x.md | python3 $HOOKS/handoff_size.py | grep -q '"deny"'; check $? 0 "handoff_size: an Edit that grows past the cap is refused"
+# ---- questions hook (SessionStart)
+new_home
+echo '{}' | python3 $HOOKS/questions.py > $R/q0.out; check "$(wc -c < $R/q0.out | tr -d ' ')" 0 "questions: no register, no output"
+$B/ask add --stage stage-a --blocks "release" --default "ship" --due 2000-01-01 "Ship it?" >/dev/null
+echo '{}' | python3 $HOOKS/questions.py > $R/q1.out
+grep -q 'stage-a — open 1, overdue 1' $R/q1.out && grep -q '"hookEventName": "SessionStart"' $R/q1.out; check $? 0 "questions: open and overdue counted"
+# ---- hooks.json points at existing scripts
+python3 - "$T/../hooks/hooks.json" <<'PY'; check $? 0 "hooks.json: valid, every command script exists"
+import json, os, re, sys
+d = json.load(open(sys.argv[1]))
+root = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
+for ev, groups in d["hooks"].items():
+    for g in groups:
+        for h in g["hooks"]:
+            for m in re.findall(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)", h["command"]):
+                assert os.path.isfile(os.path.join(root, m)), m
+PY
+exit $fail
