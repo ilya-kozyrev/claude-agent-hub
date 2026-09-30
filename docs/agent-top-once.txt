@@ -1,4 +1,4 @@
- agent-top ● 2 ✓ 1 ✗ 1 stage-a · locks 1 · questions 1 (overdue 1) · limit 5h 34% 7d 52%                       14:01:17
+ agent-top ● 2 ✓ 1 ✗ 1 stage-a · locks 1 · questions 1 (overdue 1) · limit 5h 34% 7d 52%                       14:01:32
   ROLE      TASK                           STATUS MODEL           AGE TURN  CTX     $ ✉  NOW / LAST
 ● builder   Rebase payments and get CI gr… live   opus-5-5/hi      0s    6  94k     — ✉1 ▸ Bash: run the full test suit…
 ● reviewer  Review PR #41 (export to Parq… live   sonnet-5-5/hi    0s    2  62k     —    ▸ Read: /work/webapp/src/expor…
@@ -11,7 +11,7 @@ Locks (lock list)
 Owner questions (ask summary)
   stage-a — open 1, overdue 1
     Q-A-001 [stage-a] open OVERDUE — Turn the new export on by default?
-    blocks: the release; default by 2000-01-01T10:00: ship with the flag off
+    blocks: the release; default by 2026-09-30T12:01: ship with the flag off
     asked 2026-09-30 14:01 (hub-3); source: not set
 
 Roles and hub (roles)

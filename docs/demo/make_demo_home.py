@@ -117,7 +117,7 @@ hm = lambda m: (t - dt.timedelta(minutes=m)).strftime("%H:%M")  # noqa: E731
     f"- {hm(15)} [hub-3-docs] DONE docs updated, report at work/hub-3-docs-REPORT.md\n"
     f"- {hm(1)} [hub] @hub-3-builder after the suite, push and open the PR\n", encoding="utf-8")
 subprocess.run([sys.executable, str(Path(__file__).resolve().parents[2] / "bin" / "ask"), "add", "--stage", STAGE,
-                "--blocks", "the release", "--default", "ship with the flag off", "--due", "2000-01-01T10:00", "--by", "hub-3",
+                "--blocks", "the release", "--default", "ship with the flag off", "--due", (t - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M"), "--by", "hub-3",
                 "Turn the new export on by default?"], check=True, capture_output=True, env=dict(os.environ))
 import board  # noqa: E402
 board.write([{"kind": "main-merge", "repo": "webapp", "owner_name": "Hub stage-a #3", "session_id": "hub-session",
