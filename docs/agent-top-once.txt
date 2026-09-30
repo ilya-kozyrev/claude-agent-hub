@@ -1,0 +1,33 @@
+ agent-top ● 2 ✓ 1 ✗ 1 stage-a · locks 1 · questions 1 (overdue 1) · limit 5h 34% 7d 52%                       14:01:17
+  ROLE      TASK                           STATUS MODEL           AGE TURN  CTX     $ ✉  NOW / LAST
+● builder   Rebase payments and get CI gr… live   opus-5-5/hi      0s    6  94k     — ✉1 ▸ Bash: run the full test suit…
+● reviewer  Review PR #41 (export to Parq… live   sonnet-5-5/hi    0s    2  62k     —    ▸ Read: /work/webapp/src/expor…
+✗ migrator  Rehearse migration 0042 on a … error  opus-5-5/hi     20m    1  62k $1.92    Dry-running the migration on a…
+✓ docs      Update the API docs for the e… done   sonnet-5-5/hi   14m    1  62k $0.84    DONE docs updated, report at w…
+
+Locks (lock list)
+  main-merge webapp until 2026-10-02 14:01 — Hub stage-a #3: stage hub merges main
+
+Owner questions (ask summary)
+  stage-a — open 1, overdue 1
+    Q-A-001 [stage-a] open OVERDUE — Turn the new export on by default?
+    blocks: the release; default by 2000-01-01T10:00: ship with the flag off
+    asked 2026-09-30 14:01 (hub-3); source: not set
+
+Roles and hub (roles)
+  stage-a
+   * hub [hub-3] desktop journal 52m ago Hub stage-a #3
+   builder [hub-3-builder] live journal 50m ago
+   migrator [hub-3-migrator] error journal 20m ago
+   reviewer [hub-3-reviewer] live journal —
+
+Plan limits (latest rate_limit event in the logs)
+  5 hours: 34%, resets 09-30 16:01  (from the agents' logs; the freshest log was updated 0s ago)
+  week: 52%, resets 10-03 14:01  (from the agents' logs; the freshest log was updated 0s ago)
+
+Journal (last 5 lines):
+13:09 [hub-3] start: "Hub stage-a #3" took over from "Hub stage-a #2"; locks: main-merge
+13:11 [hub-3-builder] started headless agent builder (claude-opus-5-5/high)
+13:41 [hub-3-migrator] EXIT migrator: error_max_turns, error; code 1, turns 80 — agent status migrator
+13:46 [hub-3-docs] DONE docs updated, report at work/hub-3-docs-REPORT.md
+14:00 [hub] @hub-3-builder after the suite, push and open the PR

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-agent-hub",
+  "description": "The agent-hub plugin: a hub session that runs and steers headless Claude Code agents.",
+  "owner": {
+    "name": "Ilya Kozyrev",
+    "url": "https://github.com/ilya-kozyrev"
+  },
+  "plugins": [
+    {
+      "name": "agent-hub",
+      "source": "./",
+      "description": "Hub session + headless `claude -p` agents: briefs, journal, inboxes, owner questions, locks, handoffs, agent-top.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Ilya Kozyrev"
+      },
+      "license": "MIT",
+      "category": "productivity"
+    }
+  ]
+}

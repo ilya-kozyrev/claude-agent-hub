@@ -1,0 +1,13 @@
+{
+  "name": "agent-hub",
+  "version": "0.1.0",
+  "description": "Run a hub session that spawns and steers headless `claude -p` agents: briefs, a shared journal, inboxes, an owner-question register, a lock board, handoffs, and the agent-top console and chat widget.",
+  "author": {
+    "name": "Ilya Kozyrev",
+    "url": "https://github.com/ilya-kozyrev"
+  },
+  "homepage": "https://github.com/ilya-kozyrev/claude-agent-hub",
+  "repository": "https://github.com/ilya-kozyrev/claude-agent-hub",
+  "license": "MIT",
+  "keywords": ["agents", "headless", "orchestration", "multi-agent", "journal", "handoff", "locks", "coordination"]
+}

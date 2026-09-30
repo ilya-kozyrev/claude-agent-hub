@@ -1,0 +1,29 @@
+---
+name: handoff
+description: Write a hub handoff — the entry-point file a fresh session reads to take over a stage hub or a long-running role. Use when the context is filling up, at the end of a shift, or when the owner asks to hand the work over.
+argument-hint: "[stage] [what the next shift focuses on]"
+---
+
+# Hub handoff
+
+A handoff is the successor's entry point, not a diary: facts with their source, the queue with stop conditions, and
+pointers to the registers — never copies of them.
+
+1. Generate the draft: `hub handoff --stage <S> --n <your N>` (prints the path). It fills in the locks you hold, the
+   headless agents and their state, the night queue, `ask summary` and the register digest, and — if
+   `<stage>/handoff-facts.sh` exists — its environment rows; everything else is `TODO`.
+   Without a stage hub, start from `${CLAUDE_PLUGIN_ROOT}/templates/HANDOFF-template.md` and save it as
+   `HANDOFF-<role>-<YYYY-MM-DD-HHMM>.md` in the stage's `coordinator/` directory.
+2. Fill every `TODO`:
+   - **Headline**: one or two sentences — what matters most now and whose word is behind it (quote + `ask` id).
+   - **§ 0 First steps**: 3–6 commands or files, in order. The first is always `hub takeover …`.
+   - **§ 1 Where things stand**: each row a fact and where it shows (a command, a file, a URL).
+   - **§ 2 Queue**: by dependency; item = action | "done" check | stop condition | who (model). Blocked items name the question id.
+   - **§ 4 Owner questions**: anything the owner was asked in chat without a record goes into `ask add` first; then its id here.
+   - **§ 5 Risks**: what breaks when nobody watches, and how it shows.
+   - **§ 6 Skills**: which skills the successor loads first.
+3. Keep it ≤ 12 KB (the `handoff_size` hook refuses a `HANDOFF-*.md` over 15 KB). The chronology stays in the
+   journal; link it.
+4. Delete the role's older handoffs, `jlog "handoff written: <path>"`, and tell the owner the path.
+
+Do not release locks — the successor's `hub takeover` takes them over. Redact secrets: name the variable, never the value.
