@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Wait for new lines in the stage journal and/or log files; print them as one block and exit.
+
+The only waiter a hub needs. Run it as ONE command with Bash `run_in_background: true`;
+the harness wakes you when it exits. Never re-arm Monitor or cron for the journal.
+
+  jwait --journal [--stage stage-a] [--file PATH ...] [--match REGEX ...] [--tag T ...]
+        [--exclude-tag T ...] [--settle 20] [--until HH:MM | --for 6h] [--note "…"] [--since HH:MM|ISO]
+  jwait --until 20:23 --note "check the nightly import"   # pure alarm, no source
+
+Sources: --journal (today's journal of the stage, follows midnight rollover) and/or --file PATH
+(any log; may not exist yet). Several allowed.
+Filters (a line is delivered when ANY positive filter matches; no positive filter = every new line):
+  --match REGEX   Python regex searched in the line (repeatable)
+  --tag T         line written with tag T or a sub-tag T/…, or addressed "@T" (repeatable)
+Exclusions (always win):
+  --exclude-tag T drops lines written with tag T and its sub-tags T/… (repeatable). The caller's
+                  own tag ($HUB_TAG or the registry) is excluded by default; --include-own keeps it.
+State: what each caller has already seen per source lives in <root>/.jwait-state/<caller>.json,
+keyed by a hash of the line and its occurrence number, so a rewritten or replayed file does not
+re-deliver old lines, and lines that arrived while you were busy are delivered on the next run.
+The first run of a caller on a stage journal only marks existing lines as seen and says so.
+--since HH:MM or an ISO time delivers the journal lines stamped from that time on the initial read,
+whether or not the caller has seen them (`hub takeover` prints it). A --file source delivers every
+unseen matching line, even the first time (a script may have asked its question before jwait
+started); a last line without a newline is delivered after it stays unchanged for max(--settle, 1) s.
+Batching: after the first match keeps collecting for --settle seconds (default 20), then prints.
+Deadline: --until HH:MM (hub time zone; a past time means tomorrow) or --for 6h; default --for 12h. On the
+deadline prints "ALARM <note>" and exits 3.
+Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+POLL_S = 1.0
+DEFAULT_FOR = "12h"
+MAX_OUT_LINES = 200
+MAX_LINE_CHARS = 1200
+
+
+def line_key(line: str, occurrence: int) -> str:
+    return hashlib.sha1(f"{occurrence}\x00{line}".encode("utf-8")).hexdigest()[:16]
+
+
+class Source:
+    """A text file re-read whole whenever its (inode, size, mtime) changes.
+
+    Keys are computed over the whole file every time, so an append, an in-place edit (Edit tool,
+    `sed -i`), a truncation or a replacement all yield exactly the lines whose content is new.
+    A last line without a newline (a script blocked on `read -p "AWAITING ANSWER …"`) is delivered once
+    it has not changed for `partial_after` seconds; its key is the one the completed line will get,
+    so the newline arriving later does not deliver it twice.
+    """
+
+    def __init__(self, sid: str, path: Path, label: str, is_journal: bool, partial_after: float = 20.0):
+        self.sid, self.path, self.label, self.is_journal = sid, path, label, is_journal
+        self.partial_after = partial_after
+        self.sig = None
+        self.present: set = set()  # keys of lines currently in the file (and a delivered partial)
+        self.polls = 0
+        self.partial = None  # (key, text, first seen monotonic) of an undelivered last line
+
+    def poll(self) -> list:
+        """Lines not present at the previous read, as (key, text)."""
+        self.polls += 1
+        try:
+            st = os.stat(self.path)
+        except FileNotFoundError:
+            return []
+        sig = (st.st_ino, st.st_size, st.st_mtime_ns)
+        if sig == self.sig:
+            return self._stable_partial()
+        self.sig = sig
+        with open(self.path, "rb") as fh:
+            data = fh.read()
+        *complete, tail = data.split(b"\n")
+        counts: dict = {}
+        keys, out = set(), []
+        for raw in complete:
+            text = raw.decode("utf-8", errors="replace").rstrip("\r")
+            if not text.strip():
+                continue
+            n = counts.get(text, 0)
+            counts[text] = n + 1
+            key = line_key(text, n)
+            keys.add(key)
+            if key not in self.present:
+                out.append((key, text))
+        text = tail.decode("utf-8", errors="replace").rstrip("\r")
+        if text.strip():
+            key = line_key(text, counts.get(text, 0))
+            if key in self.present:
+                keys.add(key)  # already delivered as a partial
+                self.partial = None
+            elif not (self.partial and self.partial[0] == key):
+                self.partial = (key, text, time.monotonic())
+        else:
+            self.partial = None
+        self.present = keys
+        return out + self._stable_partial()
+
+    def _stable_partial(self) -> list:
+        if self.partial and time.monotonic() - self.partial[2] >= self.partial_after:
+            key, text, _ = self.partial
+            self.partial = None
+            self.present.add(key)
+            return [(key, text)]
+        return []
+
+
+class JournalSources:
+    """Journal of each day from the start day to today (midnight rollover)."""
+
+    def __init__(self, stage: str, start_day: dt.date):
+        self.stage, self.start_day = stage, start_day
+        self.by_day: dict = {}
+
+    def sources(self) -> list:
+        today = hc.now().date()
+        day = self.start_day
+        while day <= today:
+            if day not in self.by_day:
+                path = hc.journal_path(self.stage, day)
+                self.by_day[day] = Source(f"journal:{self.stage}:{day.isoformat()}", path,
+                                          f"journal {day:%d.%m}", True)
+            day += dt.timedelta(days=1)
+        return list(self.by_day.values())
+
+
+def state_path(caller: str) -> Path:
+    safe = re.sub(r"[^\w.-]+", "_", caller, flags=re.UNICODE).strip("_") or "anon"
+    return hc.root() / ".jwait-state" / f"{safe}.json"
+
+
+def load_state(caller: str) -> dict:
+    try:
+        return json.loads(state_path(caller).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        return {}  # a broken state file only costs one baseline run
+
+
+def save_state(caller: str, updates: dict) -> None:
+    """Merge seen keys per source under a lock; keep only keys still present in each source."""
+    path = state_path(caller)
+    with hc.Flock(path.with_suffix(".lock")):
+        state = load_state(caller)
+        for sid, (seen, present) in updates.items():
+            old = set(state.get(sid, {}).get("seen", []))
+            merged = (old | seen) & present if present else (old | seen)
+            state[sid] = {"seen": sorted(merged), "at": hc.now().isoformat(timespec="seconds")}
+        cutoff = (hc.now() - dt.timedelta(days=3)).isoformat()
+        state = {k: v for k, v in state.items() if v.get("at", "") >= cutoff}
+        hc.atomic_write(path, json.dumps(state, ensure_ascii=False) + "\n")
+
+
+class Filter:
+    def __init__(self, args, own_tag):
+        try:
+            self.patterns = [re.compile(p) for p in args.match]
+        except re.error as e:
+            raise hc.UsageError(f"bad --match: {e}") from None
+        self.tags = [t.strip() for t in args.tag]
+        self.exclude = [t.strip() for t in args.exclude_tag]
+        if own_tag and not args.include_own:
+            self.exclude.append(own_tag)
+
+    def accepts(self, text: str) -> bool:
+        parsed = hc.parse_journal_line(text)
+        tag = parsed[1] if parsed else ""
+        if tag and any(hc.tag_is(tag, x) for x in self.exclude):
+            return False
+        if not self.patterns and not self.tags:
+            return True
+        if any(p.search(text) for p in self.patterns):
+            return True
+        return any(hc.tag_is(tag, t) or hc.mentions(text, t) for t in self.tags)
+
+
+def since_cutoff(raw: str, base: dt.datetime) -> dt.datetime:
+    """HH:MM (today, hub time zone) or an ISO datetime (naive = hub time zone)."""
+    raw = raw.strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+    if m:
+        return base.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+    try:
+        t = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        raise hc.UsageError("--since: use HH:MM or 2026-09-29T14:35") from None
+    return (t.replace(tzinfo=hc.TZ) if t.tzinfo is None else t).astimezone(hc.TZ)
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="jwait", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--journal", action="store_true", help="wait for lines of the stage journal")
+    p.add_argument("--stage", default=None)
+    p.add_argument("--file", action="append", default=[], help="wait for lines of this file (repeatable)")
+    p.add_argument("--match", action="append", default=[], help="regular expression (repeatable)")
+    p.add_argument("--tag", action="append", default=[], help="lines tagged T or T/…, or addressed @T")
+    p.add_argument("--exclude-tag", action="append", default=[], help="do not wake on lines tagged T or T/…")
+    p.add_argument("--include-own", action="store_true", help="do not exclude the caller's own tag")
+    p.add_argument("--caller", default=None, help="whose seen-state to use (default: own tag or session id)")
+    p.add_argument("--settle", type=float, default=20.0, help="seconds to keep collecting after the first match")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--until", default=None, help="deadline HH:MM or ISO")
+    g.add_argument("--for", dest="for_", default=None, help="deadline as a duration: 30m, 6h")
+    p.add_argument("--note", default="", help="alarm text")
+    p.add_argument("--since", default=None, help="on the initial read, deliver journal lines from HH:MM or an ISO time on")
+    args = p.parse_args(argv)
+
+    stage = hc.check_stage(args.stage or hc.default_stage())
+    own_tag = hc.caller_tag(stage)
+    caller = args.caller or own_tag or os.environ.get("CLAUDE_CODE_SESSION_ID") or "anon"
+    flt = Filter(args, own_tag)
+    start = hc.now()
+    if args.until:
+        deadline = hc.parse_deadline(args.until, start)
+    else:
+        deadline = start + hc.parse_duration(args.for_ or DEFAULT_FOR)
+    has_source = args.journal or bool(args.file)
+    if not has_source and not (args.until or args.for_):
+        raise hc.UsageError("no source (--journal/--file) and no deadline (--until/--for)")
+    if args.settle < 0:
+        raise hc.UsageError("--settle cannot be negative")
+    since = since_cutoff(args.since, start) if args.since else None
+
+    journals = JournalSources(stage, start.date() - dt.timedelta(days=1)) if args.journal else None
+    partial_after = max(args.settle, 1.0)
+    files = [Source(f"file:{os.path.abspath(f)}", Path(os.path.abspath(f)), os.path.basename(f), False, partial_after)
+             for f in args.file]
+    state = load_state(caller)
+    # Baseline: a journal day the caller has no state for, read at start, is not news, except a
+    # day later than the latest day the caller has read (midnight rollover) and lines from --since.
+    # Lines that appear after the start are always news. --file sources never baseline: a script
+    # may have asked its question before jwait started.
+    known_days = [k.rsplit(":", 1)[1] for k in state if k.startswith(f"journal:{stage}:")]
+    latest_known = max(known_days) if known_days else None
+    seen_now: dict = {}  # sid -> set of keys seen this run
+    baselined = [0]
+    matched: list = []
+    first_match_at = None
+
+    def all_sources():
+        return (journals.sources() if journals else []) + files
+
+    def since_hit(src, text: str) -> bool:
+        """A journal line stamped at or after --since: delivered on the initial read even if seen before."""
+        if not (since and src.is_journal):
+            return False
+        parsed = hc.parse_journal_line(text)
+        if not parsed:
+            return False
+        hh, mm = parsed[0].split(":")
+        day = dt.date.fromisoformat(src.sid.rsplit(":", 1)[1])
+        return dt.datetime.combine(day, dt.time(int(hh), int(mm)), tzinfo=hc.TZ) >= since.replace(second=0, microsecond=0)
+
+    def is_news(src, text: str, initial: bool) -> bool:
+        if not src.is_journal or src.sid in state or not initial:
+            return True
+        day = src.sid.rsplit(":", 1)[1]
+        if latest_known and day > latest_known:
+            return True
+        if since_hit(src, text):
+            return True
+        baselined[0] += 1
+        return False
+
+    def scan() -> None:
+        nonlocal first_match_at
+        for src in all_sources():
+            known = set(state.get(src.sid, {}).get("seen", []))
+            initial = src.polls == 0
+            seen_run = seen_now.setdefault(src.sid, set())
+            for key, text in src.poll():
+                replay = initial and since_hit(src, text)  # --since replays even what was seen before
+                dup = key in seen_run or (key in known and not replay)  # seen_run: a rewrite during this run
+                seen_run.add(key)
+                if dup or not is_news(src, text, initial):
+                    continue
+                if flt.accepts(text):
+                    matched.append((src.label, text))
+                    if first_match_at is None:
+                        first_match_at = time.monotonic()
+
+    def finish() -> None:
+        updates = {}
+        for src in all_sources():
+            seen = seen_now.get(src.sid, set())
+            if seen or src.present:
+                updates[src.sid] = (seen, src.present)
+        if updates:
+            save_state(caller, updates)
+
+    def warn_baseline() -> None:
+        if baselined[0]:
+            print(f"first run of [{caller}] on the journal: {baselined[0]} lines marked as seen without delivery; "
+                  "--since HH:MM or an ISO time in the next run delivers lines from that time on")
+
+    what = []
+    if args.journal:
+        what.append(f"journal {stage}")
+    what += [f"file {f}" for f in args.file]
+    print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {deadline:%d.%m %H:%M}", flush=True)
+
+    try:
+        while True:
+            if has_source:
+                scan()
+            t = hc.now()
+            settled = first_match_at is not None and time.monotonic() - first_match_at >= args.settle
+            if settled or (matched and t >= deadline):
+                finish()
+                warn_baseline()
+                print_block(matched)
+                return 0
+            if t >= deadline:
+                finish()
+                warn_baseline()
+                print(f"ALARM {args.note}".rstrip() + f" (deadline {deadline:%d.%m %H:%M})")
+                return 3
+            time.sleep(POLL_S)
+    except KeyboardInterrupt:
+        return 130
+
+
+def print_block(matched: list) -> None:
+    labels = {lab for lab, _ in matched}
+    print(f"NEW: {len(matched)} lines")
+    for i, (label, text) in enumerate(matched):
+        if i >= MAX_OUT_LINES:
+            print(f"… {len(matched) - MAX_OUT_LINES} more lines — read the source")
+            break
+        if len(text) > MAX_LINE_CHARS:
+            text = text[:MAX_LINE_CHARS] + " …"
+        print(f"{label}: {text}" if len(labels) > 1 or not label.startswith("journal") else text)
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

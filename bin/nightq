@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Night queue: <hub home>/<stage>/night-queue.md — work a coordinator does while the owner is away.
+
+File format (mechanically checkable):
+
+    # Night queue — stage-a
+    coordinator: <session id of the coordinator the nudge goes to>
+    night: 2026-09-25→26
+    updated: 2026-09-25T22:30 hub-3
+
+    - [ ] <action> | stop: <stop condition> | class: local|dev|stage|main|prod [| yes: <date + owner quote/link>]
+    - [x] <done action> | stop: … | class: … | result: <one line>
+
+Permission classes: local (laptop, worktree, a PR without merge), dev, stage (free unless another session
+holds the `stage` lock on the board), main (merge into main — only the holder of the `main-merge` lock),
+prod (only an action the owner already said yes to: `yes:` with a date and a quote is mandatory). Anything
+else is not queued: it goes to the question register (`ask add`) with a default action, and the queue
+moves on.
+
+Usage:
+  nightq status [--json]            every stage with a night-queue.md: coordinator, open/done/invalid items
+  nightq check --stage stage-a      exit 1 and list the items that break the format
+  nightq log --stage stage-a "text" append a timestamped line to <stage>/night-log.md
+Env: AGENT_HUB_HOME (default ~/.claude/agent-mail); AGENT_HUB_NIGHT night window, default "23:00-08:00".
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+ROOT = hc.root()
+QUEUE = "night-queue.md"
+LOG = "night-log.md"
+ITEM_RE = re.compile(r"^\s*- \[( |x|X)\] (.+)$")
+META_RE = re.compile(r"^(coordinator|night|updated):\s*(.*)$")
+CLASSES = {"local", "dev", "stage", "main", "prod"}
+
+
+def _night_window() -> tuple:
+    raw = os.environ.get("AGENT_HUB_NIGHT", "23:00-08:00")
+    try:
+        a, b = (dt.time.fromisoformat(x.strip()) for x in raw.split("-", 1))
+        return a, b
+    except ValueError:
+        return dt.time(23, 0), dt.time(8, 0)
+
+
+NIGHT_START, NIGHT_END = _night_window()
+
+
+def stages() -> list[str]:
+    if not ROOT.is_dir():
+        return []
+    return sorted(p.parent.name for p in ROOT.glob(f"*/{QUEUE}")
+                  if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", p.parent.name))
+
+
+def item_problems(body: str) -> list[str]:
+    parts = [p.strip() for p in body.split(" | ")]
+    kv = {}
+    for p in parts[1:]:
+        if ":" in p:
+            k, v = p.split(":", 1)
+            kv[k.strip().lower()] = v.strip()
+    problems = []
+    if not parts[0]:
+        problems.append("no action")
+    if not kv.get("stop"):
+        problems.append("no \"stop:\"")
+    cls = kv.get("class", "")
+    if cls not in CLASSES:
+        problems.append(f"class {cls!r} is not one of {sorted(CLASSES)}")
+    if cls == "prod" and not kv.get("yes"):
+        problems.append("prod without the owner's \"yes:\" (date and quote)")
+    return problems
+
+
+def read_queue(stage: str) -> dict:
+    text = (ROOT / stage / QUEUE).read_text(encoding="utf-8")
+    meta, open_items, done, invalid = {}, [], 0, []
+    for n, line in enumerate(text.splitlines(), 1):
+        m = META_RE.match(line)
+        if m and m.group(1) not in meta:
+            meta[m.group(1)] = m.group(2).strip()
+            continue
+        it = ITEM_RE.match(line)
+        if not it:
+            continue
+        if it.group(1) == " ":
+            open_items.append(it.group(2).strip())
+            probs = item_problems(it.group(2).strip())
+            if probs:
+                invalid.append({"line": n, "item": it.group(2).strip()[:120], "problems": probs})
+        else:
+            done += 1
+    coord = meta.get("coordinator", "")
+    if coord.startswith("<") or coord.lower() in ("", "not set", "—"):
+        coord = ""
+    return {"stage": stage, "coordinator": coord, "night": meta.get("night", ""),
+            "updated": meta.get("updated", ""), "open": len(open_items), "done": done,
+            "invalid": invalid, "next": open_items[0][:160] if open_items else ""}
+
+
+def in_night(now: dt.datetime) -> bool:
+    t = now.time()
+    return t >= NIGHT_START or t < NIGHT_END
+
+
+def cmd_status(args) -> int:
+    now = hc.now().replace(tzinfo=None)
+    rows = []
+    for s in stages():
+        try:
+            rows.append(read_queue(s))
+        except (OSError, UnicodeDecodeError) as e:
+            rows.append({"stage": s, "error": str(e)})
+    if args.json:
+        print(json.dumps({"now": now.isoformat(timespec="minutes"), "in_night_window": in_night(now),
+                          "stages": rows}, ensure_ascii=False, indent=1))
+        return 0
+    print(f"now {now:%Y-%m-%d %H:%M}, night window {NIGHT_START:%H:%M}–{NIGHT_END:%H:%M}: {'yes' if in_night(now) else 'no'}")
+    for r in rows:
+        if "error" in r:
+            print(f"{r['stage']}: unreadable — {r['error']}")
+            continue
+        print(f"{r['stage']}: open {r['open']}, done {r['done']}, bad format {len(r['invalid'])}; "
+              f"coordinator {r['coordinator'] or 'not set'}; next: {r['next'] or '—'}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    r = read_queue(args.stage)
+    for bad in r["invalid"]:
+        print(f"{args.stage}/{QUEUE}:{bad['line']}: {'; '.join(bad['problems'])} — {bad['item']}")
+    if not r["coordinator"]:
+        print(f"{args.stage}/{QUEUE}: no \"coordinator: <session id>\" line — nobody to wake")
+    ok = not r["invalid"] and bool(r["coordinator"] or not r["open"])
+    print(f"{args.stage}: open {r['open']}, bad format {len(r['invalid'])} → {'ok' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+def cmd_log(args) -> int:
+    d = ROOT / args.stage
+    d.mkdir(parents=True, exist_ok=True)
+    line = f"- {hc.now():%Y-%m-%d %H:%M} — {' '.join(args.text.split())}\n"
+    fd = os.open(d / ".night-log.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        path = d / LOG
+        new = not path.exists()
+        with open(path, "a", encoding="utf-8") as f:
+            if new:
+                f.write(f"# Night log — {args.stage}\n\nWritten by the night-nudge task and the coordinator; one line per event.\n\n")
+            f.write(line)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    print(line.rstrip())
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="nightq", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("status")
+    s.add_argument("--json", action="store_true")
+    c = sub.add_parser("check")
+    c.add_argument("--stage", required=True)
+    lg = sub.add_parser("log")
+    lg.add_argument("--stage", required=True)
+    lg.add_argument("text")
+    args = p.parse_args(argv)
+    return {"status": cmd_status, "check": cmd_check, "log": cmd_log}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

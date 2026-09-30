@@ -1,0 +1,26 @@
+{
+  "description": "agent-hub: lock-board enforcement for merges/deploys, owner-question summary at session start, handoff size cap.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/questions.py\"", "timeout": 10}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/board_locks.py\"", "timeout": 5}
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff_size.py\"", "timeout": 10}
+        ]
+      }
+    ]
+  }
+}

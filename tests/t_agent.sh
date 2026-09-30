@@ -1,0 +1,98 @@
+#!/bin/bash
+# agent spawn/status/send/stop against a stand-in CLI (fake_claude.py): detached start, inbox while alive,
+# resume after exit, unread-message replay, EXIT journal line, stop, init timeout, flags and usage errors.
+. "$(dirname "$0")/lib.sh"
+new_home; export HUB_STAGE=stage-a HUB_TAG=hub-test CLAUDE_BIN=$T/fake_claude.py
+R=$AGENT_HUB_HOME; W=$R/w; mkdir -p $W; echo "brief: do the thing" > $W/b.md
+pid_of(){ python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" $R/stage-a/agents/$1/meta.json; }
+wait_dead(){ for i in $(seq 1 40); do $B/agent status $1 | grep -q 'ALIVE' || return 0; sleep 0.5; done; }
+
+# 1. spawn from a wrapper in its own process group, then kill that group: the agent must survive
+WR=$(FAKE_HOLD=8 python3 -c "
+import os, subprocess, sys
+os.setsid()
+r = subprocess.run(['$B/agent-spawn', '--role', 'probe', '--cwd', '$W', '--model', 'haiku', '--brief', '$W/b.md'], capture_output=True, text=True)
+sys.stderr.write(r.stdout + r.stderr)
+print(os.getpgid(0), r.returncode)
+" 2>$R/spawn.out)
+read WPG WRC <<<"$WR"; check "$WRC" 0 "spawn exit 0"
+kill -KILL -- -$WPG 2>/dev/null
+PID=$(pid_of probe); sleep 1
+kill -0 $PID 2>/dev/null; check $? 0 "agent alive after the spawning process group was killed"
+check "$(ps -o pgid= -p $PID | tr -d ' ')" "$PID" "agent leads its own process group"
+$B/agent status probe | grep -q 'ALIVE'; check $? 0 "status: alive"
+grep -q 'started headless agent probe' $(journal stage-a); check $? 0 "spawn journals a start line"
+grep -q -- '--model haiku' $W/argv.log && ! grep -q -- '--effort' $W/argv.log; check $? 0 "haiku: alias passed through, no effort flag"
+grep -q -- '--permission-mode bypassPermissions' $W/argv.log; check $? 0 "default permission mode"
+$B/agent-send probe "inbox check" > $R/send1.out; grep -q 'inbox check' $R/stage-a/agents/probe/inbox.md; check $? 0 "send while alive -> inbox"
+grep -q '@probe inbox check' $(journal stage-a); check $? 0 "send while alive -> journal @tag line"
+wait_dead probe
+kill -0 $PID 2>/dev/null; check $? 1 "agent finished by itself"
+$B/agent status probe > $R/st2.out
+grep -q 'finished (success' $R/st2.out; check $? 0 "status: finished with success"
+grep -q 'last: echo: ' $R/st2.out; check $? 0 "status: last assistant line"
+grep -q 'unread inbox messages 1' $R/st2.out; check $? 0 "unread message (not read, no DONE) flagged after exit"
+grep -q 'EXIT probe: no status word in the journal' $(journal stage-a); check $? 0 "a run without a status word journals EXIT"
+# 2. send after exit resumes the same session and replays the unread message
+$B/agent-send probe "Answer with one word: RESUMED" > $R/send2.out; rc=$?
+check $rc 0 "send while dead -> resume"
+PID2=$(pid_of probe); [ "$PID2" != "$PID" ]; check $? 0 "resume started a new process"
+wait_dead probe
+grep -q 'inbox check' $W/prompts.log && grep -q 'RESUMED' $W/prompts.log; check $? 0 "resume prompt carries the unread message and the new one"
+SID=$(python3 -c "import json;print(json.load(open('$R/stage-a/agents/probe/meta.json'))['session_id'])")
+N_INIT=$(grep -c '"subtype": "init"' $R/stage-a/agents/probe/log.jsonl)
+[ "$N_INIT" -ge 2 ]; check $? 0 "spawn and resume both in one log ($N_INIT init events)"
+check "$(grep '"subtype": "init"' $R/stage-a/agents/probe/log.jsonl | grep -c "$SID")" "$N_INIT" "every run is the same session id"
+grep -q -- "--resume $SID" $W/argv.log; check $? 0 "resume uses --resume <session id>"
+# 3. stop a live one
+FAKE_HOLD=60 $B/agent-spawn --role probe2 --cwd $W --model sonnet --brief $W/b.md > /dev/null; check $? 0 "spawn probe2"
+P3=$(pid_of probe2); sleep 1
+tail -1 $W/argv.log | grep -q -- '--effort high'; check $? 0 "default effort high"
+$B/agent-stop probe2; check $? 0 "stop exit 0"
+kill -0 $P3 2>/dev/null; check $? 1 "stopped process is gone"
+$B/roles get probe2 >/dev/null 2>&1; check $? 1 "stopped role retired"
+$B/agent-send probe2 "more" >/dev/null 2>&1; check $? 1 "negative: send to a stopped agent refused"
+$B/agent-stop probe >/dev/null; $B/agent-status nobody >/dev/null 2>&1; check $? 1 "negative: status of unknown agent"
+$B/agent-spawn --role x --cwd $W --model opus --brief $W/nope.md >/dev/null 2>&1; check $? 2 "usage: missing brief"
+$B/agent-spawn --role x --cwd $W --model gpt --brief $W/b.md >/dev/null 2>&1; check $? 2 "usage: unknown model alias"
+HUB_TAG=hub-3 $B/agent-spawn --role x --tag hub-3/x --cwd $W --model opus --brief $W/b.md >/dev/null 2>&1; check $? 2 "usage: a sub-tag of the caller's own tag is refused"
+# 4. configurable defaults: model map, default effort, permission mode
+AGENT_HUB_MODEL_MAP="sonnet=claude-sonnet-test-1" AGENT_HUB_DEFAULT_EFFORT=xhigh AGENT_HUB_PERMISSION_MODE=acceptEdits \
+  $B/agent-spawn --role cfg --cwd $W --model sonnet --brief $W/b.md >/dev/null; check $? 0 "spawn with env defaults"
+tail -1 $W/argv.log | grep -q -- '--model claude-sonnet-test-1 --effort xhigh .*--permission-mode acceptEdits'; check $? 0 "model map, default effort and permission mode reach the CLI"
+wait_dead cfg; $B/agent-stop cfg >/dev/null
+# 5. a CLI that dies without an init event is a failed spawn, and no role is recorded
+FAKE_CLAUDE=die $B/agent-spawn --role d --cwd $W --model sonnet --brief $W/b.md > $R/o5.out 2>&1; rc=$?
+check $rc 1 "spawn fails when claude never starts"
+$B/roles get d >/dev/null 2>&1; check $? 1 "…and no role is recorded"
+# 6. the init wait is env-overridable (default 120 s); a start that never inits is killed and reported
+AGENT_INIT_TIMEOUT=3 FAKE_CLAUDE=hang $B/agent-spawn --role h --cwd $W --model sonnet --brief $W/b.md > $R/o6.out 2>&1; rc=$?
+check $rc 1 "no init within AGENT_INIT_TIMEOUT → spawn fails"
+grep -q 'no init event in 3 s' $R/o6.out; check $? 0 "…the message names the timeout"
+grep -q '^INIT_TIMEOUT_S = int(os.environ.get("AGENT_INIT_TIMEOUT") or 120)' $B/agent; check $? 0 "default init wait is 120 s"
+# 7. a 60 KB brief: still seen as alive (the session id stays at the head of the command line)
+python3 -c "print('brief line '*6000)" > $W/big.md
+FAKE_HOLD=6 $B/agent-spawn --role big --cwd $W --model sonnet --brief $W/big.md >/dev/null 2>&1; check $? 0 "spawn with a 60 KB brief"
+$B/agent-status big | grep -q 'ALIVE'; check $? 0 "long-argv agent reads as alive"
+$B/agent-stop big >/dev/null
+# 8. a message the agent read (tool call on inbox.md) or a run ending in DONE is not "unread"
+FAKE_HOLD=4 FAKE_READ_INBOX=1 $B/agent-spawn --role rd --cwd $W --model sonnet --brief $W/b.md >/dev/null 2>&1
+$B/agent-send rd "hub answer" >/dev/null; wait_dead rd
+$B/agent-status rd | grep -q 'unread'; check $? 1 "inbox read in the log → not flagged unread"
+FAKE_HOLD=4 FAKE_FINAL="DONE work/dn-REPORT.md" $B/agent-spawn --role dn --cwd $W --model sonnet --brief $W/b.md >/dev/null 2>&1
+$B/agent-send dn "hub answer" >/dev/null; wait_dead dn
+$B/agent-status dn | grep -q 'unread'; check $? 1 "run ended with DONE → not flagged unread"
+FAKE_HOLD=4 $B/agent-spawn --role nr --cwd $W --model sonnet --brief $W/b.md >/dev/null 2>&1
+$B/agent-send nr "hub answer" >/dev/null; wait_dead nr
+$B/agent-status nr | grep -q 'unread inbox messages 1'; check $? 0 "positive control: not read, no DONE → flagged"
+for r in rd dn nr; do $B/agent-stop $r >/dev/null 2>&1; done
+# 9. a status word journaled by the agent suppresses the EXIT line
+cat > $W/jl.md <<'B2'
+brief
+B2
+FAKE_HOLD=1 $B/agent-spawn --role quiet --tag hub-test-quiet --cwd $W --model sonnet --brief $W/jl.md >/dev/null 2>&1
+$B/jlog --tag hub-test-quiet "DONE report at work/quiet-REPORT.md" >/dev/null
+wait_dead quiet; sleep 1
+grep -q 'EXIT quiet' $(journal stage-a); check $? 1 "a DONE line in the journal → no EXIT line"
+$B/agent-stop quiet >/dev/null 2>&1
+exit $fail

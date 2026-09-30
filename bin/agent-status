@@ -1,0 +1,4 @@
+#!/bin/sh
+# Shorthand for `agent status …`.
+d=$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")")
+exec "$d/agent" status "$@"

@@ -1,0 +1,690 @@
+#!/usr/bin/env python3
+"""Owner-question register: <hub home>/<stage>/questions.md.
+
+One file per stage, readable by a human and by this script. Each entry is a block:
+
+    ## Q-A-001 — <the question in plain words>
+    - kind: question            (question | decided)
+    - status: open              (open | default-taken: <date> | standing |
+                                 answered: <answer> (<date> <HH:MM>) | withdrawn: <reason> (<date>))
+    - asked: 2026-09-24 10:20   (date and time in the hub time zone; backfilled entries may have the date only)
+    - by: hub-3
+    - due: 2026-09-26T10:00     (or "not set")
+    - blocks: <what it blocks>
+    - default: <action if no answer by due> (or "not set")
+    - source: <file the entry came from>
+    - done: 2026-09-30 12:10 — <what was done, where it shows>   (optional, repeatable: the answer was executed)
+
+`Q-…` is a question to the owner; `D-…` is a decision an agent took itself on a matter the owner
+normally decides ("decided by default — the owner may contest"). An entry leaves the unresolved
+list only with the owner's answer (`close`) or the owner withdrawing it (`withdraw`).
+
+The script edits entries in place (only the lines it owns) and appends new ones, so hand edits
+elsewhere in the file survive. Writes take an flock on <stage>/.questions.lock and replace the
+file atomically (temp file + os.replace).
+
+Usage:
+  ask add --stage stage-a --blocks "…" --default "…" --due 2026-09-26T10:00 [--by …] [--source …] [--at HH:MM] "question"
+  ask decided --stage stage-a [--by …] [--source …] [--alternative "…"] [--at HH:MM] "decision taken"
+  ask close Q-A-001 --answer "…" [--at HH:MM] [--date YYYY-MM-DD]
+  ask withdraw Q-A-001 [--reason "…"]
+  ask default-taken Q-A-001 [--note "…"]
+  ask done Q-A-001 --evidence "…" [--at HH:MM]        (the owner's answer was executed; repeat to append)
+  ask list [--stage stage-a] [--open | --overdue | --all | --pending [--since YYYY-MM-DD]]
+  ask search word [word …] [--stage stage-a] [--all]   (all words, any status, every stage by default)
+  ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision)
+  ask summary
+add / decided / close / done stamp the time themselves (hub time zone, `--at` overrides) and print a ready
+journal line. Env: AGENT_HUB_HOME (default ~/.claude/agent-mail), AGENT_HUB_TZ, ASK_BY (default author).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import os
+import re
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+ROOT = hc.root()
+FILENAME = "questions.md"
+HEADER_RE = re.compile(r"^## ([QD])-([A-Z0-9]+)-(\d{3,})\s+—\s+(.*)$")
+FIELD_RE = re.compile(r"^- ([a-z][a-z-]*):\s?(.*)$")
+PREFIX_RE = re.compile(r"<!--\s*ask:v1\s+prefix=([A-Z0-9]+)\s*-->")
+NO_SET = "not set"
+NO_VALUE = (NO_SET, "")
+TZ = hc.TZ
+# trailing «(2026-09-30 10:20)» / «(2026-09-25)» of a status line
+STAMP_RE = re.compile(r"\((\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?\)\s*$")
+AT_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+CONTEST_BOILERPLATE = "decided by default — the owner may contest"
+PENDING_DAYS = 3
+SEARCH_CAP = 25
+
+FILE_INTRO = """# Owner questions — {stage}
+
+<!-- ask:v1 prefix={prefix} -->
+Kept by the `ask` tool of the agent-hub plugin (`ask --help`); hand edits are fine if they keep the entry format
+below. `Q-…` is a question to the owner, `D-…` a decision an agent took "by default, the owner may contest". An
+entry leaves the open list only with the owner's answer (`ask close`) or the owner withdrawing it (`ask withdraw`).
+Whoever receives the owner's answer also records it where decisions live (ADR, spec, roadmap). Statuses: `open`,
+`default-taken: <date>` (due passed, the default action was done, the answer is still awaited), `standing` (an
+agent's decision in force), `answered: …`, `withdrawn: …`.
+"""
+
+
+@dataclass
+class Entry:
+    stage: str
+    id: str
+    kind_letter: str
+    title: str
+    fields: dict[str, str] = field(default_factory=dict)
+    dones: list[str] = field(default_factory=list)   # every `- done:` line, in file order
+    raw: list[str] = field(default_factory=list)     # body lines as written (search looks through them)
+
+    @property
+    def status(self) -> str:
+        return self.fields.get("status", "").strip()
+
+    @property
+    def state(self) -> str:
+        return self.status.split(":", 1)[0].strip()
+
+    @property
+    def unresolved(self) -> bool:
+        return self.state in ("open", "default-taken", "standing")
+
+    def due_at(self) -> dt.datetime | None:
+        return parse_due(self.fields.get("due", ""))
+
+    def overdue(self, now: dt.datetime) -> bool:
+        due = self.due_at()
+        return self.state == "open" and due is not None and due < now
+
+
+def parse_due(raw: str) -> dt.datetime | None:
+    raw = (raw or "").strip()
+    if raw.lower() in NO_VALUE:
+        return None
+    token = raw.split()[0] if "T" in raw else raw[:16]
+    if len(token) > 10:
+        try:
+            return dt.datetime.fromisoformat(token).replace(tzinfo=None)
+        except ValueError:
+            pass
+    try:  # a bare date means the end of that day
+        return dt.datetime.combine(dt.date.fromisoformat(raw[:10]), dt.time(23, 59))
+    except ValueError:
+        return None
+
+
+def now_local() -> dt.datetime:
+    return dt.datetime.now(TZ).replace(second=0, microsecond=0, tzinfo=None)
+
+
+def stage_file(stage: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", stage):
+        raise SystemExit(f"ask: bad stage name {stage!r}")
+    return ROOT / stage / FILENAME
+
+
+def all_stages() -> list[str]:
+    if not ROOT.is_dir():
+        return []
+    return sorted(p.parent.name for p in ROOT.glob(f"*/{FILENAME}")
+                  if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", p.parent.name))
+
+
+def default_prefix(stage: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", stage.split("-")[-1].upper()) or "X"
+
+
+def parse(stage: str, text: str) -> tuple[str | None, list[Entry]]:
+    m = PREFIX_RE.search(text)
+    prefix = m.group(1) if m else None
+    entries: list[Entry] = []
+    cur: Entry | None = None
+    for line in text.splitlines():
+        h = HEADER_RE.match(line)
+        if h:
+            cur = Entry(stage, f"{h.group(1)}-{h.group(2)}-{h.group(3)}", h.group(1), h.group(4).strip())
+            entries.append(cur)
+            continue
+        if line.startswith("## ") or line.startswith("# "):
+            cur = None
+            continue
+        if cur is not None:
+            cur.raw.append(line)
+            f = FIELD_RE.match(line)
+            if f and f.group(1) == "done":
+                cur.dones.append(f.group(2).strip())
+            if f and f.group(1) not in cur.fields:
+                cur.fields[f.group(1)] = f.group(2).strip()
+    return prefix, entries
+
+
+def load(stage: str) -> tuple[str | None, list[Entry]]:
+    path = stage_file(stage)
+    if not path.exists():
+        return None, []
+    return parse(stage, path.read_text(encoding="utf-8"))
+
+
+class Locked:
+    """flock on <stage>/.questions.lock for the read-modify-write of one stage file."""
+
+    def __init__(self, stage: str):
+        self.dir = ROOT / stage
+        self.fd = None
+
+    def __enter__(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(self.dir / ".questions.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".questions.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def one_line(s: str) -> str:
+    return " ".join((s or "").split())
+
+
+def clip(s: str, limit: int) -> str:
+    """One line of at most `limit` characters, the ellipsis included."""
+    s = one_line(s)
+    return s if len(s) <= limit else s[: max(0, limit - 1)].rstrip() + "…"
+
+
+@dataclass
+class When:
+    date: str   # YYYY-MM-DD
+    time: str   # HH:MM, or "" for a backfilled date without a time
+
+    @property
+    def stamp(self) -> str:
+        return f"{self.date} {self.time}".strip()
+
+    @property
+    def short(self) -> str:   # the journal's "DD.MM HH:MM"
+        return f"{self.date[8:10]}.{self.date[5:7]}" + (f" {self.time}" if self.time else "")
+
+
+def resolve_when(at: str = "", date: str = "") -> When:
+    """Date and time of a write, hub time zone. `at` is HH:MM (default: now); `date` backfills another day and, with no `at`,
+    records the date alone. A time later than now is refused: it is either a typo or yesterday (then pass `date`)."""
+    now = dt.datetime.now(TZ).replace(second=0, microsecond=0)
+    hhmm = ""
+    if at:
+        m = AT_RE.match(at.strip())
+        if not m:
+            raise SystemExit(f"ask: cannot parse --at {at!r} (use HH:MM)")
+        hhmm = f"{int(m.group(1)):02d}:{m.group(2)}"
+    if date:
+        try:
+            day = dt.date.fromisoformat(date.strip())
+        except ValueError:
+            raise SystemExit(f"ask: cannot parse date {date!r} (use YYYY-MM-DD)") from None
+        return When(day.isoformat(), hhmm)
+    if not hhmm:
+        return When(now.date().isoformat(), f"{now:%H:%M}")
+    at_dt = dt.datetime.combine(now.date(), dt.time(int(hhmm[:2]), int(hhmm[3:])), tzinfo=TZ)
+    if at_dt - now > dt.timedelta(minutes=2):
+        raise SystemExit(f"ask: --at {hhmm} is later than now ({now:%H:%M}); "
+                         "for a time yesterday add --date YYYY-MM-DD")
+    return When(now.date().isoformat(), hhmm)
+
+
+def journal_line(entry_id: str, verb: str, when: When, text: str) -> str:
+    """The line an agent pastes into the journal: id and time come from here, not from memory."""
+    return f"{entry_id} {verb} {when.short}: {clip(text, 120)}"
+
+
+def status_parts(e: "Entry") -> tuple[str, str, str]:
+    """(body without the trailing date stamp, date, time) of the status after the state word."""
+    rest = e.status.split(":", 1)[1].strip() if ":" in e.status else ""
+    m = STAMP_RE.search(rest)
+    if m:
+        return rest[: m.start()].strip(), m.group(1), m.group(2) or ""
+    return rest, "", ""
+
+
+def gist(e: "Entry") -> str:
+    """The substance of the outcome: the owner's answer / the withdrawal reason from `status:`;
+    a standing decision has none, its title is the decision."""
+    body = one_line(status_parts(e)[0])
+    if body:
+        return body
+    return one_line(e.title) if e.kind_letter == "D" else ""
+
+
+def entry_when(e: "Entry") -> tuple[str, str]:
+    """(date, time) of the entry's last event: the status stamp, else the `asked` field."""
+    _, d, t = status_parts(e)
+    if d:
+        return d, t
+    m = re.match(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?", e.fields.get("asked", ""))
+    return (m.group(1), m.group(2) or "") if m else ("", "")
+
+
+def cmd_add(args, kind_letter: str) -> int:
+    stage = args.stage
+    path = stage_file(stage)
+    when = resolve_when(args.at, args.asked)
+    with Locked(stage):
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        prefix, entries = parse(stage, text)
+        if not text:
+            prefix = args.prefix or default_prefix(stage)
+            text = FILE_INTRO.format(stage=stage, prefix=prefix)
+        elif prefix is None:
+            prefix = args.prefix or default_prefix(stage)
+        nums = [int(e.id.rsplit("-", 1)[1]) for e in entries if e.kind_letter == kind_letter]
+        new_id = f"{kind_letter}-{prefix}-{(max(nums) + 1 if nums else 1):03d}"
+        lines = [f"## {new_id} — {one_line(args.text)}"]
+        if kind_letter == "Q":
+            due = one_line(args.due) or NO_SET
+            if due != NO_SET and parse_due(due) is None:
+                raise SystemExit(f"ask: cannot parse --due {due!r} (use YYYY-MM-DDTHH:MM or YYYY-MM-DD)")
+            lines += [
+                "- kind: question",
+                "- status: open",
+                f"- asked: {when.stamp}",
+                f"- by: {one_line(args.by)}",
+                f"- due: {due}",
+                f"- blocks: {one_line(args.blocks) or NO_SET}",
+                f"- default: {one_line(args.default) or NO_SET}",
+            ]
+        else:
+            lines += [
+                "- kind: decided",
+                "- status: standing",
+                f"- asked: {when.stamp}",
+                f"- by: {one_line(args.by)}",
+                f"- alternative: {one_line(args.alternative) or NO_SET}",
+                f"- contest: {CONTEST_BOILERPLATE}",
+            ]
+        lines.append(f"- source: {one_line(args.source) or NO_SET}")
+        if not text.endswith("\n"):
+            text += "\n"
+        text += "\n" + "\n".join(lines) + "\n"
+        atomic_write(path, text)
+    print(new_id)
+    print(journal_line(new_id, "recorded", when, args.text))
+    return 0
+
+
+def find_entry(entry_id: str) -> Entry:
+    hits = []
+    for stage in all_stages():
+        try:
+            _, entries = load(stage)
+        except (OSError, UnicodeDecodeError):
+            continue
+        hits += [e for e in entries if e.id == entry_id]
+    if not hits:
+        raise SystemExit(f"ask: {entry_id} not found in {ROOT}/*/{FILENAME}")
+    if len(hits) > 1:
+        raise SystemExit(f"ask: {entry_id} is ambiguous: stages {[e.stage for e in hits]}")
+    return hits[0]
+
+
+def cmd_show(entry_id: str) -> int:
+    """Print the entry's block as written in the stage file (heading and every field)."""
+    stage = find_entry(entry_id).stage
+    lines = stage_file(stage).read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(f"## {entry_id} "))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    print("\n".join(lines[start:end]).rstrip())
+    return 0
+
+
+def locate_block(lines: list[str], entry_id: str, path: Path) -> tuple[int, int]:
+    start = next((i for i, l in enumerate(lines) if (m := HEADER_RE.match(l))
+                  and f"{m.group(1)}-{m.group(2)}-{m.group(3)}" == entry_id), None)
+    if start is None:
+        raise SystemExit(f"ask: {entry_id} vanished from {path}")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    return start, end
+
+
+def set_fields(entry_id: str, updates: dict[str, str], require_unresolved: bool = True) -> int:
+    stage = find_entry(entry_id).stage
+    path = stage_file(stage)
+    with Locked(stage):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        start, end = locate_block(lines, entry_id, path)
+        block = lines[start:end]
+        cur = {m.group(1): i for i, l in enumerate(block) if (m := FIELD_RE.match(l))}
+        status = FIELD_RE.match(block[cur["status"]]).group(2) if "status" in cur else ""
+        state = status.split(":", 1)[0].strip()
+        if require_unresolved and state not in ("open", "default-taken", "standing"):
+            raise SystemExit(f"ask: {entry_id} is already {status!r}")
+        last_field = max(cur.values()) if cur else 0
+        for key, value in updates.items():
+            new = f"- {key}: {value}"
+            if key in cur:
+                block[cur[key]] = new
+            else:
+                last_field += 1
+                block.insert(last_field, new)
+                cur = {m.group(1): i for i, l in enumerate(block) if (m := FIELD_RE.match(l))}
+        lines[start:end] = block
+        atomic_write(path, "\n".join(lines) + "\n")
+    print(f"{entry_id}: {updates.get('status', '')}")
+    return 0
+
+
+def fmt_entry(e: Entry, now: dt.datetime) -> str:
+    f = e.fields
+    flag = " OVERDUE" if e.overdue(now) else ""
+    out = [f"{e.id} [{e.stage}] {e.status}{flag} — {e.title}"]
+    if e.kind_letter == "Q":
+        out.append(f"    blocks: {f.get('blocks', '—')}; default by {f.get('due', '—')}: {f.get('default', '—')}")
+    else:
+        out.append(f"    alternative: {f.get('alternative', '—')}")
+    out.append(f"    asked {f.get('asked', '—')} ({f.get('by', '—')}); source: {f.get('source', '—')}")
+    return "\n".join(out)
+
+
+def counts(entries: list[Entry], now: dt.datetime) -> dict[str, int]:
+    return {
+        "open": sum(e.kind_letter == "Q" and e.state == "open" for e in entries),
+        "overdue": sum(e.kind_letter == "Q" and e.overdue(now) for e in entries),
+        "default_taken": sum(e.kind_letter == "Q" and e.state == "default-taken" for e in entries),
+        "decided": sum(e.kind_letter == "D" and e.state == "standing" for e in entries),
+    }
+
+
+def summary_line(stage: str, c: dict[str, int]) -> str:
+    parts = [f"open {c['open']}", f"overdue {c['overdue']}"]
+    if c["default_taken"]:
+        parts.append(f"default taken, awaiting answer {c['default_taken']}")
+    if c["decided"]:
+        parts.append(f"decided by an agent, contestable {c['decided']}")
+    return f"{stage} — " + ", ".join(parts)
+
+
+def cmd_done(args) -> int:
+    """Append `- done: <date time> — <evidence>` to an answered (or standing) entry; repeated calls append more lines."""
+    evidence = one_line(args.evidence)
+    if not evidence:
+        raise SystemExit("ask: --evidence is empty — say what was done and where it shows")
+    when = resolve_when(args.at)
+    stage = find_entry(args.id).stage
+    path = stage_file(stage)
+    with Locked(stage):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        start, end = locate_block(lines, args.id, path)
+        block = lines[start:end]
+        fields = [(i, m.group(1), m.group(2)) for i, l in enumerate(block) if (m := FIELD_RE.match(l))]
+        status = next((v for _, k, v in fields if k == "status"), "")
+        state = status.split(":", 1)[0].strip()
+        if state not in ("answered", "standing"):
+            raise SystemExit(f"ask: {args.id} is {status!r}: done is for an answered question or a standing decision")
+        done_at = [i for i, k, _ in fields if k == "done"]
+        at = (done_at[-1] if done_at else max(i for i, _, _ in fields)) + 1
+        block.insert(at, f"- done: {when.stamp} — {evidence}")
+        lines[start:end] = block
+        atomic_write(path, "\n".join(lines) + "\n")
+    print(f"{args.id}: done {when.stamp} — {evidence}")
+    print(journal_line(args.id, "done", when, evidence))
+    return 0
+
+
+def pending_entries(entries: list[Entry], since: str = "") -> list[Entry]:
+    """Owner answers (questions in status `answered:`) nobody has marked `done`, answered on or after `since`
+    (YYYY-MM-DD, default: PENDING_DAYS days back) so that long-executed old answers stay quiet."""
+    if not since:
+        since = (dt.datetime.now(TZ).date() - dt.timedelta(days=PENDING_DAYS)).isoformat()
+    out = []
+    for e in entries:
+        if e.kind_letter != "Q" or e.state != "answered" or e.dones:
+            continue
+        date, _ = entry_when(e)
+        if not date or date >= since:   # no date at all: cannot prove it old
+            out.append(e)
+    return out
+
+
+def fmt_brief(e: Entry) -> str:
+    """One or two lines: id, stage, state and date, title (≤ 140); then the gist of the answer/decision (≤ 200).
+    A standing decision has no answer — its title is the decision, so the second line continues the title."""
+    date, time_ = entry_when(e)
+    head = one_line(e.title)
+    cut_title, rest = head[:140], head[140:]
+    label = " ".join(x for x in (e.id, f"[{e.stage}]", e.state, date, time_) if x)
+    out = [f"{label} — {cut_title}{'…' if rest else ''}"]
+    if e.kind_letter == "D" and not status_parts(e)[0]:
+        if rest:
+            out.append("    ↳ …" + clip(rest, 199))
+    elif gist(e):
+        out.append("    ↳ " + clip(gist(e), 200))
+    return "\n".join(out)
+
+
+def haystack(e: Entry) -> str:
+    parts = [e.id, e.title]
+    for line in e.raw:
+        m = FIELD_RE.match(line)
+        value = m.group(2) if m else line
+        if m and m.group(1) == "contest" and value.strip() == CONTEST_BOILERPLATE:
+            continue   # the same sentence in every D-entry: a word from it would match them all
+        parts.append(value)
+    return " ".join(parts).casefold()
+
+
+def cmd_search(args) -> int:
+    words = [w.casefold() for w in " ".join(args.words).split()]
+    if not words:
+        raise SystemExit("ask: give at least one word to search for")
+    stages = [args.stage] if args.stage else all_stages()
+    if args.stage and not stage_file(args.stage).exists():
+        raise SystemExit(f"ask: no register {stage_file(args.stage)}")
+    scanned, hits = 0, []
+    for stage in stages:
+        _, entries = load(stage)
+        scanned += len(entries)
+        hits += [e for e in entries if all(w in haystack(e) for w in words)]
+    if not hits:
+        print(f"ask: nothing found for \"{' '.join(words)}\" (stages: {', '.join(stages) or '—'}; "
+              f"entries scanned: {scanned}). A word is a substring: search for the stem (\"deploy\", not \"deployment\")")
+        return 0
+    # newest first: what the owner decided last is what stands
+    hits.sort(key=lambda e: entry_when(e), reverse=True)
+    shown = hits if args.all else hits[:SEARCH_CAP]
+    for e in shown:
+        print(fmt_brief(e))
+    if len(shown) < len(hits):
+        print(f"… found {len(hits)}, shown {len(shown)}: add words or --all")
+    return 0
+
+
+def cmd_digest(args) -> int:
+    """One line per decision in force (owner answers and standing decisions): `<id> <gist ≤ width>`."""
+    stages = [args.stage] if args.stage else all_stages()
+    if args.stage and not stage_file(args.stage).exists():
+        raise SystemExit(f"ask: no register {stage_file(args.stage)}")
+    for stage in stages:
+        _, entries = load(stage)
+        for e in entries:
+            if e.state in ("answered", "standing"):
+                print(f"{e.id} {clip(gist(e) or e.title, args.width)}")
+    return 0
+
+
+def cmd_list(args) -> int:
+    now = now_local()
+    stages = [args.stage] if args.stage else all_stages()
+    shown = 0
+    if args.since and not args.pending:
+        raise SystemExit("ask: --since is only for --pending")
+    if args.since:
+        try:
+            dt.date.fromisoformat(args.since)
+        except ValueError:
+            raise SystemExit(f"ask: cannot parse --since {args.since!r} (use YYYY-MM-DD)") from None
+    for stage in stages:
+        _, entries = load(stage)
+        if args.pending:
+            for e in pending_entries(entries, args.since):
+                print(fmt_brief(e))
+                shown += 1
+            continue
+        for e in entries:
+            if args.overdue and not e.overdue(now):
+                continue
+            if args.open and not (e.kind_letter == "Q" and e.state == "open"):
+                continue
+            if not (args.all or args.open or args.overdue) and not e.unresolved:
+                continue
+            print(fmt_entry(e, now))
+            shown += 1
+    if not shown:
+        print("ask: no entries match the filter", file=sys.stderr)
+    return 0
+
+
+def cmd_summary(_args) -> int:
+    now = now_local()
+    for stage in all_stages():
+        _, entries = load(stage)
+        print(summary_line(stage, counts(entries, now)))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="ask", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("add", help="new owner question")
+    a.add_argument("text")
+    a.add_argument("--stage", required=True)
+    a.add_argument("--blocks", default="")
+    a.add_argument("--default", default="", help="action taken if no answer by --due")
+    a.add_argument("--due", default="", help="YYYY-MM-DDTHH:MM (local time) or YYYY-MM-DD")
+    a.add_argument("--by", default=os.environ.get("ASK_BY", "agent"))
+    a.add_argument("--source", default="")
+    a.add_argument("--asked", default="", help="date asked (YYYY-MM-DD), default today")
+    a.add_argument("--at", default="", help="HH:MM, default now")
+    a.add_argument("--prefix", default="", help="id prefix for a new stage file (default: from stage name)")
+
+    d = sub.add_parser("decided", help="decision an agent took itself; the owner may contest it")
+    d.add_argument("text")
+    d.add_argument("--stage", required=True)
+    d.add_argument("--alternative", default="", help="what the owner can choose instead")
+    d.add_argument("--by", default=os.environ.get("ASK_BY", "agent"))
+    d.add_argument("--source", default="")
+    d.add_argument("--asked", default="", help="date decided (YYYY-MM-DD), default today")
+    d.add_argument("--at", default="", help="HH:MM, default now")
+    d.add_argument("--prefix", default="")
+
+    c = sub.add_parser("close", help="owner answered")
+    c.add_argument("id")
+    c.add_argument("--stage", help="optional check: the entry must be in this stage")
+    c.add_argument("--answer", required=True)
+    c.add_argument("--date", default="", help="YYYY-MM-DD to backfill another day (date only unless --at is given)")
+    c.add_argument("--at", default="", help="HH:MM, default now")
+
+    w = sub.add_parser("withdraw", help="the owner withdrew the question, or it lost its point")
+    w.add_argument("id")
+    w.add_argument("--stage", help="optional check: the entry must be in this stage")
+    w.add_argument("--reason", default="withdrawn")
+
+    t = sub.add_parser("default-taken", help="due passed, the default action was done; still waiting for the owner")
+    t.add_argument("id")
+    t.add_argument("--stage", help="optional check: the entry must be in this stage")
+    t.add_argument("--note", default="")
+
+    sh = sub.add_parser("show", help="one entry in full, any status")
+    sh.add_argument("id")
+    sh.add_argument("--stage", help="optional check: the entry must be in this stage")
+
+    dn = sub.add_parser("done", help="the owner's answer was executed: add a `- done:` line with the evidence")
+    dn.add_argument("id")
+    dn.add_argument("--stage", help="optional check: the entry must be in this stage")
+    dn.add_argument("--evidence", required=True, help="what was done and where it shows (commit, MR, file, command)")
+    dn.add_argument("--at", default="", help="HH:MM, default now")
+
+    se = sub.add_parser("search", help="entries of any status containing all the words (title and every field)")
+    se.add_argument("words", nargs="+", help="case-insensitive substrings, all must occur")
+    se.add_argument("--stage", help="default: every stage")
+    se.add_argument("--all", action="store_true", help=f"no cap (default: {SEARCH_CAP} newest)")
+
+    dg = sub.add_parser("digest", help="one line per owner answer and standing decision — the whole register compactly")
+    dg.add_argument("--stage", help="default: every stage")
+    dg.add_argument("--width", type=int, default=160, help="characters of the gist per line (default 160)")
+
+    ls = sub.add_parser("list", help="unresolved entries (default), or a filter")
+    ls.add_argument("--stage")
+    ls.add_argument("--since", default="", help="with --pending: answers on or after YYYY-MM-DD (default: 3 days back)")
+    g = ls.add_mutually_exclusive_group()
+    g.add_argument("--open", action="store_true", help="questions with status open")
+    g.add_argument("--overdue", action="store_true", help="open questions past due")
+    g.add_argument("--all", action="store_true", help="everything, closed included")
+    g.add_argument("--pending", action="store_true", help="owner answers without a `done` line (see `ask done`)")
+
+    sub.add_parser("summary", help="one line per stage")
+
+    args = p.parse_args(argv)
+    today = now_local().date().isoformat()
+    if args.cmd in ("close", "withdraw", "default-taken", "show", "done") and args.stage:
+        found = find_entry(args.id).stage   # ids are unique across stages; --stage only guards against a typo
+        if found != args.stage:
+            raise SystemExit(f"ask: {args.id} is in stage {found}, not {args.stage}")
+    if args.cmd == "show":
+        return cmd_show(args.id)
+    if args.cmd == "add":
+        return cmd_add(args, "Q")
+    if args.cmd == "decided":
+        return cmd_add(args, "D")
+    if args.cmd == "close":
+        when = resolve_when(args.at, args.date)
+        rc = set_fields(args.id, {"status": f"answered: {one_line(args.answer)} ({when.stamp})"})
+        print(journal_line(args.id, "closed", when, args.answer))
+        return rc
+    if args.cmd == "done":
+        return cmd_done(args)
+    if args.cmd == "search":
+        return cmd_search(args)
+    if args.cmd == "digest":
+        return cmd_digest(args)
+    if args.cmd == "withdraw":
+        return set_fields(args.id, {"status": f"withdrawn: {one_line(args.reason)} ({today})"})
+    if args.cmd == "default-taken":
+        note = f" — {one_line(args.note)}" if args.note else ""
+        return set_fields(args.id, {"status": f"default-taken: {today}{note}"})
+    if args.cmd == "list":
+        return cmd_list(args)
+    if args.cmd == "summary":
+        return cmd_summary(args)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

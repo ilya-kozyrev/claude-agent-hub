@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Append one line to today's stage journal, from any directory.
+
+  jlog [--stage stage-a] [--tag hub-16] "text"
+
+Writes "- HH:MM [tag] text" (hub time zone) to
+<hub home>/<stage>/coordinator/work/journal-YYYY-MM-DD.md and prints the line.
+Tag: --tag, else $HUB_TAG, else this session's tag in the role registry
+(`roles`, matched by $CLAUDE_CODE_SESSION_ID), else an error.
+Stage: --stage, else $HUB_STAGE, else "default". Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-mail.
+Exit: 0 written, 1 write failed, 2 usage (no tag, empty text).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="jlog", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--stage", default=None, help="stage (default: $HUB_STAGE or \"default\")")
+    p.add_argument("--tag", default=None, help="line tag without brackets, e.g. hub-16")
+    p.add_argument("text", nargs="+", help="line text (newlines are collapsed)")
+    args = p.parse_args(argv)
+    stage = hc.check_stage(args.stage or hc.default_stage())
+    tag = args.tag or hc.caller_tag(stage)
+    if not tag:
+        raise hc.UsageError("no tag: pass --tag, set $HUB_TAG or register this session "
+                            "(`roles set <role> <id> --tag …`)")
+    try:
+        line = hc.journal_append(stage, tag, " ".join(args.text))
+    except OSError as e:
+        raise hc.Failure(f"could not write the journal {hc.journal_path(stage)}: {e}") from None
+    print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

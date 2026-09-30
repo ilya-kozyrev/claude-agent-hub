@@ -1,0 +1,617 @@
+#!/usr/bin/env python3
+"""Hub takeover and handoff, one command each.
+
+  hub takeover --stage stage-a --n 17 --session <session id> [--handoff PATH] [--dry-run]
+               [--name "Hub stage-a #17"] [--skip-lock KIND ...] [--take-main-merge] [--main-merge-until +30d]
+  hub handoff  --stage stage-a --n 16 [--out PATH]
+
+--session is the new hub's own session: a Claude Desktop id (local_…, looked up in the Desktop session
+metadata for its CLI id and title) or a Claude Code CLI session uuid ($CLAUDE_CODE_SESSION_ID).
+
+takeover, in order, each step verified, the first failed step stops with a message; a step whose
+target state is already there is skipped as "already done", so a re-run finishes a broken takeover:
+  1. locks: every active lock of the previous hub is taken over with `lock take --force`, keeping
+     kind, repo, until and value. The previous hub is every session named by the roles entry `hub`
+     or the `coordinator:` line of night-queue.md (other than the new one); when they disagree it
+     says so and takes the locks of all of them. --take-main-merge also takes main-merge when nobody
+     holds it (until --main-merge-until) or when a third party (e.g. a merge steward) holds it; without
+     the flag a third-party holder is reported and left alone. --skip-lock KIND leaves that lock where it
+     is (a sub-agent of the old hub still works under it).
+  2. night-queue.md: `coordinator: <new session id>` (the night nudge addresses it) and `updated:`
+     (single-line edits, atomic write). Skipped when the stage has no night queue.
+  3. roles set hub <session> --tag hub-<n>.
+  4. jlog "[hub-<n>] start: …".
+  Then prints a digest ≤ 3 KB: handoff § 0, the ask register (first line "awaiting execution: N (ids)" —
+  owner answers without `ask done`; then open questions, recent owner answers and agent decisions — check
+  every "owner said" of the handoff against it), locks, live roles with the age of their last journal
+  line, and the command for the first `jwait` with --since = the handoff's mtime, so lines written
+  during the handover are delivered.
+  --dry-run prints the plan and the digest and writes nothing.
+handoff writes a pre-filled HANDOFF-hub-<stage>-YYYY-MM-DD-HHMM.md with the facts filled in and TODO where the
+hub must write; it releases nothing. Environment facts (versions, deploys, open PRs) come from an optional
+executable <stage>/handoff-facts.sh that prints Markdown table rows "| What | State | Where it shows |".
+Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-mail. Exit: 0 ok, 1 step failed, 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+DIGEST_BYTES = 3072
+JWAIT_MATCH = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def load_script(name: str):
+    path = str(hc.BIN / name)
+    loader = importlib.machinery.SourceFileLoader(f"{name}_cli", path)
+    spec = importlib.util.spec_from_loader(f"{name}_cli", loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[f"{name}_cli"] = mod  # dataclasses in `ask` look their module up here
+    loader.exec_module(mod)
+    return mod
+
+
+def board_module():
+    import board  # noqa: E402  (reads $AGENT_BOARD_FILE / $AGENT_HUB_HOME at import)
+    return board
+
+
+def ask_module():
+    return load_script("ask")
+
+
+def cut(text: str, limit: int, where: str = "") -> str:
+    """Trim to `limit` UTF-8 bytes on a line boundary."""
+    data = text.encode("utf-8")
+    if len(data) <= limit:
+        return text
+    tail = f"\n…cut{', full text: ' + where if where else ''}"
+    keep = data[: max(0, limit - len(tail.encode("utf-8")))].decode("utf-8", errors="ignore")
+    if "\n" in keep:
+        keep = keep[: keep.rfind("\n")]
+    return keep + tail
+
+
+def hub_name(stage: str, n: int) -> str:
+    return f"Hub {stage} #{n}"
+
+
+def coordinator_dir(stage: str) -> Path:
+    return hc.root() / stage / "coordinator"
+
+
+def latest(pattern: str, stage: str):
+    files = sorted(coordinator_dir(stage).glob(pattern), key=lambda p: p.stat().st_mtime)
+    return files[-1] if files else None
+
+
+def section(text: str, number: int) -> str:
+    m = re.search(rf"^## {number}\..*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    return m.group(0).strip() if m else ""
+
+
+def find_local_by_cli(cli_sid: str):
+    """Desktop metadata of the session with this cli id; an id shorter than a uuid is a prefix and
+    must match exactly one session (an ambiguous prefix is an error, not a guess)."""
+    prefix = len(cli_sid) < 36
+    hits = []
+    for path in hc.sessions_dir().glob("*/*/local_*.json"):
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        c = meta.get("cliSessionId") or ""
+        if c == cli_sid or (prefix and c.startswith(cli_sid)):
+            hits.append(meta)
+    if len(hits) > 1:
+        raise hc.Failure(f"prefix {cli_sid!r} matches {len(hits)} sessions "
+                         f"({', '.join(h.get('sessionId', '?') for h in hits[:4])}) — write the full id")
+    return hits[0] if hits else None
+
+
+def session_by_any(sid: str) -> dict:
+    """{'local','cli','name'} for a local_… id, a full cli uuid or an 8-char cli prefix; empty fields when unknown."""
+    sid = (sid or "").strip().split()[0] if (sid or "").strip() else ""
+    if not sid:
+        return {"local": "", "cli": "", "name": ""}
+    if sid.startswith("local_"):
+        meta = hc.desktop_session(sid) or {}
+        return {"local": sid, "cli": meta.get("cliSessionId", ""), "name": meta.get("title", "")}
+    meta = find_local_by_cli(sid) or {}
+    return {"local": meta.get("sessionId", ""), "cli": meta.get("cliSessionId") or sid, "name": meta.get("title", "")}
+
+
+def hub_candidates(stage: str, exclude: tuple = ()) -> dict:
+    """Who was hub before, by source: roles `hub`, night-queue `coordinator:`.
+
+    Sessions in `exclude` (the new hub, as local and cli id) are dropped, so a re-run after a
+    partial takeover still finds the real predecessor in whichever file was not yet rewritten.
+    """
+    out = {}
+    rec = hc.roles_load(stage)["roles"].get("hub")
+    if rec:
+        out["roles"] = {"local": rec.get("session", "") if str(rec.get("session", "")).startswith("local_") else "",
+                        "cli": rec.get("cli_session_id", ""), "name": rec.get("title", ""), "tag": rec.get("tag", "")}
+    q = nightq_read(stage)
+    if q and q.get("coordinator"):
+        out["night-queue"] = dict(session_by_any(q["coordinator"]), tag="")
+    return {k: v for k, v in out.items()
+            if v.get("cli") or v.get("local")
+            if not ({v.get("local"), v.get("cli")} & set(x for x in exclude if x))}
+
+
+def previous_hub(stage: str, exclude: tuple = ()) -> dict:
+    """{'local','cli','name','tag'} of the hub being replaced: roles, else night-queue."""
+    c = hub_candidates(stage, exclude)
+    for src in ("roles", "night-queue"):
+        if src in c:
+            return c[src]
+    return {"local": "", "cli": "", "name": "", "tag": ""}
+
+
+def nightq_read(stage: str):
+    path = hc.root() / stage / "night-queue.md"
+    if not path.exists():
+        return None
+    return load_script("nightq").read_queue(stage)
+
+
+def nightq_coordinator(stage: str) -> str:
+    """First token of `coordinator:` (the rest of the line may be a comment)."""
+    q = nightq_read(stage) or {}
+    return (q.get("coordinator") or "").split()[0] if (q.get("coordinator") or "").strip() else ""
+
+
+def run_tool(argv: list, extra_env=None) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(hc.BIN / argv[0])] + argv[1:], capture_output=True, text=True,
+                          env=hc.child_env(extra_env))
+
+
+# ---------------------------------------------------------------- digest parts
+
+def pending_line(ask, entries: list) -> str:
+    """The one line about owner answers nobody has marked `ask done` (same rule as `ask list --pending`).
+    First line of the register block, so `cut` never drops it."""
+    ids = [e.id for e in ask.pending_entries(entries)]
+    if not ids:
+        return "awaiting execution: 0"
+    return f"awaiting execution: {len(ids)} ({', '.join(ids[:12])}{', …' if len(ids) > 12 else ''})"
+
+
+def ask_digest(stage: str, days: int = 1, width: int = 60) -> str:
+    """"awaiting execution: N (ids)", then open questions, the owner's recent answers, the agents' decisions in
+    force and withdrawals; newest first inside each group, entries with the same text merged into one line."""
+    try:
+        ask = ask_module()
+        _, entries = ask.load(stage)
+    except (OSError, SystemExit) as e:
+        return f"register unreadable: {e}"
+    return pending_line(ask, entries) + "\n" + _ask_digest_groups(ask, entries, days, width)
+
+
+def _ask_digest_groups(ask, entries: list, days: int, width: int) -> str:
+    cutoff = (hc.now().date() - dt.timedelta(days=days)).isoformat()
+    groups: dict = {}
+    for e in entries:
+        m = ask.STAMP_RE.search(e.status)   # the status ends "(YYYY-MM-DD)" or "(YYYY-MM-DD HH:MM)"
+        asked = re.match(r"\d{4}-\d{2}-\d{2}", e.fields.get("asked", ""))
+        when = max(asked.group(0) if asked else "", m.group(1) if m else "")
+        body = e.status.split(":", 1)[1].strip() if ":" in e.status else ""
+        if e.kind_letter == "Q" and e.state in ("open", "default-taken"):
+            key = (0, f"{e.state}: {e.title[:width]}")
+        elif when < cutoff:
+            continue
+        elif e.state == "answered":
+            key = (1, f"owner: {body[:width]}")
+        elif e.kind_letter == "D" and e.state in ("standing", "open"):
+            key = (2, f"in force: {e.title[:width]}")
+        elif e.state == "withdrawn":
+            key = (3, f"withdrawn: {e.title[:width]}")
+        else:
+            continue
+        ids, latest_when = groups.get(key, ([], ""))
+        groups[key] = (ids + [e.id], max(latest_when, when))
+    if not groups:
+        return f"no open entries; no answers or decisions since {cutoff}"
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0][0], -int(kv[1][1].replace("-", "") or 0)))
+    return "\n".join(f"{', '.join(ids)} {text}" for (_, text), (ids, _) in ordered)
+
+
+def locks_digest() -> str:
+    b = board_module()
+    try:
+        locks = [r for r in b.load() if b.is_active(r)]
+    except b.BoardError as e:
+        return f"board is broken: {e}"
+    if not locks:
+        return "no active locks"
+    return "\n".join(f"{r['kind']} ({r.get('repo') or b.DEFAULT_REPO}) — {r.get('owner_name')} until "
+                     f"{r['until'][5:16].replace('T', ' ')}" for r in locks)
+
+
+def roles_digest(stage: str) -> str:
+    data = hc.roles_load(stage)
+    if not data["roles"]:
+        return "registry is empty"
+    rows = []
+    for name, rec in sorted(data["roles"].items()):
+        last = hc.last_line_by_tag(stage, rec.get("tag") or name)
+        rows.append(f"{name} [{rec.get('tag')}] {rec['kind']} {rec['session']} — journal {hc.age(last)} ago")
+    return "\n".join(rows)
+
+
+def jwait_command(stage: str, tag: str, since=None) -> str:
+    since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
+    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match '{JWAIT_MATCH}' "
+            f"{since_opt}--for 2h --note \"scheduled round\"")
+
+
+def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = ()) -> str:
+    tag = f"hub-{n}"
+    # the first jwait replays everything since the predecessor wrote the handoff
+    since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
+    text = handoff.read_text(encoding="utf-8") if handoff else ""
+    parts = [
+        (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
+        ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
+        ("First jwait (Bash, run_in_background: true; --since = handoff time):\n"
+         + jwait_command(stage, tag, since), 600, ""),
+        (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,
+         str(handoff) if handoff else ""),
+        ("ask register (check every \"owner said\" of the handoff against it; on a mismatch the register wins — "
+         "ask the owner):\n" + ask_digest(stage), 1300, f"ask list --stage {stage}"),
+        ("Locks:\n" + locks_digest(), 380, "lock list"),
+        ("Roles:\n" + roles_digest(stage), 360, "roles list"),
+    ]
+    out = "\n\n".join(cut(t, lim, where) for t, lim, where in parts if t)
+    return cut(out, DIGEST_BYTES)
+
+
+# ---------------------------------------------------------------- takeover steps
+
+class Plan:
+    def __init__(self, dry: bool):
+        self.dry = dry
+        self.done: list = []
+
+    def step(self, title: str, do, verify, short: str = "") -> None:
+        """do() then verify(); verify() returning None before do() means the step is already done."""
+        short = short or title
+        if verify() is None:
+            self.done.append(f"{short} (already)")
+            print(f"[already done] {title}")
+            return
+        if self.dry:
+            self.done.append(f"{short} — planned")
+            print(f"[plan] {title}")
+            return
+        try:
+            do()
+        except hc.Failure:
+            raise
+        except Exception as e:  # noqa: BLE001 — any error stops the takeover with its step name
+            raise hc.Failure(f"step \"{title}\" failed: {e}") from None
+        problem = verify()
+        if problem:
+            raise hc.Failure(f"step \"{title}\" did not verify: {problem}. The following steps were not run.")
+        self.done.append(f"{short} ✓")
+        print(f"[ok] {title}")
+
+
+def edit_nightq(stage: str, coordinator: str, updated: str) -> None:
+    path = hc.root() / stage / "night-queue.md"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    seen = set()
+    for i, line in enumerate(lines):
+        for key, value in (("coordinator", coordinator), ("updated", updated)):
+            if key not in seen and line.startswith(f"{key}:"):
+                lines[i] = f"{key}: {value}\n"
+                seen.add(key)
+    if "coordinator" not in seen:
+        raise hc.Failure(f"{path} has no coordinator: line")
+    if "updated" not in seen:
+        idx = next(i for i, ln in enumerate(lines) if ln.startswith("coordinator:"))
+        lines.insert(idx + 1, f"updated: {updated}\n")
+    hc.atomic_write(path, "".join(lines))
+
+
+def start_line_present(stage: str, tag: str, session: str) -> bool:
+    try:
+        lines = hc.journal_path(stage).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return False
+    for line in lines:
+        p = hc.parse_journal_line(line)
+        if p and p[1] == tag and p[2].startswith("start:") and session in p[2]:
+            return True
+    return False
+
+
+def new_hub_session(raw: str) -> tuple:
+    """(session id to record, cli id, kind, desktop title) of the new hub."""
+    raw = raw.strip()
+    if raw.startswith("local_") or not UUID_RE.fullmatch(raw):
+        local = hc.normalize_local_id(raw)
+        meta = hc.desktop_session(local)
+        if meta is None:
+            raise hc.Failure(f"session {local} not found in {hc.sessions_dir()} (a full local_… id, or a CLI "
+                             "session uuid, is required)")
+        if meta.get("isArchived"):
+            raise hc.Failure(f"session {local} is archived")
+        cli = meta.get("cliSessionId") or ""
+        if not cli:
+            raise hc.Failure(f"session {local} has no cliSessionId — no id to record the locks on")
+        return local, cli, "desktop", meta.get("title") or ""
+    # a bare uuid: a Desktop session id without the local_ prefix, its CLI id, or a terminal Claude Code session
+    if hc.desktop_session(raw) is not None:
+        return new_hub_session(hc.normalize_local_id(raw))
+    meta = find_local_by_cli(raw)
+    if meta:
+        return meta.get("sessionId"), raw, "desktop", meta.get("title") or ""
+    return raw, raw, "cli", ""
+
+
+def cmd_takeover(a) -> int:
+    stage = hc.check_stage(a.stage)
+    n, tag = a.n, f"hub-{a.n}"
+    if not (hc.root() / stage).is_dir():
+        raise hc.UsageError(f"no stage directory {hc.root() / stage}")
+    session, cli, kind, title = new_hub_session(a.session)
+    name = a.name or hub_name(stage, n)
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if env_sid and env_sid != cli:
+        print(f"ATTENTION: not run from session {session} (your sid {env_sid[:8]}, its sid {cli[:8]}); "
+              "the locks are recorded on it", file=sys.stderr)
+    handoff = Path(a.handoff).expanduser() if a.handoff else latest("HANDOFF-hub-*.md", stage)
+    if handoff is not None and not handoff.is_file():
+        raise hc.UsageError(f"--handoff {handoff}: no such file")
+
+    # Predecessor: every source that does not already name the new hub. A re-run after a partial
+    # takeover therefore still finds it, and a stale registry does not hide the real one's locks.
+    notes = []
+    cands = hub_candidates(stage, exclude=(session, cli))
+    prev = previous_hub(stage, exclude=(session, cli))
+    owners = {c["cli"] for c in cands.values() if c.get("cli")}
+    if len({c.get("cli") for c in cands.values()}) > 1:
+        notes.append("sources disagree on the previous hub: " + "; ".join(
+            f"{src} → {c.get('name') or '?'} {c.get('local') or c.get('cli')}" for src, c in cands.items())
+            + " — taking the locks of all of them")
+    for src, c in cands.items():
+        if c.get("cli") and len(c["cli"]) < 36:
+            notes.append(f"{src}: no session found for the prefix {c['cli']} — its locks were not taken, check `lock list`")
+    prev_label = prev["name"] or (prev["local"] or prev["cli"][:8] or "unknown hub")
+    t = hc.now()
+    b = board_module()
+    try:
+        active = [r for r in b.load() if b.is_active(r)]
+    except b.BoardError as e:
+        raise hc.Failure(f"lock board is broken: {e}") from None
+
+    def repo_of(r):
+        return r.get("repo") or b.DEFAULT_REPO
+
+    skip = set(a.skip_lock or [])
+    to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip]
+    kept = [r for r in active if r.get("session_id") in owners and r["kind"] in skip]
+    mine = [r for r in active if r.get("session_id") == cli]
+    if "main-merge" not in skip and not any(r["kind"] == "main-merge" for r in to_take + mine):
+        mm = next((r for r in active if r["kind"] == "main-merge"), None)
+        if a.take_main_merge:
+            to_take.append({"kind": "main-merge", "repo": repo_of(mm) if mm else b.DEFAULT_REPO,
+                            "until": a.main_merge_until if mm is None else mm["until"],
+                            "why": (mm or {}).get("why") or "stage hub", "_from": (mm or {}).get("owner_name")})
+        elif mm is not None:
+            notes.append(f"main-merge ({repo_of(mm)}) is held by {mm.get('owner_name')} "
+                         f"[{(mm.get('session_id') or '-')[:8]}] until {mm['until'][:16]}: {(mm.get('why') or '')[:60]} "
+                         "— left alone; take it with --take-main-merge")
+    if kept:
+        notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
+
+    plan = Plan(a.dry_run)
+    print(f"{name}: {session} (sid {cli[:8]}, {kind}) takes over from \"{prev_label}\"; handoff {handoff or '—'}")
+    for note in notes:
+        print(f"ATTENTION: {note}")
+    for r in mine:
+        print(f"[already done] lock {r['kind']} ({repo_of(r)}) is yours until {r['until'][:16]}")
+
+    for r in to_take:
+        repo = repo_of(r)
+        why = f"{name} {session}, took over from {r.get('owner_name') or r.get('_from') or prev_label}: " \
+              f"{r.get('why') or ''}".strip()
+        argv = ["lock", "take", r["kind"], "--repo", repo, "--force", "--until", r["until"], "--why", why,
+                "--owner-name", name]
+        if r.get("value"):
+            argv += ["--value", r["value"]]
+
+        def do(argv=argv):
+            res = run_tool(argv, {"CLAUDE_CODE_SESSION_ID": cli})
+            if res.returncode != 0:
+                raise hc.Failure(f"lock take {argv[2]}: {res.stderr.strip() or res.stdout.strip()}")
+
+        def verify(kind=r["kind"], repo=repo):
+            held = [x for x in b.load() if x["kind"] == kind and (x.get("repo") or b.DEFAULT_REPO) == repo]
+            ok = held and held[0].get("session_id") == cli and b.is_active(held[0])
+            return None if ok else f"{kind} ({repo}) on the board is not held by {cli[:8]}"
+
+        extra = f", taken from {r['_from']}" if r.get("_from") else ""
+        plan.step(f"lock {r['kind']} ({repo}) until {str(r['until'])[:16]}{extra}", do, verify,
+                  short=f"lock {r['kind']}")
+
+    updated = f"{t:%Y-%m-%dT%H:%M} {name} ({session}, sid {cli[:8]}) took over from {prev_label}" + \
+              (f" by {handoff.name}" if handoff else "")
+    if nightq_read(stage) is None:
+        print("no night-queue.md — step skipped")
+    else:
+        # the night nudge looks the coordinator up by this value: a Desktop session by its local_ id
+        plan.step("night-queue.md: coordinator/updated",
+                  lambda: edit_nightq(stage, session, updated),
+                  lambda: None if nightq_coordinator(stage) == session else "coordinator: was not written",
+                  short="night-queue")
+
+    roles_cli = load_script("roles")
+    plan.step(f"roles: hub → {session} [{tag}]",
+              lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
+                                         note=f"hub takeover from {prev_label}"),
+              lambda: None if hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
+              else "role was not recorded",
+              short="roles")
+
+    lock_names = ", ".join(sorted({r["kind"] for r in to_take + mine})) or "none"
+    start_text = (f"start: \"{name}\" ({session}, sid {cli[:8]}) took over from \"{prev_label}\""
+                  + (f" by {handoff.name}" if handoff else "") + f"; locks: {lock_names}; night-queue, roles updated"
+                  + ("; " + "; ".join(notes) if notes else ""))
+    plan.step("journal: start line",
+              lambda: hc.journal_append(stage, tag, start_text),
+              lambda: None if start_line_present(stage, tag, session) else "no line in the journal",
+              short="journal")
+
+    print()
+    print(digest(stage, n, name, handoff, plan.done, notes))
+    return 0
+
+
+# ---------------------------------------------------------------- handoff
+
+def cmd_handoff(a) -> int:
+    stage = hc.check_stage(a.stage)
+    n, tag = a.n, f"hub-{a.n}"
+    name, succ = hub_name(stage, n), hub_name(stage, n + 1)
+    t = hc.now()
+    out = Path(a.out).expanduser() if a.out else coordinator_dir(stage) / f"HANDOFF-hub-{stage}-{t:%Y-%m-%d-%H%M}.md"
+    if out.exists():
+        raise hc.Failure(f"{out} already exists — not overwriting (pass another --out)")
+    prev_handoff = latest("HANDOFF-hub-*.md", stage)
+    me = previous_hub(stage)  # the hub writing this: roles `hub`, else `coordinator:` of night-queue.md
+    work = hc.work_dir(stage)
+    q = nightq_read(stage)
+    b = board_module()
+    try:
+        held = [r for r in b.load() if b.is_active(r) and me["cli"] and r.get("session_id") == me["cli"]]
+    except b.BoardError as e:
+        held, _ = [], print(f"lock board is broken: {e}", file=sys.stderr)
+    locks_cell = "; ".join(f"{r['kind']} ({r.get('repo') or b.DEFAULT_REPO}) until {r['until'][:16]}"
+                           for r in held) or "none"
+    agents_cell = "none"
+    agents_dir = hc.root() / stage / "agents"
+    if agents_dir.is_dir():
+        res = run_tool(["agent", "status", "--stage", stage])
+        agents_cell = "; ".join(res.stdout.strip().splitlines()) or "none"
+    summary = run_tool(["ask", "summary"]).stdout.strip().replace("\n", "; ")
+    facts_rows = ("| Environments | TODO what runs where: versions, build ids, pending deploys | TODO |\n"
+                  "| Main branch | TODO head; what is merged but not deployed | `git log origin/main` |\n"
+                  "| Open PRs | TODO number, head, CI, who drives it | TODO |")
+    hook = hc.root() / stage / "handoff-facts.sh"   # stage-owned: prints table rows "| What | State | Where |"
+    if hook.is_file() and os.access(hook, os.X_OK):
+        try:
+            res = subprocess.run([str(hook)], capture_output=True, text=True, timeout=180, env=hc.child_env())
+            rows = [ln for ln in res.stdout.splitlines() if ln.startswith("| ")]
+            if res.returncode == 0 and rows:
+                facts_rows = "\n".join(rows)
+            else:
+                facts_rows += f"\n| handoff-facts.sh | exit {res.returncode}, {len(rows)} rows — fill facts by hand | `{hook}` |"
+        except subprocess.TimeoutExpired:
+            facts_rows += f"\n| handoff-facts.sh | did not finish in 180 s — fill facts by hand | `{hook}` |"
+    own_lines = []
+    try:
+        for line in hc.journal_path(stage).read_text(encoding="utf-8").splitlines():
+            p = hc.parse_journal_line(line)
+            if p and hc.tag_is(p[1], tag):
+                own_lines.append(line[:220])
+    except FileNotFoundError:
+        pass
+
+    def esc(s: str) -> str:
+        return s.replace("|", "/").replace("\n", " ")
+
+    me_id = me["local"] or me["cli"] or "TODO session id"
+    body = f"""# Handoff "{name}" → "{succ}" — {stage} — {t:%Y-%m-%d %H:%M} — ENTRY POINT
+
+<!-- Draft by `hub handoff` {t:%H:%M}: facts collected by the script, TODO is for the hub. ≤ 12 KB. Delete the role's older handoffs. -->
+Replaces `{prev_handoff.name if prev_handoff else '—'}`. Journal: `work/journal-{t:%Y-%m-%d}.md` (tags `[{tag}…]`).
+Written by session "{name}" ({me_id}, TODO model).
+`work/` = `{work}/`.
+
+**Headline.** TODO: one or two sentences — what matters most right now and whose word is behind it (quote + id in `ask`).
+
+## 0. First steps for the successor
+1. Name your session "{succ}"; `hub takeover --stage {stage} --n {n + 1} --session <your full session id> --handoff {out}` —
+   locks ({', '.join(r['kind'] for r in held) or 'none held'}), `coordinator:` in night-queue, `roles set hub`, a journal
+   line; it prints a digest and the first `jwait` command. Tell "{name}" once that you took over (`roles budget`).
+2. The first `jwait` — from the takeover digest, Bash `run_in_background: true`; start no other waiters.
+3. Check every "owner said" below against `ask list --stage {stage}` (takeover digest); on a mismatch the register wins.
+4. TODO: background processes and script questions waiting for an answer (output file, question marker).
+
+## 1. Where things stand ({t:%H:%M})
+| What | State | Where it shows |
+|---|---|---|
+| Hub locks | {esc(locks_cell)} | `lock list` |
+| Headless agents | {esc(agents_cell)[:600]} | `agent status` |
+{facts_rows}
+
+## 2. Queue
+<!-- By dependency; item = action | "done" check | stop condition | who (model). Blocked items carry the ask id. -->
+1. TODO
+
+## 3. Night queue
+`night-queue.md`: {f"open {q['open']}, next — {q['next'] or '—'}" if q else 'no file'}.
+
+## 4. Owner questions
+`ask summary`: {summary or '—'}.
+{cut(ask_digest(stage, width=110), 2600, f"ask list --stage {stage}")}
+TODO: questions asked in chat without a record — `ask add` first, then their ids here.
+
+## 5. Risks and loose ends
+- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up.
+
+## 6. Skills for the successor
+`hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.
+
+<!-- Last [{tag}] journal lines (for reference, delete when filling in):
+{chr(10).join(own_lines[-6:]) or '—'}
+-->
+"""
+    size = len(body.encode("utf-8"))
+    if size > 12 * 1024:
+        body = cut(body, 12 * 1024 - 200, "journal and lock/roles/agent status")
+    hc.atomic_write(out, body)
+    print(f"draft: {out} ({len(body.encode('utf-8'))} bytes); TODO to fill: "
+          f"{body.count('TODO')}. Nothing released: the successor takes the locks with `hub takeover`.")
+    return 0
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="hub", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    t = sub.add_parser("takeover", help="take over the hub role")
+    t.add_argument("--stage", required=True)
+    t.add_argument("--n", type=int, required=True, help="number of the new hub")
+    t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid)")
+    t.add_argument("--handoff", help="handoff file (default: the latest HANDOFF-hub-*.md)")
+    t.add_argument("--name", help="title (default: \"Hub <stage> #<n>\")")
+    t.add_argument("--skip-lock", action="append", choices=("deploy-window", "main-merge", "stage", "migration-head"))
+    t.add_argument("--main-merge-until", default="+30d", help="main-merge expiry when taken from nobody")
+    t.add_argument("--take-main-merge", action="store_true",
+                   help="also take main-merge when it is free or held by a third party")
+    t.add_argument("--dry-run", action="store_true")
+    h = sub.add_parser("handoff", help="write a handoff draft")
+    h.add_argument("--stage", required=True)
+    h.add_argument("--n", type=int, required=True, help="number of the outgoing hub")
+    h.add_argument("--out")
+    a = p.parse_args(argv)
+    return {"takeover": cmd_takeover, "handoff": cmd_handoff}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

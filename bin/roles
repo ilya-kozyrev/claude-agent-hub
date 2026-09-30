@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Role registry of a stage: <root>/<stage>/roles.json — who plays which role, by full session id.
+
+  roles set <role> <session-id> [--kind desktop|headless|cli] [--tag T] [--title T] [--note N] [--pid N]
+  roles get <role>                         prints the full session id only (local_… or a uuid)
+  roles list [--all]                       live roles; --all adds retired ones
+  roles retire <role> [--note N]
+  roles sent <from> <to>                   record one SendMessage from <from> to <to> (failed sends count too)
+  roles budget <from> [<to>]               sends left for <from>; at 0 prints the journal fallback
+  roles reset <from>                       the owner typed in <from>'s session: the send cap starts again
+  roles broadcast (--to r1,r2 | --all) [--from R] [--no-record] "text"
+
+<from>/<to>/<role>: a role name or a session id. A desktop id (Claude Desktop, local_…) must exist and not
+be archived in ~/Library/Application Support/Claude/claude-code-sessions (read-only; override
+$CLAUDE_SESSIONS_DIR); a headless id (an `agent spawn` session) and a cli id (a terminal Claude Code
+session, $CLAUDE_CODE_SESSION_ID) are uuids.
+Send cap: Claude Desktop pauses a session's outgoing cross-session sends after 10 messages without the
+user typing there (the cap is per sender across all recipients; $AGENT_HUB_SEND_CAP overrides), so the
+budget is counted per sender since its last reset; the per-pair count is shown too.
+broadcast cannot send (sending is a model tool): it prints "role  session-id  budget-left" per
+recipient for SendMessage, records those sends unless --no-record, and writes ONE journal line
+"@t1 @t2 text" with the caller's tag so every recipient also sees it through `jwait --tag`.
+Stage: --stage, else $HUB_STAGE, else "default". Exit: 0 ok, 1 not found / failed, 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def validate_session(sid: str, kind: str) -> dict:
+    """Facts about the session; raises Failure when it cannot be addressed."""
+    if kind == "desktop":
+        local = hc.normalize_local_id(sid)
+        if not UUID_RE.fullmatch(local[len("local_"):]):
+            raise hc.UsageError(f"{sid!r}: a full id local_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx is required (a short one is not delivered)")
+        meta = hc.desktop_session(local)
+        if meta is None:
+            raise hc.Failure(f"session {local} not found in {hc.sessions_dir()}")
+        if meta.get("isArchived"):
+            raise hc.Failure(f"session {local} is archived — it cannot be messaged")
+        return {"session": local, "cli_session_id": meta.get("cliSessionId") or "",
+                "desktop_title": meta.get("title") or ""}
+    if not UUID_RE.fullmatch(sid):
+        raise hc.UsageError(f"{sid!r}: a {kind} session id is a uuid")
+    return {"session": sid, "cli_session_id": sid, "desktop_title": ""}
+
+
+def set_role(stage: str, role: str, sid: str, kind: str, tag=None, title=None, note=None, **extra) -> dict:
+    facts = validate_session(sid, kind)
+    t = hc.now()
+    rec = {"session": facts["session"], "cli_session_id": facts["cli_session_id"], "kind": kind,
+           "tag": tag or role, "title": title or facts["desktop_title"] or role, "note": note or "",
+           "set_at": t.isoformat(timespec="seconds")}
+    rec.update({k: v for k, v in extra.items() if v is not None})
+    with hc.roles_lock(stage):
+        data = hc.roles_load(stage)
+        prev = data["roles"].get(role)
+        if prev and prev.get("session") != rec["session"]:
+            data["retired"].append(dict(prev, role=role, retired_at=rec["set_at"], retired_why=f"replaced by {rec['session']}"))
+        data["roles"][role] = rec
+        hc.roles_save(stage, data)
+    return rec
+
+
+def retire_role(stage: str, role: str, note: str = "") -> dict:
+    with hc.roles_lock(stage):
+        data = hc.roles_load(stage)
+        rec = data["roles"].pop(role, None)
+        if rec is None:
+            raise hc.Failure(f"no role {role!r} in the registry {hc.roles_path(stage)}")
+        data["retired"].append(dict(rec, role=role, retired_at=hc.now().isoformat(timespec="seconds"),
+                                    retired_why=note or "retire"))
+        hc.roles_save(stage, data)
+    return rec
+
+
+def resolve(data: dict, who: str):
+    """(role or None, session id) for a role name or a session id."""
+    if who in data["roles"]:
+        return who, data["roles"][who]["session"]
+    for name, rec in data["roles"].items():
+        if who in (rec.get("session"), rec.get("cli_session_id")) or hc.normalize_local_id(who) == rec.get("session"):
+            return name, rec["session"]
+    if who.startswith("local_") or UUID_RE.fullmatch(who):
+        return None, who
+    raise hc.Failure(f"{who!r}: no such role, and not a session id")
+
+
+def budget(data: dict, from_sid: str, to_sid=None):
+    """(left for the sender, sends to this recipient since the last reset)."""
+    resets = [s["at"] for s in data["sends"] if s.get("from") == from_sid and s.get("reset")]
+    since = max(resets) if resets else ""
+    mine = [s for s in data["sends"] if s.get("from") == from_sid and not s.get("reset") and s["at"] > since]
+    pair = sum(1 for s in mine if s.get("to") == to_sid) if to_sid else None
+    return max(0, hc.MESSAGE_CAP - len(mine)), pair
+
+
+def record_send(data: dict, from_sid: str, to_sid: str) -> None:
+    data["sends"].append({"from": from_sid, "to": to_sid, "at": hc.now().isoformat(timespec="seconds")})
+
+
+def fallback_line(tag: str) -> str:
+    return f'budget 0 — write to the journal instead: jlog "@{tag} …" (the recipient sees it through jwait --tag {tag})'
+
+
+def cmd_set(stage, a) -> int:
+    rec = set_role(stage, a.role, a.session, a.kind, tag=a.tag, title=a.title, note=a.note, pid=a.pid)
+    print(f"{a.role}: {rec['session']} ({rec['kind']}, tag {rec['tag']}, \"{rec['title']}\")")
+    return 0
+
+
+def cmd_get(stage, a) -> int:
+    rec = hc.roles_load(stage)["roles"].get(a.role)
+    if not rec:
+        print(f"no role {a.role!r} in the registry", file=sys.stderr)
+        return 1
+    print(rec["session"])
+    return 0
+
+
+def cmd_list(stage, a) -> int:
+    data = hc.roles_load(stage)
+    if not data["roles"]:
+        print("no live roles")
+    for name, rec in sorted(data["roles"].items()):
+        last = hc.last_line_by_tag(stage, rec.get("tag") or name)
+        left, _ = budget(data, rec["session"])
+        extra = f" pid {rec['pid']}" if rec.get("pid") else ""
+        print(f"{name:14} [{rec.get('tag')}] {rec['kind']:8} {rec['session']}  \"{rec.get('title')}\"  "
+              f"journal: {hc.age(last)} ago  sends left {left}{extra}")
+    if a.all:
+        for rec in data["retired"]:
+            print(f"(retired) {rec.get('role'):8} {rec.get('session')}  {rec.get('retired_at')}  {rec.get('retired_why')}")
+    return 0
+
+
+def cmd_retire(stage, a) -> int:
+    rec = retire_role(stage, a.role, a.note or "")
+    print(f"{a.role}: retired ({rec['session']})")
+    return 0
+
+
+def cmd_sent(stage, a) -> int:
+    with hc.roles_lock(stage):
+        data = hc.roles_load(stage)
+        _, f = resolve(data, a.from_)
+        _, t = resolve(data, a.to)
+        record_send(data, f, t)
+        hc.roles_save(stage, data)
+    left, pair = budget(data, f, t)
+    print(f"recorded; the sender has {left} of {hc.MESSAGE_CAP} left (sent to this recipient: {pair})")
+    return 0
+
+
+def cmd_budget(stage, a) -> int:
+    data = hc.roles_load(stage)
+    _, f = resolve(data, a.from_)
+    trole, t = resolve(data, a.to) if a.to else (None, None)
+    left, pair = budget(data, f, t)
+    tail = f" (sent to this recipient: {pair})" if t else ""
+    print(f"{left}{tail}")
+    if left == 0:
+        tag = data["roles"][trole].get("tag") if trole else (a.to or "<role>")
+        print(fallback_line(tag))
+    return 0
+
+
+def cmd_reset(stage, a) -> int:
+    with hc.roles_lock(stage):
+        data = hc.roles_load(stage)
+        _, f = resolve(data, a.from_)
+        data["sends"].append({"from": f, "reset": True, "at": hc.now().isoformat(timespec="seconds")})
+        hc.roles_save(stage, data)
+    print(f"{f}: send counter reset, {hc.MESSAGE_CAP} available")
+    return 0
+
+
+def cmd_broadcast(stage, a) -> int:
+    text = hc.one_line(" ".join(a.text))
+    if not text:
+        raise hc.UsageError("empty text")
+    with hc.roles_lock(stage):
+        data = hc.roles_load(stage)
+        sender = a.from_ or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        if not sender:
+            raise hc.UsageError("unknown sender: pass --from <role> or run it from your own session")
+        from_role, from_sid = resolve(data, sender)
+        names = sorted(data["roles"]) if a.all else [x.strip() for x in a.to.split(",") if x.strip()]
+        unknown = [n for n in names if n not in data["roles"]]
+        if unknown:
+            raise hc.Failure(f"not in the registry: {', '.join(unknown)} (roles list)")
+        names = [n for n in names if n != from_role]
+        if not names:
+            raise hc.UsageError("no recipients")
+        rows, tags = [], []
+        for n in names:
+            rec = data["roles"][n]
+            tags.append(rec.get("tag") or n)
+            if rec["kind"] == "headless":
+                rows.append(f"{n:14} {rec['session']}  headless: agent send {n} \"…\" (not SendMessage)")
+                continue
+            if rec["kind"] == "cli":
+                rows.append(f"{n:14} {rec['session']}  cli: no cross-session send; it reads the journal line below")
+                continue
+            left, _ = budget(data, from_sid)
+            if left == 0:
+                rows.append(f"{n:14} {rec['session']}  0 — {fallback_line(rec.get('tag') or n)}")
+                continue
+            if not a.no_record:
+                record_send(data, from_sid, rec["session"])
+            rows.append(f"{n:14} {rec['session']}  {left - (0 if a.no_record else 1)}")
+        hc.roles_save(stage, data)
+    tag = hc.caller_tag(stage) or (data["roles"][from_role].get("tag") if from_role else None)
+    if not tag:
+        raise hc.UsageError("no own tag for the journal line: set $HUB_TAG or roles set")
+    line = hc.journal_append(stage, tag, " ".join(f"@{t}" for t in tags) + " " + text)
+    print("SendMessage to each (role, id, budget left after the send):")
+    print("\n".join(rows))
+    print(f"journal: {line}")
+    return 0
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="roles", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--stage", default=None)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--stage", default=argparse.SUPPRESS, help="stage (default: $HUB_STAGE or \"default\")")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    _add = sub.add_parser
+    sub.add_parser = lambda name, **kw: _add(name, parents=[common], **kw)
+    s = sub.add_parser("set")
+    s.add_argument("role")
+    s.add_argument("session")
+    s.add_argument("--kind", choices=("desktop", "headless", "cli"), default="desktop")
+    s.add_argument("--tag")
+    s.add_argument("--title")
+    s.add_argument("--note")
+    s.add_argument("--pid", type=int)
+    g = sub.add_parser("get")
+    g.add_argument("role")
+    ls = sub.add_parser("list")
+    ls.add_argument("--all", action="store_true")
+    r = sub.add_parser("retire")
+    r.add_argument("role")
+    r.add_argument("--note")
+    se = sub.add_parser("sent")
+    se.add_argument("from_", metavar="from")
+    se.add_argument("to")
+    b = sub.add_parser("budget")
+    b.add_argument("from_", metavar="from")
+    b.add_argument("to", nargs="?")
+    rs = sub.add_parser("reset")
+    rs.add_argument("from_", metavar="from")
+    bc = sub.add_parser("broadcast")
+    grp = bc.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--to")
+    grp.add_argument("--all", action="store_true")
+    bc.add_argument("--from", dest="from_")
+    bc.add_argument("--no-record", action="store_true")
+    bc.add_argument("text", nargs="+")
+    a = p.parse_args(argv)
+    stage = hc.check_stage(a.stage or hc.default_stage())
+    return {"set": cmd_set, "get": cmd_get, "list": cmd_list, "retire": cmd_retire, "sent": cmd_sent,
+            "budget": cmd_budget, "reset": cmd_reset, "broadcast": cmd_broadcast}[a.cmd](stage, a)
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

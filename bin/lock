@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Agent lock board: lock list | take <kind> ... | release <kind>.
+
+  lock list [--all]
+  lock take <kind> --until <when> --why <reason> [--owner-name <name>] [--value <v>]
+            [--repo <repo>] [--force]
+  lock release <kind> [--repo <repo>] [--force]
+
+<when>: 2026-09-25T18:00 (hub time zone if no offset), 18:00 (today), 2026-10-31 (end of day), +2h, +90m.
+The holder is $CLAUDE_CODE_SESSION_ID; --owner-name defaults to this session's sidebar title.
+A kind already held by another session's active lock is refused unless --force (a handover:
+the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to "*"
+(every repo). Board: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-mail/board.md.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import board  # noqa: E402
+
+
+def session_title(sid: str) -> str | None:
+    """Last custom-title of this session from its transcript, if any."""
+    for path in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl")):
+        title = None
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"custom-title"' in line:
+                        try:
+                            title = json.loads(line).get("customTitle") or title
+                        except ValueError:
+                            pass
+        except OSError:
+            continue
+        if title:
+            return title
+    return None
+
+
+def cmd_list(args) -> int:
+    locks = board.load()
+    at = board.now()
+    shown = [r for r in locks if args.all or board.is_active(r, at)]
+    if not shown:
+        print("no active locks" if not args.all else "no locks")
+        return 0
+    for r in shown:
+        state = "active" if board.is_active(r, at) else "EXPIRED"
+        sid = r.get("session_id") or "-"
+        extra = f" value={r['value']}" if r.get("value") else ""
+        print(f"{r['kind']:15} {r.get('repo') or board.DEFAULT_REPO:10} {state:8} until {r['until']}  "
+              f"{r.get('owner_name') or '?'} [{sid}]  — {r.get('why') or ''}{extra}")
+    return 0
+
+
+def cmd_take(args) -> int:
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not sid and not args.force:
+        print("CLAUDE_CODE_SESSION_ID is not set: the hook could not recognise you as the holder. "
+              "Run from a Claude Code session, or pass --force to write an ownerless lock.", file=sys.stderr)
+        return 2
+    until = board.parse_time(args.until)
+    if until <= board.now():
+        print(f"--until {board.fmt(until)} is already in the past", file=sys.stderr)
+        return 2
+    name = args.owner_name or (session_title(sid) if sid else None) or (f"session {sid[:8]}" if sid else "?")
+    repo = args.repo
+    with board.Locked():
+        locks = board.load()
+        keep, prev = [], None
+        for r in locks:
+            if r["kind"] == args.kind and (r.get("repo") or board.DEFAULT_REPO) == repo:
+                prev = r
+            else:
+                keep.append(r)
+        if prev and board.is_active(prev) and prev.get("session_id") != sid and not args.force:
+            print(f"refused: {args.kind} ({repo}) is held by {prev.get('owner_name')} "
+                  f"[{prev.get('session_id') or '-'}] until {prev['until']}: {prev.get('why')}\n"
+                  "Ask the holder (SendMessage), or take it over with --force if you are the successor.",
+                  file=sys.stderr)
+            return 1
+        rec = {
+            "kind": args.kind, "repo": repo, "owner_name": name, "session_id": sid,
+            "until": board.fmt(until), "why": args.why, "taken_at": board.fmt(board.now()),
+        }
+        if args.value:
+            rec["value"] = args.value
+        if prev and board.is_active(prev) and prev.get("session_id") != sid:
+            rec["took_over_from"] = f"{prev.get('owner_name')} [{prev.get('session_id') or '-'}]"
+        keep.append(rec)
+        board.write(keep)
+    print(f"taken: {args.kind} ({repo}) by {name} [{sid or '-'}] until {rec['until']}")
+    return 0
+
+
+def cmd_release(args) -> int:
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    with board.Locked():
+        locks = board.load()
+        hit = [r for r in locks if r["kind"] == args.kind and (r.get("repo") or board.DEFAULT_REPO) == args.repo]
+        if not hit:
+            print(f"no {args.kind} ({args.repo}) lock on the board")
+            return 0
+        r = hit[0]
+        if r.get("session_id") != sid and board.is_active(r) and not args.force:
+            print(f"refused: {args.kind} ({args.repo}) belongs to {r.get('owner_name')} "
+                  f"[{r.get('session_id') or '-'}]; --force to drop someone else's lock", file=sys.stderr)
+            return 1
+        board.write([x for x in locks if x is not r])
+    print(f"released: {args.kind} ({args.repo})")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="lock", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pl = sub.add_parser("list")
+    pl.add_argument("--all", action="store_true", help="include expired locks")
+    pt = sub.add_parser("take")
+    pt.add_argument("kind", choices=board.KINDS)
+    pt.add_argument("--until", required=True)
+    pt.add_argument("--why", required=True)
+    pt.add_argument("--owner-name")
+    pt.add_argument("--value")
+    pt.add_argument("--repo", default=board.DEFAULT_REPO)
+    pt.add_argument("--force", action="store_true")
+    pr = sub.add_parser("release")
+    pr.add_argument("kind", choices=board.KINDS)
+    pr.add_argument("--repo", default=board.DEFAULT_REPO)
+    pr.add_argument("--force", action="store_true")
+    args = p.parse_args(argv)
+    try:
+        return {"list": cmd_list, "take": cmd_take, "release": cmd_release}[args.cmd](args)
+    except board.BoardError as e:
+        print(f"board {board.BOARD} is broken ({e}); fix the ```locks block by hand", file=sys.stderr)
+        return 3
+    except ValueError as e:
+        print(f"bad time: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
