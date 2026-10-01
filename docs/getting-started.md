@@ -13,7 +13,7 @@ named `api`, `ui` and `tests`. Everything below is synthetic.
 ```mermaid
 flowchart TB
     s1(["1 · You: open a Claude Code session in your repo and describe the idea"])
-    s2["2 · Hub: asks clarifying questions — you answer"]
+    s2["2 · Hub: grills you on open decisions (grilling skill) — you answer"]
     s3["3 · Hub: proposes a plan and one brief per agent"]
     s3q{"You: approve?"}
     s4["4 · Hub: starts the agents (agent spawn)"]
@@ -77,17 +77,21 @@ anything before I approve the plan.
 ### 2. Answer the clarifying questions
 
 The hub first looks for decisions you already made (`ask search csv export`; the register is empty on day one), then
-asks what it cannot find in the code. Answer in a sentence each:
+**grills** you on the rest with the `grilling` skill (install it once — see
+[Recommended companion](../README.md#recommended-companion-grilling)): rounds of numbered questions, each with its
+recommended answer, so most answers are "yes" or one sentence. Facts it can find in the code it looks up itself.
 
 ```text
-Hub: Which columns? Everything in the table or only visible ones?
-You: Only visible ones, same order.
-Hub: Where is the data loaded — one endpoint or several?
-You: One: GET /api/reports. Add a "format=csv" option there.
+Hub: Q1 — Which columns go into the file?
+     → Recommended: only the visible ones, in table order.
+     Q2 — New endpoint, or a format option on GET /api/reports (the table's only data source)?
+     → Recommended: a format=csv option on the existing endpoint.
+You: 1 yes. 2 yes.
 ```
 
-- **Hub:** reads the repo, asks, and records anything you cannot decide now as an owner question with a default action
-  and a due time (`ask add`; it lands in `questions.md`), so it will not be asked twice.
+- **Hub:** reads the repo, grills in rounds until nothing is left assumed, and records every answer in the register
+  (`ask add` + `ask close`; it lands in `questions.md`), so no later hub or agent asks it again. Anything you cannot
+  decide now becomes an open question with a default action and a due time.
 - **Wait:** a few minutes of conversation.
 - **Next:** the plan.
 
@@ -218,9 +222,11 @@ Synthetic. Lines starting with `#` are annotations, not part of the chat.
 ```text
 You:  Use the agent-hub hub skill. Add CSV export to the reports page. One stage, csv-export. Plan first, start nothing.
 # the hub loads the skill and reads the repo
-Hub:  No earlier decisions on "csv export" in the register. Two questions: which columns, and should it be
-      a new endpoint or a format option on GET /api/reports?
-You:  Visible columns only. A format=csv option on the existing endpoint.
+Hub:  No earlier decisions on "csv export" in the register. Grilling, round 1:
+      Q1 Which columns? → recommended: visible ones, table order.
+      Q2 New endpoint or format=csv on GET /api/reports? → recommended: the option on the existing endpoint.
+You:  1 yes, 2 yes.
+# the hub records both answers with ask add + ask close; no round 2 is needed
 Hub:  Plan: api (endpoint option + streaming), ui (button, reuse ButtonLink), tests (API and UI tests, no
       fixture changes). Each opens one PR and stops; none merges. Briefs are in work/brief-{api,ui,tests}.md.
       Open question for you, not blocking: should large exports (> 50k rows) be refused or truncated?

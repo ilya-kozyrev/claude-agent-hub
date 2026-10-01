@@ -68,6 +68,25 @@ journal, no cron, no `sleep` loops.
   answer was executed; `ask list --pending` — answers without `done`. `ask add|decided|close|done` stamp the time and
   print a ready journal line: copy the id and time from it.
 
+## Planning a stage: grill before you brief
+
+A brief can only carry decisions that were made. Before proposing a plan for a new stage or a new piece of work,
+settle the open decisions with the owner, in this order:
+
+1. `ask search <topic words>` — decisions already on record are settled; do not ask them again.
+2. **Grill the owner** with the `grilling` skill (the recommended companion plugin `mattpocock-skills`, see the README).
+   It walks the decision tree in rounds: every question numbered, each with your recommended answer; facts you can look
+   up yourself go to a sub-agent instead of to the owner. If the skill is not installed, say once how to add it
+   (`/plugin marketplace add mattpocock/skills`, then `/plugin install mattpocock-skills@mattpocock`) and grill by hand
+   the same way: rounds of numbered questions, a recommendation for each, until nothing is left silently assumed.
+3. Record each answer, so the next hub and every brief inherit it: `ask add … "<question>"` then
+   `ask close <id> --answer "<answer>"`. A matter the owner left to you is `ask decided`.
+4. Only then propose the plan and the briefs; their "Owner decisions — do not reopen" section comes from
+   `ask search`, not from memory.
+
+Skip the grilling for a task whose decisions are all on record or that the owner specified completely; say so in one
+line.
+
 ## Executors
 
 - Executors and stewards stay silent between events. They write to the hub only MERGED / STOP / DONE / BLOCKED / a
