@@ -30,13 +30,122 @@ DEFAULT_STAGE = "default"
 STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 # "- 14:35 [hub-16] text"; the tag may hold spaces ("[qa-2 r5b]").
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
-# Claude Desktop pauses a session's outgoing cross-session sends after this many messages without the
-# user typing in it; `roles` counts sends against it. Override with $AGENT_HUB_SEND_CAP.
-MESSAGE_CAP = int(os.environ.get("AGENT_HUB_SEND_CAP") or 10)
+CONFIG_DIRNAME = ".agent-hub"
+# Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
+HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES")
+# Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
+PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
+                "AGENT_HUB_DEFAULT_REPO", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT")
+
+
+def root() -> Path:
+    """The hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub."""
+    raw = os.environ.get("AGENT_HUB_HOME")
+    return Path(raw).expanduser() if raw else Path.home() / ".claude" / "agent-hub"
+
+
+# ---------------------------------------------------------------- configuration
+#
+# One mechanism, three layers of the same directory shape (most specific first):
+#   <hub home>/<stage>/          stage layer   (files only)
+#   <repo>/.agent-hub/           project layer (found from the working directory, see project_dir)
+#   <hub home>/                  home layer
+# Files: config.json (settings, see setting()), lock-rules.json (the lock hook; project + home rules
+# together), brief-footer.md, handoff-facts.sh, takeover.sh (first layer that has the file wins).
+
+def project_dir(start=None) -> Optional[Path]:
+    """The directory holding `.agent-hub/`, searched upwards from `start` (default: the working directory)
+    up to the enclosing git root; None outside such a repository."""
+    try:
+        p = Path(start or os.getcwd()).expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+    for d in [p] + list(p.parents):
+        if (d / CONFIG_DIRNAME).is_dir():
+            return d
+        if (d / ".git").exists():
+            return None
+    return None
+
+
+def config_dirs(stage: Optional[str] = None, cwd=None) -> list:
+    """Existing config layers, most specific first: <home>/<stage>/, <project>/.agent-hub/, <home>/."""
+    out = []
+    if stage:
+        out.append(root() / stage)
+    proj = project_dir(cwd)
+    if proj:
+        out.append(proj / CONFIG_DIRNAME)
+    out.append(root())
+    return [d for d in out if d.is_dir()]
+
+
+def config_file(name: str, stage: Optional[str] = None, cwd=None) -> Optional[Path]:
+    """The first layer's copy of a config file (brief-footer.md, handoff-facts.sh, takeover.sh), or None."""
+    for d in config_dirs(stage, cwd):
+        if (d / name).is_file():
+            return d / name
+    return None
+
+
+_CONFIG_CACHE: dict = {}
+
+
+def _warn(msg: str) -> None:
+    print(f"agent-hub: {msg}", file=sys.stderr)
+
+
+def read_config(path: Path, project: bool) -> dict:
+    """Settings of one config.json as {NAME: str}. A broken file or a key the layer may not set is reported on
+    stderr and ignored, so a typo never stops a tool (but never passes silently either)."""
+    key = (str(path), project)
+    if key in _CONFIG_CACHE:
+        return _CONFIG_CACHE[key]
+    out: dict = {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError) as e:
+        _warn(f"{path} ignored: {e}")
+        data = {}
+    allowed = PROJECT_KEYS if project else PROJECT_KEYS + HUB_WIDE_KEYS
+    for name, value in data.items():
+        if name.startswith("_"):  # "_comment" and the like
+            continue
+        if name not in allowed:
+            hint = " (hub-wide: set it in the hub home's config.json)" if name in HUB_WIDE_KEYS else ""
+            _warn(f"{path}: {name} is not a setting this file may set{hint}; ignored")
+            continue
+        if isinstance(value, dict):  # {"sonnet": "claude-…"} for AGENT_HUB_MODEL_MAP
+            value = ",".join(f"{k}={v}" for k, v in value.items())
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            _warn(f"{path}: {name} must be a string or a number; ignored")
+            continue
+        out[name] = str(value)
+    _CONFIG_CACHE[key] = out
+    return out
+
+
+def setting(name: str, default: Optional[str] = None, cwd=None) -> Optional[str]:
+    """$NAME if set and non-empty, else the project's .agent-hub/config.json (for PROJECT_KEYS; the project is
+    found from `cwd`, default the working directory), else <hub home>/config.json, else `default`."""
+    raw = os.environ.get(name)
+    if raw:
+        return raw
+    if name in PROJECT_KEYS:
+        proj = project_dir(cwd)
+        if proj:
+            val = read_config(proj / CONFIG_DIRNAME / "config.json", project=True).get(name)
+            if val:
+                return val
+    return read_config(root() / "config.json", project=False).get(name) or default
 
 
 def _zone() -> dt.tzinfo:
-    name = os.environ.get("AGENT_HUB_TZ", "").strip()
+    name = (setting("AGENT_HUB_TZ") or "").strip()
     if name:
         try:
             from zoneinfo import ZoneInfo
@@ -48,12 +157,9 @@ def _zone() -> dt.tzinfo:
 
 TZ = _zone()
 TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
-
-
-def root() -> Path:
-    """The hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub."""
-    raw = os.environ.get("AGENT_HUB_HOME")
-    return Path(raw).expanduser() if raw else Path.home() / ".claude" / "agent-hub"
+# Claude Desktop pauses a session's outgoing cross-session sends after this many messages without the
+# user typing in it; `roles` counts sends against it. Override with $AGENT_HUB_SEND_CAP.
+MESSAGE_CAP = int(setting("AGENT_HUB_SEND_CAP") or 10)
 
 
 def child_env(extra: Optional[dict] = None) -> dict:

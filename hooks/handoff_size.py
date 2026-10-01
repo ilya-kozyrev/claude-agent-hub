@@ -4,7 +4,7 @@
 A handoff is read by a fresh session as its entry point; a long one burns the successor's context
 before any work starts. Write: size of tool_input.content. Edit: read the current file, apply
 old_string -> new_string (all occurrences when replace_all), measure the result. The limit is
-overridable by $AGENT_HUB_HANDOFF_MAX_BYTES. Fail-open: any error of its own (bad input, unreadable
+overridable by $AGENT_HUB_HANDOFF_MAX_BYTES or the hub home's config.json. Fail-open: any error of its own (bad input, unreadable
 file, old_string not found) -> exit 0, no output.
 """
 from __future__ import annotations
@@ -22,6 +22,15 @@ REASON = (
 )
 
 
+def hub_setting(name: str):
+    """$NAME, else the hub home's config.json (hubcore.setting from the plugin's bin/)."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    sys.path.insert(0, os.path.join(root, "bin"))
+    import hubcore  # noqa: E402
+
+    return hubcore.setting(name)
+
+
 def main() -> None:
     data = json.loads(sys.stdin.read() or "{}")
     if not isinstance(data, dict) or data.get("hook_event_name", "PreToolUse") != "PreToolUse":
@@ -34,7 +43,7 @@ def main() -> None:
     if not fnmatch.fnmatchcase(os.path.basename(fp), "HANDOFF-*.md"):
         return
     try:
-        limit = int(os.environ.get("AGENT_HUB_HANDOFF_MAX_BYTES", "") or 15360)
+        limit = int(hub_setting("AGENT_HUB_HANDOFF_MAX_BYTES") or 15360)
     except ValueError:
         limit = 15360
 

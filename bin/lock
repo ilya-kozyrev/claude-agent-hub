@@ -9,7 +9,8 @@
 <when>: 2026-09-25T18:00 (hub time zone if no offset), 18:00 (today), 2026-10-31 (end of day), +2h, +90m.
 The holder is $CLAUDE_CODE_SESSION_ID; --owner-name defaults to this session's sidebar title.
 A kind already held by another session's active lock is refused unless --force (a handover:
-the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to "*"
+the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to
+AGENT_HUB_DEFAULT_REPO (env, the current repository's .agent-hub/config.json or the hub home's), else "*"
 (every repo). Board: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-hub/board.md.
 """
 from __future__ import annotations
@@ -22,6 +23,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import board  # noqa: E402
+import hubcore as hc  # noqa: E402
+
+DEFAULT_REPO = hc.setting("AGENT_HUB_DEFAULT_REPO") or board.DEFAULT_REPO
 
 
 def session_title(sid: str) -> str | None:
@@ -128,11 +132,11 @@ def main(argv: list[str]) -> int:
     pt.add_argument("--why", required=True)
     pt.add_argument("--owner-name")
     pt.add_argument("--value")
-    pt.add_argument("--repo", default=board.DEFAULT_REPO)
+    pt.add_argument("--repo", default=DEFAULT_REPO)
     pt.add_argument("--force", action="store_true")
     pr = sub.add_parser("release")
     pr.add_argument("kind", choices=board.KINDS)
-    pr.add_argument("--repo", default=board.DEFAULT_REPO)
+    pr.add_argument("--repo", default=DEFAULT_REPO)
     pr.add_argument("--force", action="store_true")
     args = p.parse_args(argv)
     try:

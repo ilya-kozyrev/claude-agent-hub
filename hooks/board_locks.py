@@ -8,7 +8,9 @@ Built-in actions (per shell segment; text inside quotes, heredocs and echo/print
   merge into main   gh pr merge …; glab mr merge|accept …;
                     gh api / glab api with -X PUT …/pulls/<n>/merge or …/merge_requests/<n>/merge;
                     git push <remote> … <ref> where the target branch is protected (main, master) -> main-merge
-Custom actions: <hub home>/lock-rules.json (or $AGENT_HUB_LOCK_RULES), for deploys and shared environments:
+Custom actions, for deploys and shared environments: <repo>/.agent-hub/lock-rules.json of the repository the
+command runs in (found from the cwd, `cd` and `git -C`), plus <hub home>/lock-rules.json (or $AGENT_HUB_LOCK_RULES);
+rules of both apply, the repository's first:
   {"protected_branches": ["main", "master"],
    "rules": [{"match": "\\bmake deploy-prod\\b", "kinds": ["deploy-window"], "action": "production deploy"},
              {"match": "\\bhelm upgrade .* -n staging\\b", "kinds": ["stage"], "action": "staging rollout"}]}
@@ -161,22 +163,62 @@ def _repo_of(seg: list[str], cwd: str | None) -> str | None:
     return _git_repo_name(cwd) if cwd else None
 
 
-def load_rules() -> dict:
-    """Custom rules; a missing file means built-ins only. A broken file raises (the hook fails open)."""
-    path = os.environ.get("AGENT_HUB_LOCK_RULES")
-    if not path:
-        home = os.environ.get("AGENT_HUB_HOME") or os.path.join(os.path.expanduser("~"), ".claude", "agent-hub")
-        path = os.path.join(home, "lock-rules.json")
+def _read_rules(path: str) -> dict | None:
+    """One lock-rules.json; None when the file does not exist. A broken file raises (the hook fails open)."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return {"protected_branches": list(DEFAULT_PROTECTED), "rules": []}
+        return None
     rules = []
     for r in data.get("rules") or []:
         rules.append({"re": re.compile(r["match"]), "kinds": tuple(r["kinds"]),
                       "action": r.get("action") or r["match"]})
-    return {"protected_branches": list(data.get("protected_branches") or DEFAULT_PROTECTED), "rules": rules}
+    return {"protected_branches": data.get("protected_branches"), "rules": rules}
+
+
+def rule_files(cwd: str | None) -> list[str]:
+    """The lock-rules.json files that apply to a command run in `cwd`: the repository's
+    <repo>/.agent-hub/lock-rules.json (if any), then the hub home's ($AGENT_HUB_LOCK_RULES overrides that one)."""
+    sys.path.insert(0, plugin_bin())
+    import hubcore  # noqa: E402
+
+    out = []
+    proj = hubcore.project_dir(cwd) if cwd else None
+    if proj:
+        out.append(str(proj / hubcore.CONFIG_DIRNAME / "lock-rules.json"))
+    out.append(os.environ.get("AGENT_HUB_LOCK_RULES") or str(hubcore.root() / "lock-rules.json"))
+    return out
+
+
+_RULES_CACHE: dict = {}
+
+
+def load_rules(cwd: str | None = None) -> dict:
+    """Rules of every applicable file together: the repository's first, then the hub home's. Protected branches:
+    the union of the files that name them, else main and master. No file = built-ins only."""
+    files = tuple(rule_files(cwd))
+    if files in _RULES_CACHE:
+        return _RULES_CACHE[files]
+    rules, protected = [], []
+    for path in files:
+        data = _read_rules(path)
+        if data is None:
+            continue
+        rules += data["rules"]
+        protected += [b for b in data["protected_branches"] or [] if b not in protected]
+    out = {"protected_branches": protected or list(DEFAULT_PROTECTED), "rules": rules}
+    _RULES_CACHE[files] = out
+    return out
+
+
+def _seg_cwd(seg: list[str], cwd: str | None) -> str | None:
+    """Directory the segment acts in: `git -C DIR`, else the (cd-tracked) cwd."""
+    if seg and seg[0] == "git" and "-C" in seg:
+        i = seg.index("-C")
+        if i + 1 < len(seg):
+            return os.path.join(cwd or "", os.path.expanduser(seg[i + 1]))
+    return cwd
 
 
 def classify(seg: list[str], rules: dict) -> tuple[str, tuple[str, ...]] | None:
@@ -239,7 +281,6 @@ def decide(event: dict, board, rules: dict | None = None) -> str | None:
     command = ti.get("command")
     if not isinstance(command, str) or ESCAPE_HATCH.search(command):
         return None
-    rules = rules if rules is not None else load_rules()
     cwd = event.get("cwd")
     hits = []
     for seg in segments(command):
@@ -248,7 +289,7 @@ def decide(event: dict, board, rules: dict | None = None) -> str | None:
         if seg[0] == "cd" and len(seg) > 1:
             cwd = os.path.join(cwd or "", os.path.expanduser(seg[1]))
             continue
-        c = classify(seg, rules)
+        c = classify(seg, rules if rules is not None else load_rules(_seg_cwd(seg, cwd)))
         if c:
             hits.append((c, _repo_of(seg, cwd)))
     if not hits:

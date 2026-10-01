@@ -69,7 +69,7 @@ $B/roles get d >/dev/null 2>&1; check $? 1 "…and no role is recorded"
 AGENT_INIT_TIMEOUT=3 FAKE_CLAUDE=hang $B/agent-spawn --role h --cwd $W --model sonnet --brief $W/b.md > $R/o6.out 2>&1; rc=$?
 check $rc 1 "no init within AGENT_INIT_TIMEOUT → spawn fails"
 grep -q 'no init event in 3 s' $R/o6.out; check $? 0 "…the message names the timeout"
-grep -q '^INIT_TIMEOUT_S = int(os.environ.get("AGENT_INIT_TIMEOUT") or 120)' $B/agent; check $? 0 "default init wait is 120 s"
+grep -q 'return int(hc.setting("AGENT_INIT_TIMEOUT", cwd=cwd) or 120)' $B/agent; check $? 0 "default init wait is 120 s"
 # 7. a 60 KB brief: still seen as alive (the session id stays at the head of the command line)
 python3 -c "print('brief line '*6000)" > $W/big.md
 FAKE_HOLD=6 $B/agent-spawn --role big --cwd $W --model sonnet --brief $W/big.md >/dev/null 2>&1; check $? 0 "spawn with a 60 KB brief"
