@@ -45,7 +45,11 @@ when the context is nearly spent: the handoff itself and the last turns need roo
 
 ## Waiting
 
-Waiting is **one** `jwait` in Bash with `run_in_background: true`; the harness wakes you when it exits.
+Waiting is **one** `jwait` in Bash with `run_in_background: true`; the harness wakes you when it exits. Give that Bash
+call `timeout: 7200000` and keep `--for` at 2h or less: the docs give a background command 30 min without a `timeout`
+and 2 h at most (`BASH_MAX_TIMEOUT_MS` raises it), then Claude Code stops it and tells you (CLI 2.1.284 did not stop one
+at 30 min — do not rely on either). A stopped `jwait` loses no lines once its tag has run before: the next one
+delivers them.
 - `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER' --for 2h` —
   lines addressed to the hub, executors' status lines and script questions echoed into the journal. Your own lines (your tag and its sub-tags `hub-<N>/…`) do not wake you.
   The digest prints this command with the team's extra wake words (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there.
