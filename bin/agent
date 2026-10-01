@@ -21,7 +21,10 @@ plugin's bin/ on PATH so `jlog` works; it is recorded in `roles` (kind headless,
 Model: an alias (opus, sonnet, haiku) or a full id claude-…; $AGENT_HUB_MODEL_MAP pins aliases to ids
 ("sonnet=claude-sonnet-x-y,opus=…") when the installed CLI resolves an alias to an older model.
 Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effort flag.
-These settings (and CLAUDE_BIN, AGENT_INIT_TIMEOUT) may also come from config.json of the agent's repository
+Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
+CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
+(CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
+These settings (and CLAUDE_BIN, AGENT_INIT_TIMEOUT, AGENT_HUB_BG_WAIT_CEILING_MS) may also come from config.json of the agent's repository
 (<repo>/.agent-hub/) or of the hub home; a brief-footer.md there is appended to the footer of every brief.
 status: alive or not, age of the last log event, model turns, the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
@@ -177,6 +180,18 @@ def child_env(stage: str, tag: str) -> dict:
     return env
 
 
+BG_WAIT_ENV = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
+
+
+def bg_wait_ceiling(cwd=None) -> str:
+    """Milliseconds a run whose turn ended waits for its background sub-agents before the CLI kills them.
+    The CLI's default (10 min) cuts a background sub-agent of a headless agent short; 0 waits until it finishes."""
+    raw = str(hc.setting("AGENT_HUB_BG_WAIT_CEILING_MS", cwd=cwd) or "0").strip()
+    if not raw.isdigit():
+        raise hc.UsageError("AGENT_HUB_BG_WAIT_CEILING_MS must be a whole number of milliseconds (0 = no ceiling)")
+    return raw
+
+
 def init_timeout(cwd=None) -> int:
     """Seconds to wait for a run's init event (it comes after MCP servers connect): AGENT_INIT_TIMEOUT or 120."""
     try:
@@ -237,6 +252,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve())] + argv
     env = child_env(meta["stage"], meta["tag"])
     env["AGENT_ROLE"] = meta["role"]
+    env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
     with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
         proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                 env=env, start_new_session=True, close_fds=True)
@@ -269,6 +285,7 @@ def cmd_spawn(a) -> int:
     if denied:
         raise hc.UsageError(denied)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
+    bg_wait_ceiling(cwd)  # a bad value fails here, before any directory or process exists
     if not brief.is_file():
         raise hc.UsageError(f"--brief {brief}: no such file")
     own = hc.caller_tag(stage)

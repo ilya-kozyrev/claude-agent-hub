@@ -61,6 +61,17 @@ AGENT_HUB_MODEL_MAP="sonnet=claude-sonnet-test-1" AGENT_HUB_DEFAULT_EFFORT=xhigh
   $B/agent-spawn --role cfg --cwd $W --model sonnet --brief $W/b.md >/dev/null; check $? 0 "spawn with env defaults"
 tail -1 $W/argv.log | grep -q -- '--model claude-sonnet-test-1 --effort xhigh .*--permission-mode acceptEdits'; check $? 0 "model map, default effort and permission mode reach the CLI"
 wait_dead cfg; $B/agent-stop cfg >/dev/null
+# 4b. background sub-agents of a headless run: no 10-minute CLI ceiling by default, configurable, validated
+tail -1 $W/env.log | grep -qx 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0'; check $? 0 "default: the run waits for its background sub-agents (ceiling 0)"
+CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=5000 AGENT_HUB_BG_WAIT_CEILING_MS=900000 \
+  $B/agent-spawn --role bgw --cwd $W --model haiku --brief $W/b.md >/dev/null; check $? 0 "spawn with a ceiling setting"
+tail -1 $W/env.log | grep -qx 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=900000'; check $? 0 "AGENT_HUB_BG_WAIT_CEILING_MS reaches the CLI, the caller's own value does not"
+wait_dead bgw; $B/agent-stop bgw >/dev/null
+N_ENV=$(wc -l < $W/env.log)
+AGENT_HUB_BG_WAIT_CEILING_MS=10m $B/agent-spawn --role bgx --cwd $W --model haiku --brief $W/b.md > $R/o4b.out 2>&1; rc=$?
+check $rc 2 "negative: a ceiling that is not milliseconds is a usage error"
+check "$(wc -l < $W/env.log)" "$N_ENV" "…and no CLI was started"
+[ ! -e $R/stage-a/agents/bgx ]; check $? 0 "…and no agent directory was created"
 # 5. a CLI that dies without an init event is a failed spawn, and no role is recorded
 FAKE_CLAUDE=die $B/agent-spawn --role d --cwd $W --model sonnet --brief $W/b.md > $R/o5.out 2>&1; rc=$?
 check $rc 1 "spawn fails when claude never starts"
