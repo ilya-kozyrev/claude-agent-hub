@@ -13,7 +13,8 @@ the log), age of the last log event, model turns, context size, cost of the fini
 (the Agent tool) of the sessions in a stage's role registry are listed too, read-only, as `<parent role>/<id>`:
 found in the parent session's transcript folder (<claude config>/projects/*/<session>/subagents/); done/error/died
 from the parent's completion notice (a foreground one: the result of its Agent call); without one it is live while
-the parent session runs (<claude config>/sessions/<pid>.json with a live pid) and died once it is gone. Enter opens an
+the parent session runs (<claude config>/sessions/<pid>.json with a live claude pid) and died once it is gone —
+where that folder does not exist, died after 30 min of silence. Enter opens an
 agent: live feed of its log (thoughts ✎, commands ▸, short results ◂), brief, inbox. `j` — stage journal with a
 filter, `s` — locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
 `agent send` / `agent stop` after a y/N confirmation; nothing else is ever written.
@@ -66,7 +67,6 @@ SUB_RECENT_S = 3600               # finished sub-agents older than this are hidd
 SUB_LOST_S = 1800                 # no notice, silent this long, parent's liveness unknown: count it as died
 SUB_DIRS_TTL = 30.0               # how long a session's sub-agent folders are cached before the next glob
 _NOTICE_RE = re.compile(rb"<task-id>([\w-]+)</task-id>.*?<status>(\w+)</status>", re.S)
-_TS_FIELD_RE = re.compile(rb'"timestamp"\s*:\s*"([^"]+)"')
 SUB_STATE = {"completed": "done", "failed": "error"}   # any other notice status (killed, stopped) is "dead"
 
 
@@ -526,16 +526,21 @@ class Notices:
                     self.offset += len(line)
                     if b"<task-notification>" in line:
                         self._notice(line)
-                    if b'"tool_result"' in line:
-                        ids = _TOOL_ID_RE.findall(line)
-                        if ids:
-                            at = _line_ts(line)
-                            err = b'"is_error":true' in line or b'"is_error": true' in line
-                            for tid in ids:
-                                self.results[tid.decode("utf-8", "replace")] = (err, at)
+                    if b'"tool_result"' in line and _TOOL_ID_RE.search(line):
+                        self._results(line)
         except OSError:
             pass
         return self
+
+    def _results(self, line: bytes) -> None:
+        ev = _loads(line)
+        if not ev or ev.get("type") != "user":
+            return
+        at = parse_ts(ev.get("timestamp"))
+        content = (ev.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                self.results[str(b["tool_use_id"])] = (bool(b.get("is_error")), at)
 
     def _notice(self, line: bytes) -> None:
         ev = _loads(line)
@@ -558,9 +563,9 @@ class Notices:
 
 
 def _line_ts(line: bytes):
-    """Epoch of a transcript line's own (top-level, last) "timestamp" key, or None."""
-    found = _TS_FIELD_RE.findall(line)
-    return parse_ts(found[-1].decode("utf-8", "replace")) if found else None
+    """Epoch of a transcript line's own top-level "timestamp", or None (a tool result may nest its own)."""
+    ev = _loads(line)
+    return parse_ts(ev.get("timestamp")) if ev else None
 
 
 def live_sessions(table):
@@ -576,7 +581,9 @@ def live_sessions(table):
             continue
         pid = rec["pid"]
         if table is not None:
-            if pid not in table:
+            # the file is named by pid, so a new CLI on a reused pid overwrites it; a reuse by anything else is
+            # caught here (an interactive session's command line holds no session id, only the binary)
+            if "claude" not in table.get(pid, ""):
                 continue
         else:
             try:
@@ -840,7 +847,9 @@ class Collector:
         meta = self._meta(meta_path)
         background = meta.get("requestShape") == "background"
         status, at = notes.by_id.get(aid, (None, None))
-        if status is None and not background and meta.get("toolUseId") in notes.results:
+        # a foreground call ends with its tool result; with no known shape only a notice counts (a background
+        # call's tool result is just "launched")
+        if status is None and meta.get("requestShape") == "foreground" and meta.get("toolUseId") in notes.results:
             err, at = notes.results[meta["toolUseId"]]
             status = "failed" if err else "completed"
         old = mtime is None or now - mtime > SUB_RECENT_S

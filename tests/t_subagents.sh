@@ -10,7 +10,7 @@ R=$AGENT_HUB_HOME; export CLAUDE_CONFIG_DIR=$R/cc
 HUB=33333333-cccc-4ccc-8ccc-333333333333; EXE=44444444-dddd-4ddd-8ddd-444444444444; STR=55555555-eeee-4eee-8eee-555555555555
 python3 $T/subagent_fixture.py $CLAUDE_CONFIG_DIR $HUB $EXE $STR > /dev/null; check $? 0 "fixture built"
 # a live process whose command line holds both parent session ids: the headless parent's pid and the hub's process
-python3 -c 'import time; time.sleep(600)' $EXE $HUB & SLEEPER=$!
+python3 -c 'import time; time.sleep(600)' $EXE $HUB claude-stand-in & SLEEPER=$!
 trap 'kill $SLEEPER 2>/dev/null' EXIT
 $B/roles set hub $HUB --kind cli --tag hub-7 > /dev/null; check $? 0 "registry: hub"
 $B/roles set exec $EXE --kind headless --tag hub-7-exec --pid $SLEEPER > /dev/null; check $? 0 "registry: headless exec"
@@ -54,6 +54,8 @@ check "$(st hub/fg1)" done "foreground: the Agent call's tool result ends it"
 check "$(col hub/fg1 5)" False "…and it is marked foreground"
 check "$(st hub/fgerr1)" error "foreground: an error tool result -> error"
 check "$(st hub/fgrun1)" live "foreground without a result yet -> live"
+check "$(st hub/fg2)" done "foreground: another call's error on the same line does not make it an error"
+check "$(st hub/noshape)" live "negative: no requestShape -> a tool result alone does not end it"
 check "$(st hub/nolog1)" "" "a meta file without a transcript: no crash, not listed while the parent is unknown"
 check "$(st exec/orphan1)" live "headless parent alive (pid) -> its sub-agent is live"
 check "$(st hub/old1)" "" "negative: a finished sub-agent older than 1 h is hidden"
@@ -76,6 +78,14 @@ snapshot
 check "$(st hub/lost1)" live "parent session running -> a sub-agent silent 40 min stays live…"
 check "$(col hub/lost1 6)" True "…flagged quiet"
 check "$(st hub/alive1)" live "parent session running -> live"
+python3 -c 'import time; time.sleep(600)' $HUB & OTHER=$!
+mv $CLAUDE_CONFIG_DIR/sessions/$SLEEPER.json $CLAUDE_CONFIG_DIR/sessions/$OTHER.json
+echo "{\"pid\": $OTHER, \"sessionId\": \"$HUB\"}" > $CLAUDE_CONFIG_DIR/sessions/$OTHER.json
+snapshot
+check "$(st hub/alive1)" dead "negative: a stale session file whose pid now runs something else is not a live parent"
+kill $OTHER; wait $OTHER 2>/dev/null
+echo "{\"pid\": $SLEEPER, \"sessionId\": \"$HUB\"}" > $CLAUDE_CONFIG_DIR/sessions/$SLEEPER.json; rm -f $CLAUDE_CONFIG_DIR/sessions/$OTHER.json
+snapshot
 check "$(st hub/nolog1)" live "…and a meta file without a transcript is listed under a running parent"
 
 # ---- 3. the hub's session file is gone (its process ended), the folder exists
@@ -90,7 +100,7 @@ check "$(st exec/orphan1)" dead "headless parent gone -> its sub-agent died"
 
 # ---- text views: list row, card with the read-only note, feed from the transcript, widget
 mkdir -p $CLAUDE_CONFIG_DIR/sessions
-python3 -c 'import time; time.sleep(600)' $HUB & SLEEPER=$!
+python3 -c 'import time; time.sleep(600)' $HUB claude-stand-in & SLEEPER=$!
 echo "{\"pid\": $SLEEPER, \"sessionId\": \"$HUB\"}" > $CLAUDE_CONFIG_DIR/sessions/$SLEEPER.json
 $B/agent-top --once --width 140 --agent hub/done1 --lines 10 > $R/st-once.out 2>&1; check $? 0 "--once --agent on a sub-agent exit 0"
 grep -q 'hub/ali.*run the tests.*live.*Bash: Run the tests' $R/st-once.out; check $? 0 "list row: role, task, state, action"

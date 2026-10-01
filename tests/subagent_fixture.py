@@ -20,6 +20,9 @@ Sub-agents of the hub session:
   fgerr1   foreground, the tool result is an error                                       -> error
   fgrun1   foreground, no tool result yet                                                -> live
   nolog1   a meta file without a transcript                                              -> listed, no crash
+  fg2      foreground, its result shares a line with another call's error result         -> done, not error
+  noshape1 no requestShape in its meta, its Agent call has a tool result ("launched")     -> not ended by it
+fg1's result line also carries a nested "timestamp" (an hour earlier) after the line's own one.
 Notices come in the three shapes the CLI writes (queue-operation enqueue, queued_command attachment, user message);
 the parent also quotes a notice "failed" for alive1 in an assistant line and in a tool result — it must not count.
 alive1's transcript ends with a malformed line.
@@ -47,11 +50,12 @@ def line(**kw) -> str:
 
 def subagent(session: str, aid: str, desc: str, at: float, pending_tool: bool = False, effort=None, text="all good",
              shape="background", log=True):
+    shape_kw = {} if shape is None else {"requestShape": shape}
     d = os.path.join(proj, session, "subagents")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, f"agent-{aid}.meta.json"), "w") as fh:
         json.dump({"agentType": "general-purpose", "description": desc, "toolUseId": f"toolu_{aid}", "spawnDepth": 1,
-                   "requestShape": shape, "model": "haiku"}, fh)
+                   "model": "haiku", **shape_kw}, fh)
     if not log:
         return
     rows = [line(parentUuid=None, isSidechain=True, agentId=aid, type="user",
@@ -94,12 +98,16 @@ def notice(aid: str, status: str, at, shape: str = "user") -> str:
                 uuid=f"n-{aid}", **ts)
 
 
-def tool_result(tool_use_id: str, text: str, at: float, error: bool = False) -> str:
-    block = {"tool_use_id": tool_use_id, "type": "tool_result", "content": [{"type": "text", "text": text}]}
-    if error:
-        block["is_error"] = True
-    return line(parentUuid="p0", isSidechain=False, type="user", message={"role": "user", "content": [block]},
-                uuid=f"r-{tool_use_id}", timestamp=iso(at))
+def tool_result(tool_use_id: str, text: str, at: float, error: bool = False, also=None, nested_ts=None) -> str:
+    def block(tid, txt, err):
+        b = {"tool_use_id": tid, "type": "tool_result", "content": [{"type": "text", "text": txt}]}
+        if err:
+            b["is_error"] = True
+        return b
+    blocks = [block(tool_use_id, text, error)] + ([block(*also)] if also else [])
+    extra = {} if nested_ts is None else {"toolUseResult": {"status": "completed", "timestamp": iso(nested_ts)}}
+    return line(parentUuid="p0", isSidechain=False, type="user", message={"role": "user", "content": blocks},
+                uuid=f"r-{tool_use_id}", timestamp=iso(at), **extra)
 
 
 subagent(hub, "alive1", "run the tests", now - 5, pending_tool=True, effort="high")
@@ -115,6 +123,8 @@ subagent(hub, "fg1", "foreground scan", now - 40, shape="foreground", text="FG O
 subagent(hub, "fgerr1", "foreground crash", now - 40, shape="foreground")
 subagent(hub, "fgrun1", "foreground running", now - 2, shape="foreground", pending_tool=True)
 subagent(hub, "nolog1", "meta only", now, log=False)
+subagent(hub, "fg2", "foreground in parallel", now - 30, shape="foreground")
+subagent(hub, "noshape1", "old CLI meta", now - 20, shape=None)
 quoted = "<task-notification><task-id>alive1</task-id><status>failed</status></task-notification>"
 with open(os.path.join(proj, f"{hub}.jsonl"), "w") as fh:
     fh.write(line(parentUuid=None, isSidechain=False, type="user", message={"role": "user", "content": "hello"},
@@ -126,7 +136,9 @@ with open(os.path.join(proj, f"{hub}.jsonl"), "w") as fh:
     fh.write(notice("done1", "completed", now - 120 + 0.05, shape="queue"))
     fh.write(notice("late1", "completed", now - 110))
     fh.write(notice("nots1", "completed", None))
-    fh.write(tool_result("toolu_fg1", "FG OK", now - 39))
+    fh.write(tool_result("toolu_fg1", "FG OK", now - 39, nested_ts=now - 3600))
+    fh.write(tool_result("toolu_fg2", "FG2 OK", now - 29, also=("toolu_other", "boom", True)))
+    fh.write(tool_result("toolu_noshape1", "Async agent launched", now - 79))
     fh.write(tool_result("toolu_fgerr1", "boom", now - 39, error=True))
     fh.write(line(parentUuid="p0", isSidechain=False, type="assistant", uuid="q1", timestamp=iso(now - 1),
                   message={"id": "mq", "role": "assistant", "content": [{"type": "text", "text": quoted}]}))
