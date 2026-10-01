@@ -33,7 +33,7 @@ JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
-                 "AGENT_HUB_JWAIT_MATCH")
+                 "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
@@ -91,6 +91,24 @@ def project_dir(start=None) -> Optional[Path]:
         if (d / ".git").exists():
             return None
     return None
+
+
+def in_scope(path) -> bool:
+    """Whether the plugin's session-wide hooks (handoff size, the owner-questions line) apply at `path`: inside the
+    hub home, inside a repository with `.agent-hub/`, or under a directory of AGENT_HUB_SCOPE_DIRS (paths separated
+    by ':', `~` expanded). Elsewhere a session on the same machine is left alone."""
+    try:
+        p = Path(path).expanduser().resolve()
+    except (OSError, ValueError, TypeError):
+        return False
+    dirs = [root()] + [Path(d).expanduser() for d in (setting("AGENT_HUB_SCOPE_DIRS") or "").split(":") if d.strip()]
+    for d in dirs:
+        try:
+            if p == d.resolve() or d.resolve() in p.parents:
+                return True
+        except OSError:
+            continue
+    return project_dir(p if p.is_dir() else p.parent) is not None
 
 
 def config_dirs(stage: Optional[str] = None, cwd=None) -> list:

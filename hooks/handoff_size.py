@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """PreToolUse hook on Write|Edit: a HANDOFF-*.md file must stay <= 15 KiB (15360 bytes UTF-8).
 
+Scope: only files in the hub home, in a repository with `.agent-hub/`, or under AGENT_HUB_SCOPE_DIRS (hub home
+config.json); a HANDOFF-*.md anywhere else on the machine is not this plugin's business.
+
 A handoff is read by a fresh session as its entry point; a long one burns the successor's context
 before any work starts. Write: size of tool_input.content. Edit: read the current file, apply
 old_string -> new_string (all occurrences when replace_all), measure the result. The limit is
@@ -22,13 +25,17 @@ REASON = (
 )
 
 
-def hub_setting(name: str):
-    """$NAME, else the hub home's config.json (hubcore.setting from the plugin's bin/)."""
+def hubcore():
     root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     sys.path.insert(0, os.path.join(root, "bin"))
-    import hubcore  # noqa: E402
+    import hubcore as hc  # noqa: E402
 
-    return hubcore.setting(name)
+    return hc
+
+
+def hub_setting(name: str):
+    """$NAME, else the hub home's config.json (hubcore.setting from the plugin's bin/)."""
+    return hubcore().setting(name)
 
 
 def main() -> None:
@@ -41,6 +48,8 @@ def main() -> None:
     if tool not in ("Write", "Edit") or not isinstance(fp, str):
         return
     if not fnmatch.fnmatchcase(os.path.basename(fp), "HANDOFF-*.md"):
+        return
+    if not hubcore().in_scope(os.path.join(data.get("cwd") or os.getcwd(), fp)):
         return
     try:
         limit = int(hub_setting("AGENT_HUB_HANDOFF_MAX_BYTES") or 15360)

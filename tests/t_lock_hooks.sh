@@ -59,8 +59,23 @@ python3 -c 'import json,sys; print(json.dumps({"tool_name":"Edit","tool_input":{
 new_home
 echo '{}' | python3 $HOOKS/questions.py > $R/q0.out; check "$(wc -c < $R/q0.out | tr -d ' ')" 0 "questions: no register, no output"
 $B/ask add --stage stage-a --blocks "release" --default "ship" --due 2000-01-01 "Ship it?" >/dev/null
-echo '{}' | python3 $HOOKS/questions.py > $R/q1.out
+echo "{\"cwd\": \"$AGENT_HUB_HOME\"}" | python3 $HOOKS/questions.py > $R/q1.out
 grep -q 'stage-a — open 1, overdue 1' $R/q1.out && grep -q '"hookEventName": "SessionStart"' $R/q1.out; check $? 0 "questions: open and overdue counted"
+# scope: only the hub home, repositories with .agent-hub/, AGENT_HUB_SCOPE_DIRS, hub agents
+S=$(mktemp -d); mkdir -p $S/other/.git $S/proj/.git $S/proj/.agent-hub $S/proj/src $S/mine/notes
+qs(){ echo "{\"cwd\": \"$1\"}" | python3 $HOOKS/questions.py | grep -q 'open 1'; }
+qs $S/other; check $? 1 "questions scope: an unrelated project hears nothing"
+qs $S/proj/src; check $? 0 "questions scope: a repository with .agent-hub/"
+HUB_TAG=builder qs $S/other; check $? 0 "questions scope: a hub agent anywhere"
+echo "{\"AGENT_HUB_SCOPE_DIRS\": \"$S/mine\"}" > $AGENT_HUB_HOME/config.json
+qs $S/mine/notes; check $? 0 "questions scope: under AGENT_HUB_SCOPE_DIRS"
+qs $S/other; check $? 1 "…and still not elsewhere"
+hsc(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Write","cwd":sys.argv[3],"tool_input":{"file_path":sys.argv[1],"content":"x"*int(sys.argv[2])}}))' "$1" "$2" "${3:-/}" | python3 $HOOKS/handoff_size.py | grep -q '"deny"'; }
+hsc $S/other/HANDOFF-x.md 16000; check $? 1 "handoff_size scope: a HANDOFF-*.md in an unrelated project passes"
+hsc $S/proj/docs/HANDOFF-x.md 16000; check $? 0 "handoff_size scope: inside a repository with .agent-hub/"
+hsc HANDOFF-rel.md 16000 $S/proj/src; check $? 0 "handoff_size scope: a relative path resolves against the cwd"
+hsc $S/mine/HANDOFF-x.md 16000; check $? 0 "handoff_size scope: under AGENT_HUB_SCOPE_DIRS"
+rm $AGENT_HUB_HOME/config.json
 # ---- hooks.json points at existing scripts
 python3 - "$T/../hooks/hooks.json" <<'PY'; check $? 0 "hooks.json: valid, every command script exists"
 import json, os, re, sys
