@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""delegation — show or change the delegation level (the /delegation skill). See hooks/delegation.py.
+
+  delegation show | set N [--global] | clear | try [--tool T] [--type NAME] [--model M]
+"""
+import os
+import runpy
+import sys
+
+HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "hooks", "delegation.py")
+if len(sys.argv) > 1 and sys.argv[1] in ("session-start", "prompt", "pre-tool"):
+    print("delegation: hook subcommands run from hooks.json, not from the CLI", file=sys.stderr)
+    sys.exit(2)
+sys.argv[0] = "delegation"
+runpy.run_path(HOOK, run_name="__main__")
