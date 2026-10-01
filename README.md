@@ -594,7 +594,7 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
   `desktop` and `hub takeover --session local_…` (they read Claude Desktop's session metadata). Terminal sessions work
   as kind `cli`. Interactive terminal, `claude -p` and `claude --bg` sessions receive cross-session messages while
   their process is alive, and nothing once it is gone; for a headless agent prefer `agent send` (it resumes a finished
-  session and leaves a journal line) — see [docs/launch-modes.md](docs/launch-modes.md) after the merge of #4.
+  session and leaves a journal line) — see [docs/launch-modes.md](docs/launch-modes.md).
 - `sendPrompt` buttons do not work in the Claude Code desktop tab, so the `/agent-top` widget has no buttons; it names
   the commands to type instead.
 
