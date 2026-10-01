@@ -4,7 +4,8 @@
   hub start    --stage stage-a --session <session id> [--name "Hub stage-a #1"] [--take-main-merge] [--dry-run]
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
                [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
-  hub handoff  --stage stage-a [--n 16] [--out PATH]
+  hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
+  hub reviewer [--for CLASS] [--json] [--all]
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
@@ -45,6 +46,15 @@ target state is already there is skipped as "already done", so a re-run finishes
 handoff writes a pre-filled HANDOFF-hub-<stage>-YYYY-MM-DD-HHMM.md with the facts filled in and TODO where the
 hub must write; it releases nothing. Environment facts (versions, deploys, open PRs) come from an optional
 executable handoff-facts.sh (config layers as above) that prints Markdown table rows "| What | State | Where it shows |".
+Before writing the draft, handoff looks for sub-agents (the Agent tool) of the hub's own session — --session, else
+the registered hub's — that are still running: a sub-agent dies with its parent session and the successor cannot
+message it. If any is live it lists them (id, description, age) and the three ways out, and exits 2; with
+--allow-live-subagents it writes the draft with the list in its TODO section.
+reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
+.agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
+available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
+--all judges and lists every entry, with why not for the ones passed over; --json prints the same as JSON.
+Exit 0 with a reviewer, 1 when none is available, 2 usage.
 Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub. Exit: 0 ok, 1 step failed, 2 usage.
 """
 from __future__ import annotations
@@ -59,10 +69,13 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import reviewers  # noqa: E402
+import subagents  # noqa: E402
 
 DIGEST_BYTES = 3072
 JWAIT_MATCH = hc.STATUS_WORDS  # the built-in wake words; the digest uses hc.status_pattern() (+ AGENT_HUB_JWAIT_MATCH)
@@ -639,6 +652,41 @@ def cmd_takeover(a) -> int:
 
 # ---------------------------------------------------------------- handoff
 
+def hub_session(stage: str, given: str, me: dict) -> tuple:
+    """(cli session uuid, role record) of the hub whose sub-agents are looked for: --session, else the registered
+    hub (its Claude Code id; a Desktop id is looked up). (None, {}) when the session cannot be told."""
+    if given:
+        cli = session_by_any(given)["cli"]
+        if not subagents.UUID_RE.fullmatch(cli):
+            raise hc.UsageError(f"--session {given!r}: not a session I can find — a CLI uuid, or a local_… id from the "
+                                "Desktop session metadata")
+        return cli, {}
+    cli = me.get("cli") or (session_by_any(me["local"])["cli"] if me.get("local") else "")
+    if not subagents.UUID_RE.fullmatch(cli or ""):
+        return None, {}
+    rec = hc.roles_load(stage)["roles"].get("hub") or {}
+    return cli, rec if cli in (rec.get("cli_session_id"), rec.get("session")) else {}
+
+
+def live_subagents(cli: str, rec: dict) -> list:
+    """Sub-agents (the Agent tool) of the session `cli` that are still running. The session that runs this command
+    is alive by definition; any other is judged by its process (bin/subagents.py)."""
+    if cli == os.environ.get("CLAUDE_CODE_SESSION_ID", ""):
+        alive = True
+    else:
+        table = subagents.process_table()
+        alive = subagents.parent_alive(rec, cli, table, subagents.live_sessions(table))
+    return [s for s in subagents.Finder().of_session(cli, alive, time.time()) if s.alive]
+
+
+def subagent_rows(subs: list) -> list:
+    rows = []
+    for s in subs:
+        last = "no transcript yet" if s.mtime is None else f"last write {hc.age(dt.datetime.fromtimestamp(s.mtime, hc.TZ))} ago"
+        rows.append(f"{s.aid}  \"{s.description or s.meta.get('agentType') or 'sub-agent'}\"  {last}")
+    return rows
+
+
 def cmd_handoff(a) -> int:
     stage = hc.check_stage(a.stage)
     n = a.n or handoff_number(stage)
@@ -650,6 +698,27 @@ def cmd_handoff(a) -> int:
         raise hc.Failure(f"{out} already exists — not overwriting (pass another --out)")
     prev_handoff = latest("HANDOFF-hub-*.md", stage)
     me = previous_hub(stage)  # the hub writing this: roles `hub`, else `coordinator:` of night-queue.md
+    live_rows = []
+    cli, hub_rec = hub_session(stage, a.session, me)
+    if cli is None:
+        print("agent-hub: no hub session known (roles `hub`, or --session): its sub-agents were not checked",
+              file=sys.stderr)
+    else:
+        live_rows = subagent_rows(live_subagents(cli, hub_rec))
+    if live_rows and not a.allow_live_subagents:
+        print(f"hub handoff: {len(live_rows)} sub-agent(s) of the hub's session {cli[:8]} still running — they die with "
+              "it, and the successor cannot message them:", file=sys.stderr)
+        print("".join(f"  {r}\n" for r in live_rows) + "Ways out, for each:\n"
+              "  1. wait for it: its completion notice arrives in this session;\n"
+              "  2. stop it and re-launch the rest with `agent spawn` (its brief and the partial result);\n"
+              "  3. record it as lost: `hub handoff --allow-live-subagents` writes the list into the draft's TODO.\n"
+              "Then run `hub handoff` again.", file=sys.stderr)
+        return 2
+    live_note = ""
+    if live_rows:
+        live_note = ("\n- TODO: sub-agents of this session still running at handoff — they die with it and the successor cannot "
+                     "message them; for each say \"relaunched as `agent spawn` role …\" or \"lost: …\":\n"
+                     + "\n".join(f"  - {r}" for r in live_rows[:12]) + (f"\n  - … and {len(live_rows) - 12} more" if len(live_rows) > 12 else ""))
     work = hc.work_dir(stage)
     q = nightq_read(stage)
     b = board_module()
@@ -731,7 +800,7 @@ TODO: questions asked in chat without a record — `ask add` first, then their i
 
 ## 5. Risks and loose ends
 - TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`git worktree list`;
-  finished ones: `git worktree remove <path>`).
+  finished ones: `git worktree remove <path>`).{live_note}
 
 ## 6. Skills for the successor
 `hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.
@@ -746,6 +815,43 @@ TODO: questions asked in chat without a record — `ask add` first, then their i
     hc.atomic_write(out, body)
     print(f"draft: {out} ({len(body.encode('utf-8'))} bytes); TODO to fill: "
           f"{body.count('TODO')}. Nothing released: the successor takes the locks with `hub takeover`.")
+    return 0
+
+
+# ---------------------------------------------------------------- reviewer
+
+def cmd_reviewer(a) -> int:
+    loaded = reviewers.load()
+    for problem in loaded.problems:
+        hc.warn(problem)
+    verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all)
+    source = {"env": "the environment", "project": "the repository's .agent-hub/config.json",
+              "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
+    start = reviewers.start_line(chosen.entry) if chosen else None
+    if a.json:
+        print(json.dumps({"class": a.for_class, "source": loaded.origin,
+                          "chosen": chosen.entry.name if chosen else None, "start": start,
+                          "entries": [reviewers.entry_json(v) | ({"check_output": v.output} if a.all and v.output else {})
+                                      for v in verdicts],
+                          "invalid": loaded.problems}, ensure_ascii=False, indent=1))
+        return 0 if chosen else 1
+    if a.all or not chosen:
+        print(f"reviewers from {source}" + (f", change class {a.for_class!r}" if a.for_class else "") + ":")
+        for v in verdicts:
+            e = v.entry
+            mark = "→" if chosen and v is chosen else " "
+            print(f" {mark} {e.name} ({reviewers.describe(e)}): {'available' if v.available else 'not available'} — {v.why}")
+            if a.all and v.output:
+                print(f"     check output: {v.output}")
+        if a.all:
+            for problem in loaded.problems:
+                print(f"   invalid: {problem}")
+    if not chosen:
+        print("no reviewer is available" + (f" for class {a.for_class!r}" if a.for_class else ""), file=sys.stderr)
+        return 1
+    e = chosen.entry
+    print(f"reviewer: {e.name} ({reviewers.describe(e)})")
+    print(f"start: {start}")
     return 0
 
 
@@ -776,8 +882,15 @@ def main(argv: list) -> int:
     h.add_argument("--stage", required=True)
     h.add_argument("--n", type=int, help="number of the outgoing hub (default: the registered hub's)")
     h.add_argument("--out")
+    h.add_argument("--session", help="the hub's session whose sub-agents are checked (default: the registered hub's)")
+    h.add_argument("--allow-live-subagents", action="store_true",
+                   help="write the draft although sub-agents of the hub still run; the list goes into its TODO")
+    r = sub.add_parser("reviewer", help="choose the reviewer for a change and print how to start it")
+    r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
+    r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
+    r.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
-    return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff}[a.cmd](a)
+    return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "reviewer": cmd_reviewer}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -196,9 +196,11 @@ When an agent finishes, it writes its report to `coordinator/work/<tag>-REPORT.m
 
 ### 9. Review
 
-Review is your call; the plugin does not require any. A common pattern: the hub starts a fourth agent (`reviewer`,
-often a different model from the author) with a brief that names the PRs and the criteria. The hub's rule of thumb is
-at most three review rounds per artifact; after that only blockers with a concrete scenario are accepted.
+Review is your call; the plugin does not require any. A common pattern: the hub asks `hub reviewer --for code` which
+reviewer to use — by default an ordinary `agent spawn`, a different model from the author — and starts it with a brief
+that names the PRs and the criteria (`templates/brief-review.md`; reviewers and how to plug in your own:
+[reviewers.md](reviewers.md)). The hub's rule of thumb is at most three review rounds per artifact; after that only
+blockers with a concrete scenario are accepted.
 
 ```text
 Have a reviewer agent check PR 41 and 42 against the brief. Report only real problems.

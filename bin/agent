@@ -69,7 +69,7 @@ roles_cli = importlib.util.module_from_spec(_spec)
 _loader.exec_module(roles_cli)
 
 ALIASES = ("opus", "sonnet", "haiku")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORTS = hc.EFFORTS
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 

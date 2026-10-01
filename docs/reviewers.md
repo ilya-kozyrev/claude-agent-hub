@@ -1,0 +1,142 @@
+# Reviewers
+
+A review is a second reader of a change before it merges: a colleague's opinion that the hub checks against the code.
+The hub does not hard-code who that colleague is. **By default a reviewer is an ordinary `agent spawn`** — a headless
+agent with a review brief. A user who has something better to hand — a reviewer skill of their own, another vendor's
+CLI, a cloud service with its own quota — plugs it in as a *reviewer skill* and lists it ahead of the default.
+
+`hub reviewer` answers one question: *which reviewer, for this change, right now, and exactly how do I start it.*
+
+## Configuration
+
+The setting `AGENT_HUB_REVIEWERS` is an ordered JSON list; the first entry that is available wins. Like every setting
+it comes from the environment, a repository's `.agent-hub/config.json` or the hub home's `config.json`, in that order
+(README, *Configuration*):
+
+```json
+{"AGENT_HUB_REVIEWERS": [
+  {"name": "my-review-skill", "kind": "skill", "skill": "my-review-skill",
+   "check": "my-review-quota --ok", "until": "2026-12-31", "for": ["code", "risky"]},
+  {"name": "agent", "kind": "agent", "model": "opus", "effort": "high"}]}
+```
+
+| Field | | Meaning |
+|---|---|---|
+| `name` | required | Unique. An `agent` reviewer's role is `review-<name>`. Letters, digits, `.`, `_`, `-`. |
+| `kind` | required | `agent` — a headless agent started with `agent spawn`; `skill` — a reviewer skill (contract below). |
+| `skill` | kind `skill`, required | The skill's name, as the Skill tool knows it. |
+| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). A haiku reviewer gets no effort. |
+| `check` | optional | A shell command; exit 0 means "available now" — a quota probe, a login check. Runs with a 10 s timeout, its whole process group killed on expiry; its output is shown only by `--all`. |
+| `until` | optional | `YYYY-MM-DD`: available through that day (hub time zone), not after — for a quota or a credit that expires. |
+| `for` | optional | The change classes the entry serves (next section). Absent: every class. |
+
+Rules the tool enforces:
+- **A `check` from a repository's config is never run.** A cloned repository must not run commands through the hub:
+  such an entry is skipped, with a warning that names it. Put entries with a `check` in the environment or in the hub
+  home's `config.json`. (An entry without a `check` is harmless there and works from either place.)
+- **A broken entry is reported and skipped, never a crash.** Not an object, a missing or duplicate `name`, an unknown
+  `kind`, a `skill` entry without `skill`, a field that belongs to the other kind, a bad `effort` or `until`, an
+  unknown field (a misspelt `for` must not quietly widen an entry to every class). A list with no valid entry — or
+  not valid JSON — falls back to the built-in default.
+- **The built-in default** when nothing is set is one entry, `{"name": "agent", "kind": "agent"}`, with the model and
+  effort from `AGENT_HUB_REVIEW_MODEL` and `AGENT_HUB_REVIEW_EFFORT`.
+- There is no implicit fallback: if every listed entry is unavailable, `hub reviewer` exits 1. Keep an `agent` entry
+  last if a review must always be possible.
+
+## Choosing
+
+```
+hub reviewer [--for CLASS] [--json] [--all]
+```
+
+It walks the list in order and stops at the first entry that is available now: not past its `until`, serving the
+class `--for` names (without `--for` no entry is filtered by class), and — if it has a `check` — passing it. It prints
+the choice and how to start it:
+
+```
+$ hub reviewer --for code
+reviewer: my-review-skill (skill my-review-skill)
+start: load skill `my-review-skill`; give it the brief file, the repository, the base sha and the head ref (…)
+
+$ hub reviewer --for docs        # the skill serves code and risky only
+reviewer: agent (agent opus/high)
+start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>
+```
+
+For an `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief file) and
+runs the line as it is — **no `--worktree`**: a reviewer only reads. `agent spawn` refuses a role whose agent still
+runs, so a second review at the same time takes another `--role`. For a `skill` reviewer the hub loads the skill and
+gives it the four inputs of the contract.
+
+`--all` judges every entry and prints why each one passed or not (check exit code, `until` passed, class mismatch,
+invalid), with the output of each `check`. `--json` prints the same as JSON (`chosen`, `start`, `entries`,
+`invalid`). Exit 0 with a choice, 1 when none is available, 2 on a usage error. Nothing is written.
+
+## Change classes
+
+The class says how much review a change deserves; the hub decides it before asking for a reviewer. Three are
+recommended; the names are free (`--for` and `for` just compare strings), so a team can add its own.
+
+| Class | The change | Review |
+|---|---|---|
+| `docs` | Documentation only, or tooling and configuration whose own positive and negative controls were run and are shown in the PR | None by a model: CI and the author's controls are the check. |
+| `code` | Any other change to code | One review. |
+| `risky` | Money, migrations, production, permissions | The **same single review**, with its brief narrowed to that risk ("Look hardest at" in the template) — not a second reviewer. |
+
+*Why:* a review costs a full read of the diff and its context, and a second reviewer on the same risk mostly finds the
+same thing twice. A narrower brief gets more out of one reader than a second reader gets out of a wide one. When the
+author cannot tell whether a change needs a review at all, it reviews and says why in the PR.
+
+## The reviewer is a different model from the author
+
+Recommended rule: whoever wrote a change does not review it, and a reviewer from the same model family as the author
+tends to read the code the way it was written. Pick `AGENT_HUB_REVIEW_MODEL` (and the `model` of `agent` entries)
+different from the model your executors write with, or list a reviewer skill that runs another vendor's model.
+*Why:* a weaker or identical reader returns a confident summary of the diff, which reads like agreement.
+
+## The brief
+
+`${CLAUDE_PLUGIN_ROOT}/templates/brief-review.md` is a self-contained review brief: what changed and why, the diff
+(`git diff <base sha>..<head sha>`), where to look hardest, read-only, findings ranked high / medium / low with
+`file:line`, a concrete failing scenario and a one-sentence fix, a verdict (`merge`, `merge after fixes`, `changes
+requested`), and "say if you ran the tests". Its *Round N* section is for the next rounds: paste the previous round's
+findings verbatim and limit the scope to the fix commits. At most three rounds per artifact (the hub skill's rule 5).
+
+## The skill reviewer contract
+
+A reviewer skill is any skill that follows this contract; the hub knows nothing else about it.
+
+- **Input**, given by the hub when it loads the skill: the path of the brief file, the repository directory (a checkout
+  that has the head commit), the base sha and the head ref.
+- **It may run detached** — a CLI started in the background, a cloud session, a queue. It then says how the hub should
+  wait for it (typically a file to watch with `jwait --file`, or a `Monitor`), and the hub waits the way its skill
+  says: one waiter, no polling loop.
+- **Output**: the review in a file, and the file's path in its final message. The format is the brief's: findings
+  ranked, each with `file:line`, a scenario and a fix, then a verdict line.
+- **The hub verifies each finding against the code before acting on it.** A review is a colleague's opinion: the hub
+  confirms the cited line says what the finding claims, reproduces the scenario or reads it through, and only then
+  hands the author a fix list — dropping what does not hold.
+- It does not edit, commit or push. It may run the tests.
+
+### Writing one
+
+A reviewer skill is a `SKILL.md` that turns the four inputs into a call to whatever does the review. Skeleton:
+
+```markdown
+---
+name: my-review-skill
+description: Review a branch with <tool>. Use when the hub asks for a reviewer — it gives you a brief file, a
+  repository, a base sha and a head ref.
+---
+
+Inputs: BRIEF (a file), REPO (a directory), BASE (a sha), HEAD (a ref).
+
+1. Check the tool is usable: `my-review-quota --ok` (exit 0). If not, say so and stop — the hub picks the next reviewer.
+2. Run it detached, read-only, in REPO, with BRIEF as its prompt and `git diff BASE..HEAD` as the change, writing the
+   review to a file under the stage's `coordinator/work/` directory (`review-<head>.md`).
+3. Say, in one message: the path of the review file, and how to know it is finished (the last line of the file is
+   `VERDICT: …`).
+```
+
+Then list it: `{"name": "my-review-skill", "kind": "skill", "skill": "my-review-skill", "check": "my-review-quota --ok"}`
+— the `check` lets `hub reviewer` skip it before anyone loads the skill when the quota is gone.

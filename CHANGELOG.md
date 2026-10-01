@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+Reviewers become a setting, and the launch choice rests on what is visible before the start instead of an estimated
+duration.
+
+- **Configurable reviewers.** New setting `AGENT_HUB_REVIEWERS` (environment, a repository's `.agent-hub/config.json`
+  or the hub home's): an ordered JSON list, the first available entry wins. An entry is an `agent` (an ordinary
+  `agent spawn`, model and effort from the new `AGENT_HUB_REVIEW_MODEL` / `AGENT_HUB_REVIEW_EFFORT`, default
+  `opus` / `high`) or a `skill` (a reviewer skill the user plugs in), with an optional `check` command (exit 0 =
+  available now, 10 s timeout), `until` date and `for` change classes. A `check` from a repository's config is never
+  run — the entry is skipped with a warning; a broken entry is reported and skipped; a list with no valid entry gives
+  the built-in default, one `agent` reviewer. The hub skill and `docs/launch-modes.md` no longer route reviews to a
+  cloud session: a review is `hub reviewer`, and a cloud service is a reviewer skill if the user has one.
+- **`hub reviewer [--for CLASS] [--json] [--all]`** walks the list and prints the chosen reviewer and exactly how to
+  start it (the full `agent spawn` line with `<REPO>` / `<BRIEF>` placeholders and no `--worktree`, or "load skill …");
+  `--all` lists every entry with why it was skipped; exit 1 when none is available.
+- **`templates/brief-review.md`** (a self-contained review brief with a round-N variant) and **`docs/reviewers.md`**
+  (the config, the choice order, the change classes `docs` / `code` / `risky`, the skill reviewer contract, how to
+  write one). New recommended hub rules: a change gets the review its class says, and the reviewer is a different
+  model from the author.
+- **Launch choice by observable criteria.** The hub skill's "Choosing how to launch work" and the decision table of
+  `docs/launch-modes.md` choose by what the work does: read-only with a short digest and nothing external to wait on
+  is a sub-agent (foreground when the hub has nothing else to do, else background); anything that commits or pushes,
+  waits on CI / a deploy / another party, touches production or must be reachable by someone else is `agent spawn`;
+  estimated duration is a hint only. Every sub-agent brief ends with a call budget (a recommended N in the skill).
+- **`hub handoff` guard.** Before writing the draft it looks for live sub-agents of the hub's own session
+  (`--session`, else the registered hub's); if any runs it exits 2 and lists them (id, description, age) with the
+  three ways out. `--allow-live-subagents` goes on and writes them into the draft's TODO. The discovery and state logic
+  `agent-top` used for sub-agents moved to the shared `bin/subagents.py`; `agent-top` behaves as before.
+- **`jwait` default `--for` is now 2h** (was 12h): a background Bash task is not guaranteed to live longer. The hub
+  skill also says to add `--exclude-tag <hub tag>` when `jwait` is called with `--caller <session id>` instead of as
+  the hub's tag, or the hub's own `@agent` messages wake it.
+
 ## 0.4.0 — 2026-10-01
 
 A shape for teams other than the author's — generic lock resources, a setup flow, a first-hub start, the author's

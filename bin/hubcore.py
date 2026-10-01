@@ -31,6 +31,7 @@ STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 # "- 14:35 [hub-16] text"; the tag may hold spaces ("[qa-2 r5b]").
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
                  "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
@@ -56,11 +57,14 @@ HUB_WIDE_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_CONTEXT_WARN", "AGENT_H
 PROJECT_KEYS += ("AGENT_HUB_POLL_GUARD", "AGENT_HUB_POLL_MAX_SLEEP", "AGENT_HUB_POLL_MAX_BOUNDED_WAIT",
                  "AGENT_HUB_POLL_ESCAPE", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW",
                  "AGENT_HUB_WAIT_HINT", "AGENT_HUB_EFFORT_RULES")
+# Reviewers (bin/reviewers.py): the list, and the model and effort of a built-in `agent` reviewer. A repository may
+# set them all; a `check` command in a repository's list is never run (see reviewers.py).
+PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REVIEW_EFFORT")
 BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
-             "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW")
+             "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
 
 
 def root() -> Path:
@@ -175,6 +179,9 @@ def _warn(msg: str) -> None:
     print(f"agent-hub: {msg}", file=sys.stderr)
 
 
+warn = _warn  # for the tools that report a bad setting themselves (bin/reviewers.py, `hub reviewer`)
+
+
 def read_config(path: Path, project: bool) -> dict:
     """Settings of one config.json as {NAME: str}. A broken file or a key the layer may not set is reported on
     stderr and ignored, so a typo never stops a tool (but never passes silently either)."""
@@ -217,19 +224,26 @@ def read_config(path: Path, project: bool) -> dict:
     return out
 
 
-def setting(name: str, default: Optional[str] = None, cwd=None) -> Optional[str]:
-    """$NAME if set and non-empty, else the project's .agent-hub/config.json (for PROJECT_KEYS; the project is
-    found from `cwd`, default the working directory), else <hub home>/config.json, else `default`."""
+def setting_origin(name: str, default: Optional[str] = None, cwd=None) -> tuple:
+    """(value, origin) of a setting, origin one of "env", "project", "home", "default": which layer supplied it.
+    A setting whose meaning depends on who wrote it (a command a repository must not run) asks for it."""
     raw = os.environ.get(name)
     if raw:
-        return raw
+        return raw, "env"
     if name in PROJECT_KEYS:
         proj = project_dir(cwd)
         if proj:
             val = read_config(proj / CONFIG_DIRNAME / "config.json", project=True).get(name)
             if val:
-                return val
-    return read_config(root() / "config.json", project=False).get(name) or default
+                return val, "project"
+    val = read_config(root() / "config.json", project=False).get(name)
+    return (val, "home") if val else (default, "default")
+
+
+def setting(name: str, default: Optional[str] = None, cwd=None) -> Optional[str]:
+    """$NAME if set and non-empty, else the project's .agent-hub/config.json (for PROJECT_KEYS; the project is
+    found from `cwd`, default the working directory), else <hub home>/config.json, else `default`."""
+    return setting_origin(name, default, cwd)[0]
 
 
 def setting_json(name: str, default=None, cwd=None):

@@ -25,7 +25,8 @@ whether or not the caller has seen them (`hub takeover` prints it). A --file sou
 unseen matching line, even the first time (a script may have asked its question before jwait
 started); a last line without a newline is delivered after it stays unchanged for max(--settle, 1) s.
 Batching: after the first match keeps collecting for --settle seconds (default 20), then prints.
-Deadline: --until HH:MM (hub time zone; a past time means tomorrow) or --for 6h; default --for 12h. On the
+Deadline: --until HH:MM (hub time zone; a past time means tomorrow) or --for 6h; default --for 2h (a background Bash task
+is not guaranteed to live longer; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
 """
@@ -45,7 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 
 POLL_S = 1.0
-DEFAULT_FOR = "12h"
+DEFAULT_FOR = "2h"
 MAX_OUT_LINES = 200
 MAX_LINE_CHARS = 1200
 

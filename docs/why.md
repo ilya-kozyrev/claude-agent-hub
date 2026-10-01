@@ -60,14 +60,14 @@ The limit is in the first line of their docs: subagents work within a single ses
 | Decisions it relies on | Whatever the parent put in its prompt | The brief, with "owner decisions — do not reopen" filled from the question register |
 | Cost shape | Cheap to start; each report grows the parent | A brief to write; the hub grows by one line per event |
 
-Use an **in-session subagent** for short, bounded pieces while you are there: a search, reading a long log for the one
-failing line, a fact check, a review of one file. The hub does this itself — a hub that reads logs in its own context
-is the pattern this plugin exists to avoid.
+Use an **in-session subagent** for read-only pieces that answer with a short digest while you are there: a search,
+reading a long log for the one failing line, a fact check, a review of one file. The hub does this itself — a hub that
+reads logs in its own context is the pattern this plugin exists to avoid.
 
-Use a **headless agent** when the work runs longer than about half an hour, must outlive the session that started it,
-or other sessions must be able to reach it: a stage executor, an agent that merges approved PRs one at a time, a
-release rehearsal, a night queue. The full decision table, background sub-agents included, with the measurements
-behind it: [launch-modes.md](launch-modes.md).
+Use a **headless agent** when the work commits or pushes, waits on CI, a deploy or another party, touches production,
+must outlive the session that started it, or other sessions must be able to reach it: a stage executor, an agent that
+merges approved PRs one at a time, a release rehearsal, a night queue. The full decision table, background sub-agents
+included, with the measurements behind it: [launch-modes.md](launch-modes.md).
 
 Claude Code also has agent view (background sessions you dispatch and watch from one screen, research preview), agent
 teams (a lead and teammates that message each other, experimental) and cross-session messaging [4][5]. If one of them
