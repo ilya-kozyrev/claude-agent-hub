@@ -19,8 +19,12 @@ rules of both apply, the repository's first:
 
 Decision: an active lock of a relevant kind held by another session_id -> deny with holder, until,
 reason. Own lock, expired lock, no lock -> no decision. `# lock-ok: <reason>` anywhere in the
-command -> no decision. Fail-open: any own error (broken board, bad JSON, bad rules file, import
-failure) exits 0 without a decision.
+command -> no decision. Fail-open: any own error (broken board, bad JSON, import failure) exits 0
+without a decision. A broken lock-rules.json (bad JSON, a rule without `match`, a bad regex, `kinds` that is not
+a non-empty list of known lock kinds) does NOT switch the guard off: that file is skipped, the built-in rules and
+the other file still apply, and a warning goes to stderr and to the user (`systemMessage`) on every Bash call
+until it is fixed. The same warning is given for a configured rules path that is a dangling symlink, and for
+$AGENT_HUB_LOCK_RULES naming a missing file.
 
 Repo scoping: a lock guards one repo (default "*": every repo). The action's repo is taken from
 `-R/--repo`, a `repos/<owner>/<name>` or `projects/<group%2Fname>` API path, `git -C`/`cd` in the
@@ -163,46 +167,95 @@ def _repo_of(seg: list[str], cwd: str | None) -> str | None:
     return _git_repo_name(cwd) if cwd else None
 
 
-def _read_rules(path: str) -> dict | None:
-    """One lock-rules.json; None when the file does not exist. A broken file raises (the hook fails open)."""
+class RulesError(ValueError):
+    """A lock-rules.json that cannot be used."""
+
+
+def _lock_kinds() -> tuple:
+    sys.path.insert(0, plugin_bin())
+    import board  # noqa: E402
+
+    return tuple(board.KINDS)
+
+
+def _read_rules(path: str, required: bool = False) -> dict | None:
+    """One lock-rules.json; None when the file does not exist (a dangling symlink, or a missing file that was named
+    explicitly with `required`, raises RulesError: a guard that was configured must not vanish without a word)."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
+        if os.path.islink(path):
+            raise RulesError(f"{path} is a symlink to a missing file ({os.readlink(path)})") from None
+        if required:
+            raise RulesError(f"{path} (AGENT_HUB_LOCK_RULES) does not exist") from None
         return None
+    except (OSError, ValueError) as e:
+        raise RulesError(f"{path}: {e}") from None
+    if not isinstance(data, dict):
+        raise RulesError(f"{path}: not a JSON object")
+    known = _lock_kinds()
     rules = []
-    for r in data.get("rules") or []:
-        rules.append({"re": re.compile(r["match"]), "kinds": tuple(r["kinds"]),
-                      "action": r.get("action") or r["match"]})
-    return {"protected_branches": data.get("protected_branches"), "rules": rules}
+    raw_rules = data.get("rules") or []
+    if not isinstance(raw_rules, list):
+        raise RulesError(f"{path}: \"rules\" must be a list")
+    for i, r in enumerate(raw_rules):
+        where = f"{path}: rule {i + 1}"
+        if not isinstance(r, dict) or not isinstance(r.get("match"), str) or not r["match"]:
+            raise RulesError(f"{where}: \"match\" must be a non-empty string")
+        kinds = r.get("kinds")
+        if not isinstance(kinds, list) or not kinds or not all(isinstance(k, str) for k in kinds):
+            raise RulesError(f"{where}: \"kinds\" must be a non-empty list of lock kinds ({', '.join(known)})")
+        unknown = [k for k in kinds if k not in known]
+        if unknown:
+            raise RulesError(f"{where}: unknown lock kind {', '.join(map(repr, unknown))} (known: {', '.join(known)})")
+        try:
+            rx = re.compile(r["match"])
+        except re.error as e:
+            raise RulesError(f"{where}: bad regex: {e}") from None
+        rules.append({"re": rx, "kinds": tuple(kinds), "action": r.get("action") or r["match"]})
+    protected = data.get("protected_branches")
+    if protected is not None and (not isinstance(protected, list) or not all(isinstance(b, str) for b in protected)):
+        raise RulesError(f"{path}: \"protected_branches\" must be a list of branch names")
+    return {"protected_branches": protected, "rules": rules}
 
 
-def rule_files(cwd: str | None) -> list[str]:
-    """The lock-rules.json files that apply to a command run in `cwd`: the repository's
-    <repo>/.agent-hub/lock-rules.json (if any), then the hub home's ($AGENT_HUB_LOCK_RULES overrides that one)."""
+def rule_files(cwd: str | None) -> list[tuple[str, bool]]:
+    """The lock-rules.json files that apply to a command run in `cwd`, as (path, required): the repository's
+    <repo>/.agent-hub/lock-rules.json (if any), then the hub home's ($AGENT_HUB_LOCK_RULES overrides that one and
+    must exist)."""
     sys.path.insert(0, plugin_bin())
     import hubcore  # noqa: E402
 
     out = []
     proj = hubcore.project_dir(cwd) if cwd else None
     if proj:
-        out.append(str(proj / hubcore.CONFIG_DIRNAME / "lock-rules.json"))
-    out.append(os.environ.get("AGENT_HUB_LOCK_RULES") or str(hubcore.root() / "lock-rules.json"))
+        out.append((str(proj / hubcore.CONFIG_DIRNAME / "lock-rules.json"), False))
+    env = os.environ.get("AGENT_HUB_LOCK_RULES")
+    out.append((env, True) if env else (str(hubcore.root() / "lock-rules.json"), False))
     return out
 
 
 _RULES_CACHE: dict = {}
+WARNINGS: list = []
 
 
 def load_rules(cwd: str | None = None) -> dict:
     """Rules of every applicable file together: the repository's first, then the hub home's. Protected branches:
-    the union of the files that name them, else main and master. No file = built-ins only."""
+    the union of the files that name them, else main and master. No file = built-ins only. A file that cannot be
+    used is skipped with a warning (WARNINGS); the others and the built-ins still apply."""
     files = tuple(rule_files(cwd))
     if files in _RULES_CACHE:
         return _RULES_CACHE[files]
     rules, protected = [], []
-    for path in files:
-        data = _read_rules(path)
+    for path, required in files:
+        try:
+            data = _read_rules(path, required)
+        except RulesError as e:
+            msg = f"lock rules skipped — {e}. Its commands are NOT guarded until the file is fixed."
+            if msg not in WARNINGS:
+                WARNINGS.append(msg)
+            continue
         if data is None:
             continue
         rules += data["rules"]
@@ -322,14 +375,22 @@ def main() -> int:
 
         reason = decide(event, board)
     except Exception as e:  # fail-open: never break the user's sessions
-        print(f"board_locks: fail-open ({type(e).__name__}: {e})", file=sys.stderr)
+        print(f"board_locks: fail-open ({type(e).__name__}: {e})" + "".join(" " + w for w in WARNINGS),
+              file=sys.stderr)
         return 0
+    out: dict = {}
+    if WARNINGS:
+        warning = "board_locks: " + " ".join(WARNINGS)
+        print(warning, file=sys.stderr)
+        out["systemMessage"] = warning
     if reason:
-        print(json.dumps({"hookSpecificOutput": {
+        out["hookSpecificOutput"] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
-        }}, ensure_ascii=False))
+        }
+    if out:
+        print(json.dumps(out, ensure_ascii=False))
     return 0
 
 

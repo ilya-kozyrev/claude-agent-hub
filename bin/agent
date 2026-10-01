@@ -128,7 +128,16 @@ def _app_claude() -> str | None:
 
 
 def claude_bin(cwd=None) -> str:
-    b = hc.setting("CLAUDE_BIN", cwd=cwd) or shutil.which("claude") or _app_claude()
+    """$CLAUDE_BIN (a path or a name on PATH; the value `desktop` = the newest CLI bundled with Claude Desktop,
+    which survives Desktop updates), else `claude` on PATH, else the Desktop bundle."""
+    b = hc.setting("CLAUDE_BIN", cwd=cwd)
+    if b and b.strip().lower() == "desktop":
+        b = _app_claude()
+        if not b:
+            raise hc.Failure("CLAUDE_BIN=desktop, but no CLI bundled with Claude Desktop was found under "
+                             f"{Path.home() / 'Library/Application Support/Claude/claude-code'}")
+        return b
+    b = b or shutil.which("claude") or _app_claude()
     if not b:
         raise hc.Failure("claude not found on PATH (set $CLAUDE_BIN)")
     return b
@@ -485,18 +494,19 @@ def cmd_stop(a) -> int:
     return 0
 
 
-STATUS_RE = re.compile(r"\b(MERGED|STOP|DONE|BLOCKED|QUESTION)\b")
 
 
 def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
-    """Did the agent journal a status word (its own tag) since `since`?"""
+    """Did the agent journal a status word (its own tag) since `since`? The words are the hub's wake words
+    (hubcore.status_pattern: MERGED, STOP, DONE, BLOCKED, QUESTION, … plus $AGENT_HUB_JWAIT_MATCH)."""
+    status_re = re.compile(hc.status_pattern(exit_word=False))
     day = since.date()
     while day <= hc.now().date():
         path = hc.journal_path(stage, day)
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 m = hc.JOURNAL_LINE_RE.match(line)
-                if not m or not hc.tag_is(m.group(2), tag) or not STATUS_RE.search(m.group(3)):
+                if not m or not hc.tag_is(m.group(2), tag) or not status_re.search(m.group(3)):
                     continue
                 hh, mm = map(int, m.group(1).split(":"))
                 if hc.dt.datetime.combine(day, hc.dt.time(hh, mm), tzinfo=hc.TZ) >= since.replace(second=0, microsecond=0):

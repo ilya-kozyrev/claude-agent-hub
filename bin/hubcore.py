@@ -32,10 +32,14 @@ STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
-HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES")
+HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
+                 "AGENT_HUB_JWAIT_MATCH")
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
-                "AGENT_HUB_DEFAULT_REPO", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT")
+                "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT")
+# Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending.
+# $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
+STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
 
 
 def root() -> Path:
@@ -157,9 +161,54 @@ def _zone() -> dt.tzinfo:
 
 TZ = _zone()
 TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
-# Claude Desktop pauses a session's outgoing cross-session sends after this many messages without the
-# user typing in it; `roles` counts sends against it. Override with $AGENT_HUB_SEND_CAP.
-MESSAGE_CAP = int(setting("AGENT_HUB_SEND_CAP") or 10)
+DEFAULT_MESSAGE_CAP = 10
+
+
+def int_setting(name: str, default: int, minimum: int = 1) -> int:
+    """An integer setting; a value that is not a whole number >= minimum is reported on stderr and replaced by the
+    default (a typo in config.json must not break every tool at import)."""
+    raw = setting(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        val = int(str(raw).strip())
+        if val < minimum:
+            raise ValueError
+        return val
+    except ValueError:
+        _warn(f"{name}={raw!r} is not a whole number >= {minimum}; using {default}")
+        return default
+
+
+def message_cap() -> int:
+    """Claude Desktop pauses a session's outgoing cross-session sends after this many messages without the user
+    typing in it; `roles` counts sends against it. $AGENT_HUB_SEND_CAP (hub-wide), default 10."""
+    return int_setting("AGENT_HUB_SEND_CAP", DEFAULT_MESSAGE_CAP)
+
+
+def __getattr__(name: str):
+    # MESSAGE_CAP is read when used, not at import: a bad value then costs a warning, not every tool.
+    if name == "MESSAGE_CAP":
+        return message_cap()
+    raise AttributeError(name)
+
+
+def status_pattern(exit_word: bool = True) -> str:
+    """STATUS_WORDS plus $AGENT_HUB_JWAIT_MATCH (hub-wide), if set and a valid regex. exit_word=False leaves out
+    EXIT (the line `agent` itself writes when a run ends without a status word)."""
+    extra = (setting("AGENT_HUB_JWAIT_MATCH") or "").strip()
+    if extra:
+        try:
+            re.compile(extra)
+        except re.error as e:
+            _warn(f"AGENT_HUB_JWAIT_MATCH is not a valid regex ({e}); ignored")
+            extra = ""
+    base = STATUS_WORDS if exit_word else STATUS_WORDS.replace("|EXIT", "")
+    return f"{base}|{extra}" if extra else base
+
+
+def truthy(raw: Optional[str]) -> bool:
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def child_env(extra: Optional[dict] = None) -> dict:

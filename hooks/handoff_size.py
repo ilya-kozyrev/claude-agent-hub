@@ -45,6 +45,7 @@ def main() -> None:
     try:
         limit = int(hub_setting("AGENT_HUB_HANDOFF_MAX_BYTES") or 15360)
     except ValueError:
+        print("handoff_size: AGENT_HUB_HANDOFF_MAX_BYTES is not a whole number; using 15360", file=sys.stderr)
         limit = 15360
 
     if tool == "Write":

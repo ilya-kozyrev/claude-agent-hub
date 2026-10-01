@@ -269,11 +269,13 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. |
-| `CLAUDE_BIN` | `claude` on PATH | The CLI to run agents with. |
+| `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true`: `hub takeover` takes the hub repository's main-merge as if `--take-main-merge` were given. Without it, a free main-merge of a configured hub repository is reported in the digest. |
+| `CLAUDE_BIN` | `claude` on PATH | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
 | `AGENT_INIT_TIMEOUT` | `120` | Seconds to wait for a new run's init event before calling the spawn failed. |
 | `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal. Hub-wide. |
 | `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for `nightq`. Hub-wide. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
+| `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only). |
 
 ### Configuration layers
@@ -294,6 +296,7 @@ from three places, most specific first:
 | `brief-footer.md` | stage, project, home | first found | `agent spawn`: appended after the standard footer; `{role}` `{tag}` `{stage}` `{report}` `{inbox}` are filled in |
 | `handoff-facts.sh` | stage, project, home | first found | `hub handoff`: prints rows `\| What \| State \| Where it shows \|` for § 1 |
 | `takeover.sh` | stage, project, home | first found | `hub takeover`: an extra verified step (below) |
+| `HUB-NOTES.md` | stage, project, home | first found | the hub: the project's own hub rules (what needs the owner, how to check data claims, …); the takeover digest points at it and the `hub` skill reads it before planning |
 
 `config.json` is a flat JSON object of the settings above; keys starting with `_` are comments. A key a layer may not
 set (a hub-wide key in a repository, a misspelling) and a broken file are reported on stderr and ignored, so a typo
@@ -315,6 +318,12 @@ never stops a tool:
 ```
 
 `match` is a Python regex searched in the command's words joined by single spaces; the first matching rule wins.
+`kinds` is a non-empty list of `deploy-window`, `main-merge`, `stage`, `migration-head`. A file that cannot be used
+(bad JSON, a bad regex, bad `kinds`, a symlink to a missing file) is skipped with a warning on every command — on
+stderr and to the user — while the built-in rules and the other file keep guarding; fix it, the guard is incomplete
+until then. Rules in the hub home apply to commands run anywhere, so keep there the rules that must hold outside a
+checkout (a deploy job started with `-R group/repo` from your home directory), as a regular file rather than a
+symlink into a checkout whose branch can change.
 Built in: `gh pr merge`, `glab mr merge`, merge calls through `gh api` / `glab api`, and `git push` to a protected
 branch need `main-merge`. Add `# lock-ok: <reason>` to a command to pass it deliberately. A lock guards one repository
 (`--repo`, default `*`), so a rule known in every repository still only stops commands aimed at the locked one.

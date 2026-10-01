@@ -16,7 +16,9 @@ target state is already there is skipped as "already done", so a re-run finishes
      says so and takes the locks of all of them. --take-main-merge also takes main-merge of the hub's
      repo (AGENT_HUB_DEFAULT_REPO, else "*") when nobody holds it (until --main-merge-until) or when a third
      party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
-     reported and left alone. --skip-lock KIND leaves that lock where it
+     reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
+     The free lock is never added when a main-merge is already taken over or held (no second, wildcard
+     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock KIND leaves that lock where it
      is (a sub-agent of the old hub still works under it).
   2. night-queue.md: `coordinator: <new session id>` (the night nudge addresses it) and `updated:`
      (single-line edits, atomic write). Skipped when the stage has no night queue.
@@ -45,6 +47,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -53,7 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 
 DIGEST_BYTES = 3072
-JWAIT_MATCH = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
+JWAIT_MATCH = hc.STATUS_WORDS  # the built-in wake words; the digest uses hc.status_pattern() (+ AGENT_HUB_JWAIT_MATCH)
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -274,8 +277,14 @@ def roles_digest(stage: str) -> str:
 
 def jwait_command(stage: str, tag: str, since=None) -> str:
     since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
-    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match '{JWAIT_MATCH}' "
+    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match {shlex.quote(hc.status_pattern())} "
             f"{since_opt}--for 2h --note \"scheduled round\"")
+
+
+def hub_notes_line(stage: str) -> str:
+    """Pointer to the project's hub notes (HUB-NOTES.md in the config layers), read before planning."""
+    notes = hc.config_file("HUB-NOTES.md", stage)
+    return f"Hub notes of this project — read before planning: {notes}" if notes else ""
 
 
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = ()) -> str:
@@ -286,6 +295,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
+        (hub_notes_line(stage), 300, ""),
         ("First jwait (Bash, run_in_background: true; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
         (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,
@@ -423,6 +433,7 @@ def cmd_takeover(a) -> int:
         return r.get("repo") or b.DEFAULT_REPO
 
     skip = set(a.skip_lock or [])
+    take_mm = a.take_main_merge or hc.truthy(hc.setting("AGENT_HUB_TAKE_MAIN_MERGE"))
     to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip]
     kept = [r for r in active if r.get("session_id") in owners and r["kind"] in skip]
     mine = [r for r in active if r.get("session_id") == cli]
@@ -431,20 +442,29 @@ def cmd_takeover(a) -> int:
         # (AGENT_HUB_DEFAULT_REPO; "*" = all) and the repo's free lock; the rest is reported and left alone.
         mm_repo = hc.setting("AGENT_HUB_DEFAULT_REPO") or b.DEFAULT_REPO
         ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
+        if take_mm and mm_repo == "*":
+            notes.append(f"no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
         third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
                  and r.get("session_id") not in owners and r.get("session_id") != cli]
         for mm in third:
-            if a.take_main_merge and (mm_repo == "*" or repo_of(mm) in (mm_repo, "*")):
+            if take_mm and (mm_repo == "*" or repo_of(mm) in (mm_repo, "*")):
                 to_take.append({"kind": "main-merge", "repo": repo_of(mm), "until": mm["until"],
                                 "why": mm.get("why") or "stage hub", "_from": mm.get("owner_name")})
             else:
                 notes.append(f"main-merge ({repo_of(mm)}) is held by {mm.get('owner_name')} "
                              f"[{(mm.get('session_id') or '-')[:8]}] until {mm['until'][:16]}: "
                              f"{(mm.get('why') or '')[:60]} — left alone"
-                             + ("" if a.take_main_merge else "; take it with --take-main-merge"))
-        if a.take_main_merge and mm_repo not in ours and not any(repo_of(r) == mm_repo for r in third):
+                             + ("" if take_mm else "; take it with --take-main-merge"))
+        # The hub repo's free main-merge. Never when a main-merge is already ours (taken over from the previous
+        # hub or held): a second record, and a wildcard one above all, would lock merges in other repositories.
+        held_here = any(repo_of(r) in (mm_repo, "*") for r in active if r["kind"] == "main-merge")
+        if take_mm and not ours and not held_here and not (mm_repo == "*" and any(
+                r["kind"] == "main-merge" for r in active)):
             to_take.append({"kind": "main-merge", "repo": mm_repo, "until": a.main_merge_until,
                             "why": "stage hub", "_from": None})
+        elif not take_mm and not ours and not held_here and mm_repo != "*":
+            notes.append(f"nobody holds main-merge ({mm_repo}): merges to its main are not guarded — "
+                         "--take-main-merge, or AGENT_HUB_TAKE_MAIN_MERGE=true in the repository's config.json")
     if kept:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 
@@ -491,7 +511,8 @@ def cmd_takeover(a) -> int:
 
     step = hc.config_file("takeover.sh", stage)
     if step is None:
-        pass
+        print("no takeover.sh in the config layers (" + ", ".join(str(d) for d in hc.config_dirs(stage))
+              + f"; cwd {os.getcwd()}) — no project step")
     elif not os.access(step, os.X_OK):
         notes.append(f"{step} is not executable — project takeover step skipped")
         print(f"ATTENTION: {notes[-1]}")

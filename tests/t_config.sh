@@ -81,7 +81,7 @@ deny "git push origin HEAD:main" $ME $OUT; check $? 0 "default protected branche
 deny "make release" $OTHER $REPO; check $? 1 "own lock passes"
 echo '{"rules": [' > $REPO/.agent-hub/lock-rules.json
 hook "make release" $ME $REPO > $P/fo.out 2>/dev/null; check $? 0 "broken repository rules: exit 0"
-check "$(wc -c < $P/fo.out | tr -d ' ')" 0 "…no decision (fail-open)"
+! grep -q permissionDecision $P/fo.out && grep -q '"systemMessage"' $P/fo.out; check $? 0 "…its rule cannot decide; the user is warned (t_hardening)"
 rm -f $REPO/.agent-hub/lock-rules.json $R/lock-rules.json $R/board.md
 
 # ---- handoff_size: the cap from the home config

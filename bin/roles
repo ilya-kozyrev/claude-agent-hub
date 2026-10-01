@@ -100,7 +100,7 @@ def budget(data: dict, from_sid: str, to_sid=None):
     since = max(resets) if resets else ""
     mine = [s for s in data["sends"] if s.get("from") == from_sid and not s.get("reset") and s["at"] > since]
     pair = sum(1 for s in mine if s.get("to") == to_sid) if to_sid else None
-    return max(0, hc.MESSAGE_CAP - len(mine)), pair
+    return max(0, hc.message_cap() - len(mine)), pair
 
 
 def record_send(data: dict, from_sid: str, to_sid: str) -> None:
@@ -156,7 +156,7 @@ def cmd_sent(stage, a) -> int:
         record_send(data, f, t)
         hc.roles_save(stage, data)
     left, pair = budget(data, f, t)
-    print(f"recorded; the sender has {left} of {hc.MESSAGE_CAP} left (sent to this recipient: {pair})")
+    print(f"recorded; the sender has {left} of {hc.message_cap()} left (sent to this recipient: {pair})")
     return 0
 
 
@@ -179,7 +179,7 @@ def cmd_reset(stage, a) -> int:
         _, f = resolve(data, a.from_)
         data["sends"].append({"from": f, "reset": True, "at": hc.now().isoformat(timespec="seconds")})
         hc.roles_save(stage, data)
-    print(f"{f}: send counter reset, {hc.MESSAGE_CAP} available")
+    print(f"{f}: send counter reset, {hc.message_cap()} available")
     return 0
 
 
