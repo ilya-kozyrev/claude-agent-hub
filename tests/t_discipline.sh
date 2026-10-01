@@ -110,6 +110,57 @@ denied 'sleep 20s; ls'; check $? 1 "poll: sleep 20s passes"
 denied 'sleep 0.25m; ls'; check $? 1 "poll: sleep 0.25m (15 s) passes"
 denied "glab api $P/merge_requests/1/notes -f body=\"the jobs are green\""; check $? 1 "poll: glab api with a field is a write, not a status read"
 denied "gh api repos/acme/webapp/issues/1/comments -F body=@pipelines.md"; check $? 1 "poll: gh api with a field is a write"
+# quoted text is data until a shell executes it: 0.4.0 denied `git commit -m "… sleep 5m …"` and `grep "sleep 5m"`
+DATA=(
+  'git commit -m "fix: replace sleep 5m with ci_wait"'
+  'grep -rn "sleep 5m" scripts/'
+  'git commit -m "docs: never write while true; do sleep 60; done"'
+  'rg "until .*; do"'
+  "rg 'sleep 60' app/"
+  "git log --grep='sleep 60' --oneline -5"
+  "sed -i 's/sleep 60/sleep 5/' scripts/wait.sh"
+  'git commit -m "fix: until-loop; sleep 5m is not denied any more" -m "second paragraph"'
+  'gh api repos/acme/webapp/issues/1/comments -f body="no: while true; do sleep 60; done"'
+  "python3 -c \"print('sleep 5m')\""
+  "bash -c \"git commit -m 'fix: while true; do sleep 60; done'\""
+  "bash -c \"grep -rn 'sleep 5m' scripts/\""
+  'echo "sleep 5m" | sudo -u app tee /tmp/waiter.sh'
+  'echo "sleep 5m" | env -i grep bash'
+  'echo "sleep 5m" | xargs echo'
+  'echo "sleep 5m" > /tmp/waiter.sh'
+  $'cat <<\'EOF\' | tee /tmp/waiter.sh\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+  $'git commit -m "$(cat <<\'EOF\'\nfix: bash -c "until x; do sleep 30; done", sleep 5m\nEOF\n)"'
+)
+i=0; for c in "${DATA[@]}"; do i=$((i+1)); denied "$c"; check $? 1 "poll: quoted data $i passes"; done
+# …and a string a shell executes is checked: -c (with wrappers), eval, ssh, here-string, text piped to a shell, $(…)
+RUN=(
+  'eval "until [ -f /tmp/done ]; do sleep 20; done"'
+  "bash <<< 'until [ -f /tmp/done ]; do sleep 30; done'"
+  "docker exec ci sh -c 'until [ -f /tmp/done ]; do sleep 20; done'"
+  "echo x | xargs -I{} sh -c 'until [ -f /tmp/{} ]; do sleep 20; done'"
+  "bash -c \"bash -c 'until [ -f /tmp/done ]; do sleep 20; done'\""
+  'OUT="$(until [ -f /tmp/done ]; do sleep 20; done; cat /tmp/done)"'
+  'echo "$(until [ -f /tmp/done ]; do sleep 20; done)"'
+  'git commit -m "docs: sleep 5m" && sleep 5m'
+  "ssh dev-host 'until [ -f /tmp/done ]; do sleep 20; done'"
+  "sh -c 'while ! curl -fsS http://127.0.0.1:8000/healthz; do sleep 10; done'"
+  'env X=1 bash -lc "while true; do sleep 20; done"'
+  'bash -c "sleep 120 && curl -s http://127.0.0.1:8000/healthz"'
+  "echo 'until [ -f /tmp/done ]; do sleep 30; done' | sudo -u app bash"
+  "echo 'until [ -f /tmp/done ]; do sleep 30; done' | /usr/bin/env bash"
+  $'cat <<\'EOF\' | tee /tmp/waiter.sh | bash\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+)
+i=0; for c in "${RUN[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: executed string $i denied"; denied "$c" 1; check $? 1 "poll: executed string $i in the background passes"; done
+pg "zsh -c 'until ! pgrep -f \"pytest -n 4\"; do sleep 20; done'" | grep -q 'matches the waiting shell'; check $? 0 "poll: a pgrep -f self-match inside bash -c is named"
+pg "bash -c 'until ! pgrep -f \"[p]ytest -n 4\"; do sleep 20; done'" | grep -q 'matches the waiting shell'; check $? 1 "poll: …and the bracket trick inside bash -c is not"
+python3 - "$HOOKS/polling_guard.py" <<'PY'; check $? 0 "poll: commands of 40000 quote characters or 20000 strings are judged within 5 s"
+import json, subprocess, sys, time
+for cmd in ('bash -c ' + '"' * 40000, 'git commit -m "x" ' * 20000):
+    event = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/", "tool_input": {"command": cmd}})
+    t = time.time()
+    subprocess.run([sys.executable, sys.argv[1]], input=event, capture_output=True, text=True, timeout=60)
+    assert time.time() - t < 5, (cmd[:20], time.time() - t)
+PY
 echo '{"AGENT_HUB_POLL_ESCAPE": "ok!"}' > $R/repo/.agent-hub/config.json
 denied "sleep 120  # ok! deliberate" 0 $R/repo; check $? 1 "poll: an escape word ending in a non-word character works"
 echo '{"AGENT_HUB_CI_STATUS_DENY": ["(unclosed", "[bad"]}' > $R/repo/.agent-hub/config.json
