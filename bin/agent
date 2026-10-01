@@ -21,6 +21,8 @@ plugin's bin/ on PATH so `jlog` works; it is recorded in `roles` (kind headless,
 Model: an alias (opus, sonnet, haiku) or a full id claude-…; $AGENT_HUB_MODEL_MAP pins aliases to ids
 ("sonnet=claude-sonnet-x-y,opus=…") when the installed CLI resolves an alias to an older model.
 Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effort flag.
+These settings (and CLAUDE_BIN, AGENT_INIT_TIMEOUT) may also come from config.json of the agent's repository
+(<repo>/.agent-hub/) or of the hub home; a brief-footer.md there is appended to the footer of every brief.
 status: alive or not, age of the last log event, model turns, the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
 the session is resumed detached with `claude --resume <id> -p "msg"` in the same cwd, the unread
@@ -62,10 +64,11 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 
-def model_map() -> dict:
-    """Alias -> full id from $AGENT_HUB_MODEL_MAP ("sonnet=claude-…,opus=claude-…"); empty = pass aliases through."""
+def model_map(cwd=None) -> dict:
+    """Alias -> full id from AGENT_HUB_MODEL_MAP ("sonnet=claude-…,opus=claude-…"; env, else the agent's repo
+    .agent-hub/config.json, else the hub home's config.json); empty = pass aliases through."""
     out = {}
-    for part in (os.environ.get("AGENT_HUB_MODEL_MAP") or "").split(","):
+    for part in (hc.setting("AGENT_HUB_MODEL_MAP", cwd=cwd) or "").split(","):
         if "=" in part:
             k, v = part.split("=", 1)
             if k.strip() and v.strip():
@@ -92,6 +95,20 @@ other end: questions asked in chat are read by no one. The brief above is your c
 """
 
 
+def footer(stage: str, cwd: Path, **fields) -> str:
+    """The standard footer plus the first brief-footer.md of the config layers (stage, the agent's repository,
+    hub home), with {role} {tag} {stage} {report} {inbox} filled in."""
+    fields["stage"] = stage
+    text = FOOTER.format(**fields)
+    extra = hc.config_file("brief-footer.md", stage, cwd)
+    if extra:
+        add = extra.read_text(encoding="utf-8").strip("\n")
+        for k, v in fields.items():
+            add = add.replace("{" + k + "}", str(v))
+        text += add + "\n"
+    return text
+
+
 def agent_dir(stage: str, role: str) -> Path:
     if not role or "/" in role or role.startswith("."):
         raise hc.UsageError(f"bad role name {role!r}")
@@ -110,8 +127,17 @@ def _app_claude() -> str | None:
     return str(max(found)[1]) if found else None
 
 
-def claude_bin() -> str:
-    b = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or _app_claude()
+def claude_bin(cwd=None) -> str:
+    """$CLAUDE_BIN (a path or a name on PATH; the value `desktop` = the newest CLI bundled with Claude Desktop,
+    which survives Desktop updates), else `claude` on PATH, else the Desktop bundle."""
+    b = hc.setting("CLAUDE_BIN", cwd=cwd)
+    if b and b.strip().lower() == "desktop":
+        b = _app_claude()
+        if not b:
+            raise hc.Failure("CLAUDE_BIN=desktop, but no CLI bundled with Claude Desktop was found under "
+                             f"{Path.home() / 'Library/Application Support/Claude/claude-code'}")
+        return b
+    b = b or shutil.which("claude") or _app_claude()
     if not b:
         raise hc.Failure("claude not found on PATH (set $CLAUDE_BIN)")
     return b
@@ -151,12 +177,17 @@ def child_env(stage: str, tag: str) -> dict:
     return env
 
 
-INIT_TIMEOUT_S = int(os.environ.get("AGENT_INIT_TIMEOUT") or 120)  # init comes after MCP servers connect
+def init_timeout(cwd=None) -> int:
+    """Seconds to wait for a run's init event (it comes after MCP servers connect): AGENT_INIT_TIMEOUT or 120."""
+    try:
+        return int(hc.setting("AGENT_INIT_TIMEOUT", cwd=cwd) or 120)
+    except ValueError:
+        raise hc.UsageError("AGENT_INIT_TIMEOUT must be a whole number of seconds") from None
 
 
-def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path) -> None:
+def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120) -> None:
     """Block until the run writes its init event for this session; kill it and fail otherwise."""
-    deadline = time.monotonic() + INIT_TIMEOUT_S
+    deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
             with open(log, "rb") as fh:
@@ -180,14 +211,14 @@ def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path) -
         except ProcessLookupError:
             pass
     tail = stderr.read_text(encoding="utf-8", errors="replace")[-600:].strip() if stderr.exists() else ""
-    why = f"exited with code {code}" if code is not None else f"sent no init event in {INIT_TIMEOUT_S} s, killed"
+    why = f"exited with code {code}" if code is not None else f"sent no init event in {timeout_s} s, killed"
     raise hc.Failure(f"claude {why}; stderr: {tail or '—'}")
 
 
 def launch(meta: dict, prompt: str, resume: bool) -> int:
     d = Path(meta["dir"])
     # Session flags first: the id stays at the head of `ps` output whatever the prompt size.
-    argv = [claude_bin()]
+    argv = [claude_bin(meta["cwd"])]
     argv += ["--resume", meta["session_id"]] if resume else ["--session-id", meta["session_id"]]
     argv += ["--model", meta["model"]]
     if meta.get("effort"):
@@ -209,7 +240,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
         proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                 env=env, start_new_session=True, close_fds=True)
-    wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log")
+    wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]))
     return proc.pid
 
 
@@ -219,19 +250,20 @@ def journal(stage: str, fallback_tag: str, text: str) -> str:
 
 def cmd_spawn(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
-    mmap = model_map()
-    if a.model not in ALIASES and a.model not in mmap and not a.model.startswith("claude-"):
-        raise hc.UsageError(f"--model: one of {ALIASES}, an alias from $AGENT_HUB_MODEL_MAP, or a full id claude-…")
-    a.model = mmap.get(a.model, a.model)
-    default_effort = os.environ.get("AGENT_HUB_DEFAULT_EFFORT") or "high"
-    if default_effort not in EFFORTS:
-        raise hc.UsageError(f"$AGENT_HUB_DEFAULT_EFFORT={default_effort!r}: one of {EFFORTS}")
-    effort = None if "haiku" in a.model else (a.effort or default_effort)
-    pmode = a.permission_mode or os.environ.get("AGENT_HUB_PERMISSION_MODE") or DEFAULT_PERMISSION_MODE
     cwd = Path(a.cwd).expanduser().resolve()
     brief = Path(a.brief).expanduser().resolve()
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
+    # Settings come from the agent's repository (its .agent-hub/config.json), not from the caller's.
+    mmap = model_map(cwd)
+    if a.model not in ALIASES and a.model not in mmap and not a.model.startswith("claude-"):
+        raise hc.UsageError(f"--model: one of {ALIASES}, an alias from AGENT_HUB_MODEL_MAP, or a full id claude-…")
+    a.model = mmap.get(a.model, a.model)
+    default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
+    if default_effort not in EFFORTS:
+        raise hc.UsageError(f"AGENT_HUB_DEFAULT_EFFORT={default_effort!r}: one of {EFFORTS}")
+    effort = None if "haiku" in a.model else (a.effort or default_effort)
+    pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     if not brief.is_file():
         raise hc.UsageError(f"--brief {brief}: no such file")
     own = hc.caller_tag(stage)
@@ -255,8 +287,8 @@ def cmd_spawn(a) -> int:
             "effort": effort, "permission_mode": pmode, "cwd": str(cwd), "dir": str(d), "brief": str(brief),
             "title": a.title or f"agent {a.role} ({stage})", "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
-    prompt = brief.read_text(encoding="utf-8") + FOOTER.format(role=a.role, tag=tag, stage=stage, report=report,
-                                                               inbox=d / "inbox.md")
+    prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, role=a.role, tag=tag, report=report,
+                                                       inbox=d / "inbox.md")
     save_meta(stage, a.role, meta)
     try:
         pid = launch(meta, prompt, resume=False)
@@ -462,18 +494,19 @@ def cmd_stop(a) -> int:
     return 0
 
 
-STATUS_RE = re.compile(r"\b(MERGED|STOP|DONE|BLOCKED|QUESTION)\b")
 
 
 def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
-    """Did the agent journal a status word (its own tag) since `since`?"""
+    """Did the agent journal a status word (its own tag) since `since`? The words are the hub's wake words
+    (hubcore.status_pattern: MERGED, STOP, DONE, BLOCKED, QUESTION, … plus $AGENT_HUB_JWAIT_MATCH)."""
+    status_re = re.compile(hc.status_pattern(exit_word=False))
     day = since.date()
     while day <= hc.now().date():
         path = hc.journal_path(stage, day)
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 m = hc.JOURNAL_LINE_RE.match(line)
-                if not m or not hc.tag_is(m.group(2), tag) or not STATUS_RE.search(m.group(3)):
+                if not m or not hc.tag_is(m.group(2), tag) or not status_re.search(m.group(3)):
                     continue
                 hh, mm = map(int, m.group(1).split(":"))
                 if hc.dt.datetime.combine(day, hc.dt.time(hh, mm), tzinfo=hc.TZ) >= since.replace(second=0, microsecond=0):

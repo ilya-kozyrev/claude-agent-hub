@@ -25,23 +25,30 @@ syntax. Stage: `--stage`, else `$HUB_STAGE`, else `default`. The hub's tag is `h
 
 1. `hub takeover --stage <S> --n <N> --session <your full session id> [--handoff <file>]` — one command: the previous
    hub's locks (`--skip-lock stage` if its executor still works under that lock; `--take-main-merge` to take the merge
-   role too), `coordinator:` in `night-queue.md`, `roles set hub`, a start line in the journal. A step that does not
+   role too; `AGENT_HUB_TAKE_MAIN_MERGE=true` in the repository's config makes that the default), `coordinator:` in `night-queue.md`, `roles set hub`, a start line in the journal. A step that does not
    verify stops the command and names the step; a re-run finishes the rest. `--dry-run` first if unsure.
 2. The takeover digest (≤ 3 KB) puts § 0 of the handoff next to the `ask` register. Check every "the owner said" in the
    handoff against the register (open questions, owner answers, standing decisions). If they disagree, the register
    wins; ask the owner.
 3. Start the first `jwait` — the ready command is in the digest; its `--since` (the handoff time) delivers the lines
    written during the handover. Without `--since` a new tag's first run only marks the journal as read.
+4. Read the project's `HUB-NOTES.md` before planning (the digest names it; `<repo>/.agent-hub/`, the stage directory
+   or the hub home): the team's own hub rules — what goes to the owner, how data claims are checked — live there.
+   Run `hub takeover` from the project's checkout: the project layer (default lock repo, `takeover.sh`, notes) is
+   found from the working directory; the takeover says when it finds none.
 
 Leaving: `hub handoff --stage <S> --n <N>` writes a `HANDOFF-hub-*.md` draft with the facts filled in and TODOs; fill
-the TODOs (skill `handoff`). Environment facts come from `<stage>/handoff-facts.sh` if it exists. Locks are not
-released — the successor's `hub takeover` takes them. Write the handoff while you still have context to spare.
+the TODOs (skill `handoff`). Environment facts come from an executable `handoff-facts.sh` (the stage directory, the
+repository's `.agent-hub/` or the hub home — see "Project configuration"). Locks are not released — the successor's
+`hub takeover` takes them. Write the handoff at a context size you fixed in advance (for example ~350k tokens), not
+when the context is nearly spent: the handoff itself and the last turns need room.
 
 ## Waiting
 
 Waiting is **one** `jwait` in Bash with `run_in_background: true`; the harness wakes you when it exits.
-- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b' --for 2h` —
-  lines addressed to the hub and executors' status lines. Your own lines (your tag and its sub-tags `hub-<N>/…`) do not wake you.
+- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER' --for 2h` —
+  lines addressed to the hub, executors' status lines and script questions echoed into the journal. Your own lines (your tag and its sub-tags `hub-<N>/…`) do not wake you.
+  The digest prints this command with the team's extra wake words (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; a question asked before `jwait`
   started is delivered too.
 - `jwait --until 20:23 --note "check the nightly import"` — an alarm; exit 3 and a line `ALARM …`.
@@ -53,7 +60,8 @@ journal, no cron, no `sleep` loops.
 
 ## Talking
 
-- `jlog "text"` — a journal line with your tag (`--tag`, `$HUB_TAG` or the registry).
+- `jlog "text"` — a journal line with your tag (`--tag`, `$HUB_TAG` or the registry). The journal is append-only:
+  never rewrite or delete a line, even your own; correct it with a new line that says what it corrects.
 - `roles list | get <role> | set | retire` — the stage's role registry with full session ids. The address for
   SendMessage is only ever `roles get <role>`.
 - `roles broadcast --to r1,r2|--all "text"` — "role, id, budget left" rows for SendMessage and one journal line
@@ -88,8 +96,18 @@ journal, no cron, no `sleep` loops.
 - A brief follows `${CLAUDE_PLUGIN_ROOT}/templates/brief-executor-template.md`; the hub fills "Owner decisions — do not
   reopen" from `ask search <topic words>`. When an executor's result disagrees with a recorded decision, the hub checks
   that section before asking the owner: if the decision exists, apply it, do not ask again.
+- A change to a production script is written by an executor and goes through review; the hub does not write it.
 - A review of one artifact runs at most 3 rounds. After that only blockers with a concrete scenario are accepted; the
   hub decides and records `ask decided`.
+
+## Project configuration
+
+A repository can carry its own hub conventions in `<repo>/.agent-hub/` (the hub home and `<hub home>/<stage>/` hold
+the same files): `config.json` (defaults: model map, effort, permission mode, the lock repo), `lock-rules.json` (its
+deploy and staging commands for the lock hook), `brief-footer.md` (appended to every brief of an agent spawned with
+`--cwd` in that repository), `handoff-facts.sh` (the § 1 rows of `hub handoff`) and `takeover.sh` (an extra verified
+step of `hub takeover`, e.g. updating a sprint file) and `HUB-NOTES.md` (the team's hub rules). Read them before
+writing a brief or a handoff for that repository; `HUB-NOTES.md` before planning at all.
 
 ## Evidence
 

@@ -48,13 +48,15 @@ lock or no lock passes. Escape hatch: `# lock-ok: <reason>` in the command itsel
 transcript).
 
 Kinds:
-- `deploy-window` — a production rollout is in progress: merges into main and deploy jobs wait.
+- `deploy-window` — a production rollout is in progress: the deploy commands named in `lock-rules.json`
+  wait (merges are guarded by `main-merge`, not by this kind).
 - `main-merge` — the standing role "who merges main". Merges into main are refused to everyone but
   the holder. A successor takes the role with `lock take main-merge --force --until … --why …`.
 - `stage` — a booking of the shared staging environment.
 - `migration-head` — the expected head of the migration chain (`--value`); informational, the hook
   does not enforce it.
-Which commands need which kind: the hook's built-in rules plus `lock-rules.json` next to this file.
+Which commands need which kind: the hook's built-in rules plus `lock-rules.json` next to this file and in the
+repository's `.agent-hub/`.
 
 Commands: `lock list`, `lock take <kind> --until 2026-09-25T18:00 --why "…" [--owner-name "…"]
 [--value …] [--repo NAME] [--force]`, `lock release <kind> [--force]`.

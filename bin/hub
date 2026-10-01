@@ -13,14 +13,20 @@ target state is already there is skipped as "already done", so a re-run finishes
   1. locks: every active lock of the previous hub is taken over with `lock take --force`, keeping
      kind, repo, until and value. The previous hub is every session named by the roles entry `hub`
      or the `coordinator:` line of night-queue.md (other than the new one); when they disagree it
-     says so and takes the locks of all of them. --take-main-merge also takes main-merge when nobody
-     holds it (until --main-merge-until) or when a third party (e.g. a merge steward) holds it; without
-     the flag a third-party holder is reported and left alone. --skip-lock KIND leaves that lock where it
+     says so and takes the locks of all of them. --take-main-merge also takes main-merge of the hub's
+     repo (AGENT_HUB_DEFAULT_REPO, else "*") when nobody holds it (until --main-merge-until) or when a third
+     party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
+     reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
+     The free lock is never added when a main-merge is already taken over or held (no second, wildcard
+     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock KIND leaves that lock where it
      is (a sub-agent of the old hub still works under it).
   2. night-queue.md: `coordinator: <new session id>` (the night nudge addresses it) and `updated:`
      (single-line edits, atomic write). Skipped when the stage has no night queue.
-  3. roles set hub <session> --tag hub-<n>.
-  4. jlog "[hub-<n>] start: …".
+  3. the project step: an executable takeover.sh from the config layers (<hub home>/<stage>/, the current
+     repository's .agent-hub/, the hub home), run as `takeover.sh check` / `takeover.sh apply` with HUB_STAGE,
+     HUB_N, HUB_TAG, HUB_NAME, HUB_SESSION, HUB_CLI_SESSION, HUB_PREVIOUS, HUB_TAKEOVER_AT, HUB_HANDOFF set.
+  4. roles set hub <session> --tag hub-<n>.
+  5. jlog "[hub-<n>] start: …".
   Then prints a digest ≤ 3 KB: handoff § 0, the ask register (first line "awaiting execution: N (ids)" —
   owner answers without `ask done`; then open questions, recent owner answers and agent decisions — check
   every "owner said" of the handoff against it), locks, live roles with the age of their last journal
@@ -29,7 +35,7 @@ target state is already there is skipped as "already done", so a re-run finishes
   --dry-run prints the plan and the digest and writes nothing.
 handoff writes a pre-filled HANDOFF-hub-<stage>-YYYY-MM-DD-HHMM.md with the facts filled in and TODO where the
 hub must write; it releases nothing. Environment facts (versions, deploys, open PRs) come from an optional
-executable <stage>/handoff-facts.sh that prints Markdown table rows "| What | State | Where it shows |".
+executable handoff-facts.sh (config layers as above) that prints Markdown table rows "| What | State | Where it shows |".
 Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub. Exit: 0 ok, 1 step failed, 2 usage.
 """
 from __future__ import annotations
@@ -41,6 +47,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -49,7 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 
 DIGEST_BYTES = 3072
-JWAIT_MATCH = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
+JWAIT_MATCH = hc.STATUS_WORDS  # the built-in wake words; the digest uses hc.status_pattern() (+ AGENT_HUB_JWAIT_MATCH)
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -174,6 +181,22 @@ def nightq_coordinator(stage: str) -> str:
     return (q.get("coordinator") or "").split()[0] if (q.get("coordinator") or "").strip() else ""
 
 
+def run_step(path: Path, mode: str, env: dict, must_pass: bool = False):
+    """A config layer's takeover.sh: `check` exits 0 when its target state is there (or there is nothing to do),
+    1 when `apply` is needed; anything else, or a failed `apply`, stops the takeover. Output is shown indented."""
+    try:
+        res = subprocess.run([str(path), mode], capture_output=True, text=True, timeout=120, env=hc.child_env(env))
+    except subprocess.TimeoutExpired:
+        raise hc.Failure(f"{path} {mode} did not finish in 120 s") from None
+    for line in (res.stdout + res.stderr).strip().splitlines()[-8:]:
+        print(f"    {line}")
+    if mode == "check" and res.returncode in (0, 1):
+        return None if res.returncode == 0 else f"{path.name} check: not done yet"
+    if res.returncode != 0:
+        raise hc.Failure(f"{path} {mode} exited {res.returncode}")
+    return None
+
+
 def run_tool(argv: list, extra_env=None) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(hc.BIN / argv[0])] + argv[1:], capture_output=True, text=True,
                           env=hc.child_env(extra_env))
@@ -254,8 +277,14 @@ def roles_digest(stage: str) -> str:
 
 def jwait_command(stage: str, tag: str, since=None) -> str:
     since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
-    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match '{JWAIT_MATCH}' "
+    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match {shlex.quote(hc.status_pattern())} "
             f"{since_opt}--for 2h --note \"scheduled round\"")
+
+
+def hub_notes_line(stage: str) -> str:
+    """Pointer to the project's hub notes (HUB-NOTES.md in the config layers), read before planning."""
+    notes = hc.config_file("HUB-NOTES.md", stage)
+    return f"Hub notes of this project — read before planning: {notes}" if notes else ""
 
 
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = ()) -> str:
@@ -266,6 +295,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
+        (hub_notes_line(stage), 300, ""),
         ("First jwait (Bash, run_in_background: true; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
         (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,
@@ -403,19 +433,43 @@ def cmd_takeover(a) -> int:
         return r.get("repo") or b.DEFAULT_REPO
 
     skip = set(a.skip_lock or [])
+    take_mm = a.take_main_merge or hc.truthy(hc.setting("AGENT_HUB_TAKE_MAIN_MERGE"))
     to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip]
     kept = [r for r in active if r.get("session_id") in owners and r["kind"] in skip]
     mine = [r for r in active if r.get("session_id") == cli]
-    if "main-merge" not in skip and not any(r["kind"] == "main-merge" for r in to_take + mine):
-        mm = next((r for r in active if r["kind"] == "main-merge"), None)
-        if a.take_main_merge:
-            to_take.append({"kind": "main-merge", "repo": repo_of(mm) if mm else b.DEFAULT_REPO,
-                            "until": a.main_merge_until if mm is None else mm["until"],
-                            "why": (mm or {}).get("why") or "stage hub", "_from": (mm or {}).get("owner_name")})
-        elif mm is not None:
-            notes.append(f"main-merge ({repo_of(mm)}) is held by {mm.get('owner_name')} "
-                         f"[{(mm.get('session_id') or '-')[:8]}] until {mm['until'][:16]}: {(mm.get('why') or '')[:60]} "
-                         "— left alone; take it with --take-main-merge")
+    if "main-merge" not in skip:
+        # Every main-merge lock is looked at, one per repo. --take-main-merge takes those of the hub's repo
+        # (AGENT_HUB_DEFAULT_REPO; "*" = all) and the repo's free lock; the rest is reported and left alone.
+        mm_repo = hc.setting("AGENT_HUB_DEFAULT_REPO") or b.DEFAULT_REPO
+        ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
+        if take_mm and mm_repo == "*":
+            notes.append(f"no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
+        third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
+                 and r.get("session_id") not in owners and r.get("session_id") != cli]
+        for mm in third:
+            if take_mm and (mm_repo == "*" or repo_of(mm) in (mm_repo, "*")):
+                to_take.append({"kind": "main-merge", "repo": repo_of(mm), "until": mm["until"],
+                                "why": mm.get("why") or "stage hub", "_from": mm.get("owner_name")})
+            else:
+                notes.append(f"main-merge ({repo_of(mm)}) is held by {mm.get('owner_name')} "
+                             f"[{(mm.get('session_id') or '-')[:8]}] until {mm['until'][:16]}: "
+                             f"{(mm.get('why') or '')[:60]} — left alone"
+                             + ("" if take_mm else "; take it with --take-main-merge"))
+        # The hub repo's free main-merge. Never when a main-merge is already ours (taken over from the previous
+        # hub or held): a second record, and a wildcard one above all, would lock merges in other repositories.
+        held_here = any(repo_of(r) in (mm_repo, "*") for r in active if r["kind"] == "main-merge")
+        ours_here = mm_repo in ours or "*" in ours
+        any_mm = any(r["kind"] == "main-merge" for r in active)
+        if take_mm and not ours_here and not held_here and not (mm_repo == "*" and any_mm):
+            to_take.append({"kind": "main-merge", "repo": mm_repo, "until": a.main_merge_until,
+                            "why": "stage hub", "_from": None})
+        elif not ours_here and not held_here:
+            if take_mm:
+                notes.append(f"main-merge ({mm_repo}) was wanted but not taken: other main-merge locks exist and the "
+                             "hub repo is unknown here — run from the repository or set AGENT_HUB_DEFAULT_REPO")
+            elif mm_repo != "*":
+                notes.append(f"nobody holds main-merge ({mm_repo}): merges to its main are not guarded — "
+                             "--take-main-merge, or AGENT_HUB_TAKE_MAIN_MERGE=true in the repository's config.json")
     if kept:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 
@@ -459,6 +513,22 @@ def cmd_takeover(a) -> int:
                   lambda: edit_nightq(stage, session, updated),
                   lambda: None if nightq_coordinator(stage) == session else "coordinator: was not written",
                   short="night-queue")
+
+    step = hc.config_file("takeover.sh", stage)
+    if step is None:
+        print("no takeover.sh in the config layers (" + ", ".join(str(d) for d in hc.config_dirs(stage))
+              + f"; cwd {os.getcwd()}) — no project step")
+    elif not os.access(step, os.X_OK):
+        notes.append(f"{step} is not executable — project takeover step skipped")
+        print(f"ATTENTION: {notes[-1]}")
+    else:
+        step_env = {"HUB_STAGE": stage, "HUB_N": str(n), "HUB_TAG": tag, "HUB_NAME": name, "HUB_SESSION": session,
+                    "HUB_CLI_SESSION": cli, "HUB_PREVIOUS": prev_label, "HUB_TAKEOVER_AT": t.isoformat(timespec="minutes"),
+                    "HUB_HANDOFF": str(handoff or "")}
+        plan.step(f"project step {step}",
+                  lambda: run_step(step, "apply", step_env, must_pass=True),
+                  lambda: run_step(step, "check", step_env),
+                  short="takeover.sh")
 
     roles_cli = load_script("roles")
     plan.step(f"roles: hub → {session} [{tag}]",
@@ -512,7 +582,8 @@ def cmd_handoff(a) -> int:
     facts_rows = ("| Environments | TODO what runs where: versions, build ids, pending deploys | TODO |\n"
                   "| Main branch | TODO head; what is merged but not deployed | `git log origin/main` |\n"
                   "| Open PRs | TODO number, head, CI, who drives it | TODO |")
-    hook = hc.root() / stage / "handoff-facts.sh"   # stage-owned: prints table rows "| What | State | Where |"
+    # prints table rows "| What | State | Where |"; the stage's copy, else the repository's, else the hub home's
+    hook = hc.config_file("handoff-facts.sh", stage) or hc.root() / stage / "handoff-facts.sh"
     if hook.is_file() and os.access(hook, os.X_OK):
         try:
             res = subprocess.run([str(hook)], capture_output=True, text=True, timeout=180, env=hc.child_env())

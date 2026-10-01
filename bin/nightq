@@ -46,7 +46,7 @@ CLASSES = {"local", "dev", "stage", "main", "prod"}
 
 
 def _night_window() -> tuple:
-    raw = os.environ.get("AGENT_HUB_NIGHT", "23:00-08:00")
+    raw = hc.setting("AGENT_HUB_NIGHT", "23:00-08:00")
     try:
         a, b = (dt.time.fromisoformat(x.strip()) for x in raw.split("-", 1))
         return a, b

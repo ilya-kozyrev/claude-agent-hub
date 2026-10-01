@@ -44,7 +44,7 @@ echo "garbage" > $R/board.md
 hook "gh pr merge 12" $ME > $R/fo.out 2>$R/fo.err; check $? 0 "broken board: exit 0"
 check "$(wc -c < $R/fo.out | tr -d ' ')" 0 "broken board: no decision (fail-open)"
 echo '{"rules": [' > $R/lock-rules.json; echo "" > $R/board.md; rm $R/board.md
-hook "make deploy-staging" $ME $R/repos/webapp > $R/fo2.out 2>/dev/null; check $? 0 "broken rules file: exit 0 (fail-open)"
+hook "make deploy-staging" $ME $R/repos/webapp > $R/fo2.out 2>/dev/null; check $? 0 "broken rules file: exit 0, the file skipped with a warning"
 # ---- handoff_size hook
 hs(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":"x"*int(sys.argv[2])}}))' "$1" "$2" | python3 $HOOKS/handoff_size.py; }
 hs $R/HANDOFF-hub-stage-a-1.md 16000 | grep -q '"deny"'; check $? 0 "handoff_size: a 16 KB handoff is refused"
