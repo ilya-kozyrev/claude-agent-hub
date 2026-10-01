@@ -124,10 +124,15 @@ def in_scope(path) -> bool:
     dirs = [root()]
     for d in (setting("AGENT_HUB_SCOPE_DIRS") or "").split(":"):
         if d.strip():
-            if not Path(d.strip()).expanduser().is_absolute():
+            try:
+                full = Path(d.strip()).expanduser()  # ~unknownuser raises RuntimeError
+            except RuntimeError as e:
+                _warn(f"AGENT_HUB_SCOPE_DIRS: {d.strip()!r}: {e}; ignored")
+                continue
+            if not full.is_absolute():
                 _warn(f"AGENT_HUB_SCOPE_DIRS: {d.strip()!r} is not an absolute path (or ~/…); ignored")
                 continue
-            dirs.append(Path(d.strip()).expanduser())
+            dirs.append(full)
     for d in dirs:
         try:
             if p == d.resolve() or d.resolve() in p.parents:
@@ -135,6 +140,12 @@ def in_scope(path) -> bool:
         except OSError:
             continue
     return project_dir(p if p.is_dir() else p.parent) is not None
+
+
+def git_env() -> dict:
+    """The environment for the tools' own git calls: without GIT_DIR / GIT_WORK_TREE (a dotfiles setup exports them),
+    so git answers about the directory it is pointed at — the way project_dir and the hook walk the filesystem."""
+    return {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
 
 
 def config_dirs(stage: Optional[str] = None, cwd=None) -> list:

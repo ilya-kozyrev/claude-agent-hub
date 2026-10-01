@@ -119,7 +119,7 @@ def footer(stage: str, cwd: Path, **fields) -> str:
 
 
 def git(*argv, cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True, env=hc.git_env())
 
 
 WORKTREES_DIR = ".worktrees"
@@ -154,6 +154,10 @@ def make_worktree(repo: Path, role: str, branch: str | None) -> tuple[Path, str,
         # a worktree directory deleted without `git worktree remove`: drop the stale entry, then create it afresh
         git("worktree", "prune", cwd=top)
         existing = _worktrees(top).get(branch)
+        if existing is not None and not existing.is_dir():  # prune keeps a locked entry
+            raise hc.Failure(f"--worktree: {branch} is registered at {existing}, which is gone, and the entry is "
+                             f"locked — `git worktree unlock {existing}` (then `git worktree prune`), or pick another "
+                             "branch")
     if existing is not None:
         if existing.resolve() == top.resolve():
             raise hc.UsageError(f"--worktree: {branch} is checked out in the main checkout {top} — pick another branch")

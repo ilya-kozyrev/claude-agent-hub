@@ -168,20 +168,24 @@ def cmd_release(args) -> int:
 # ---------------------------------------------------------------- rules
 
 def repo_root(raw: str | None) -> Path:
-    """The working tree to configure: --dir, else the git top level of the working directory; from a linked
-    worktree, the main checkout (worktrees read its .agent-hub/ when they have none of their own)."""
+    """The working tree to configure: --dir, else the git top level of the working directory. A linked worktree
+    with its own .agent-hub/ is configured itself, one without it — the main checkout: the same choice project_dir
+    makes when reading, so a rule written here is the rule read here."""
     d = Path(raw or os.getcwd()).expanduser().resolve()
-    res = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    res = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                         env=hc.git_env())
     if res.returncode != 0:
         raise SystemExit(f"{d} is not inside a git repository (pass --dir)")
     top = Path(res.stdout.strip())
-    return hc.main_checkout(top) or top if (top / ".git").is_file() else top
+    if (top / ".git").is_file() and not (top / hc.CONFIG_DIRNAME).is_dir():
+        return hc.main_checkout(top) or top
+    return top
 
 
 def repo_name(top: Path) -> str:
     """Repository name as the hook sees it: a worktree resolves to its main repository."""
     res = subprocess.run(["git", "-C", str(top), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, env=hc.git_env())
     common = Path(res.stdout.strip()) if res.returncode == 0 else top / ".git"
     return common.parent.name if common.name == ".git" else top.name
 

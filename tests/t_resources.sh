@@ -103,4 +103,20 @@ echo '{"AGENT_HUB_SCOPE_DIRS": "relative/dir"}' > $R/config.json
 (cd $P && python3 -c "import sys; sys.path.insert(0, '$B'); import hubcore; print(hubcore.in_scope('$P/relative/dir/x'))") > $P/scope.out 2> $P/scope.err
 grep -qx False $P/scope.out && grep -q "not an absolute path" $P/scope.err; check $? 0 "a relative AGENT_HUB_SCOPE_DIRS entry is ignored with a warning"
 rm $R/config.json
+# ---- review round 2: the write path mirrors the read path; GIT_DIR/GIT_WORK_TREE do not redirect the CLI;
+#      ~unknownuser in AGENT_HUB_SCOPE_DIRS warns instead of crashing the SessionStart hook
+git init -q -b main $P/own && git -C $P/own -c user.email=t@t -c user.name=t commit -q --allow-empty -m i
+git -C $P/own worktree add -q -b ow $P/own/.worktrees/ow
+mkdir -p $P/own/.worktrees/ow/.agent-hub && echo '{"rules": []}' > $P/own/.worktrees/ow/.agent-hub/lock-rules.json
+(cd $P/own/.worktrees/ow && $B/lock rules add canary --about "canary rollout" --match '^make canary\b') > /dev/null; check $? 0 "add in a worktree with its own .agent-hub/"
+(cd $P/own/.worktrees/ow && $B/lock rules check "make canary" --expect canary) > /dev/null 2>&1; check $? 0 "…writes there, so the same worktree's check sees the rule"
+[ ! -e $P/own/.agent-hub ]; check $? 0 "…and the main checkout stays untouched"
+git init -q $P/dot-gitdir; mkdir -p $P/plainapp; git init -q $P/plainapp
+(cd $P/plainapp && GIT_DIR=$P/dot-gitdir/.git GIT_WORK_TREE=$P $B/lock rules init) > /dev/null 2>&1
+[ -f $P/plainapp/.agent-hub/lock-rules.json ] && [ ! -e $P/.agent-hub ]; check $? 0 "GIT_DIR/GIT_WORK_TREE in the environment do not redirect lock rules init"
+echo '{"AGENT_HUB_SCOPE_DIRS": "~nosuchuser12345/x"}' > $R/config.json
+echo "{\"cwd\": \"$R\"}" | python3 $HOOKS/questions.py > $P/q.out 2> $P/q.err; rc=$?
+[ $rc = 0 ] && grep -q "nosuchuser12345" $P/q.err && ! grep -q Traceback $P/q.err; check $? 0 "~unknownuser in AGENT_HUB_SCOPE_DIRS: the SessionStart hook warns and exits 0"
+(cd $P && python3 -c "import sys; sys.path.insert(0, '$B'); import hubcore; print(hubcore.in_scope('$R/x'))") 2>/dev/null | grep -qx True; check $? 0 "…and the hub home is still in scope"
+rm $R/config.json
 exit $fail

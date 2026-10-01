@@ -54,6 +54,12 @@ rm -rf $REPO/.worktrees/agent/gone
 $B/agent spawn --role gone --cwd $REPO --model haiku --brief $P/b.md --worktree > $P/gone.out 2>&1; check $? 0 "re-spawn after the worktree directory was deleted by hand"
 grep -q 'created' $P/gone.out && [ -d $REPO/.worktrees/agent/gone ]; check $? 0 "…prunes the stale entry and creates it again"
 wait_dead gone
+# a locked worktree whose directory is gone: prune keeps it, the spawn fails cleanly and names git worktree unlock
+$B/agent spawn --role lk --cwd $REPO --model haiku --brief $P/b.md --worktree > /dev/null 2>&1; wait_dead lk
+git -C $REPO worktree lock $REPO/.worktrees/agent/lk && rm -rf $REPO/.worktrees/agent/lk
+$B/agent spawn --role lk --cwd $REPO --model haiku --brief $P/b.md --worktree > $P/lk.out 2>&1; check $? 1 "negative: a locked, missing worktree is a failure (exit 1)"
+grep -q 'git worktree unlock' $P/lk.out && ! grep -q Traceback $P/lk.out; check $? 0 "…naming git worktree unlock, without a traceback"
+(cd $P && GIT_DIR=$REPO/.git GIT_WORK_TREE=$REPO $B/agent spawn --role gd --cwd $P/plain --model haiku --brief $P/b.md --worktree) > /dev/null 2>&1; check $? 2 "GIT_DIR/GIT_WORK_TREE do not turn a non-repository --cwd into a repository"
 $B/agent spawn --role nowt --cwd $REPO --model haiku --brief $P/b.md > /dev/null 2>&1; check $? 0 "control: without --worktree"
 wait_dead nowt
 check "$(meta nowt 'm["cwd"]')" "$(cd $REPO && pwd -P)" "…the agent runs in --cwd itself"

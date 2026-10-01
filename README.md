@@ -403,7 +403,7 @@ from three places, most specific first (`agent-hub:setup` writes the first two f
 | Layer | Where | Found by |
 |---|---|---|
 | stage | `<hub home>/<stage>/` | the command's stage |
-| project | `<repo>/.agent-hub/` | the working directory, searched upwards to the git root (a worktree has its own checkout of it); for `agent spawn`, its `--cwd`; for the lock hook, the command's directory after `cd` / `git -C` |
+| project | `<repo>/.agent-hub/` | the working directory, searched upwards to the git root (a linked worktree without its own `.agent-hub/` uses the main checkout's); for `agent spawn`, its `--cwd`; for the lock hook, the command's directory after `cd` / `git -C` |
 | home | `<hub home>/` | always |
 
 | File | Layers | Combination | Used by |
@@ -592,7 +592,9 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 - Optional modules need macOS and Claude Desktop: the night nudge (waking a silent hub at night needs Claude Desktop's
   scheduled tasks; see [templates/night-nudge-task.md](templates/night-nudge-task.md)), the send budget, roles of kind
   `desktop` and `hub takeover --session local_…` (they read Claude Desktop's session metadata). Terminal sessions work
-  as kind `cli`, but cannot receive cross-session messages — they read the journal.
+  as kind `cli`. Interactive terminal, `claude -p` and `claude --bg` sessions receive cross-session messages while
+  their process is alive, and nothing once it is gone; for a headless agent prefer `agent send` (it resumes a finished
+  session and leaves a journal line) — see [docs/launch-modes.md](docs/launch-modes.md) after the merge of #4.
 - `sendPrompt` buttons do not work in the Claude Code desktop tab, so the `/agent-top` widget has no buttons; it names
   the commands to type instead.
 
