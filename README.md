@@ -460,6 +460,8 @@ directory beside the target (modes kept), verifies the count and the bytes, move
 failed copy leaves nothing at the target), rewrites the old absolute path in every `*.json`
 under the new home (roles, agents' meta, `.jwait-state`, `.state`, autopilot state), leaves the `.md` history as written
 and renames the source to `<source>.migrated-YYYYMMDD`. It never deletes; a second run says there is nothing to migrate.
+Run it while no hub session of the source is working: it cannot see an interactive session, and a line such a
+session writes during the copy stays behind in the renamed source.
 
 ## Configuration
 
@@ -719,6 +721,8 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 
 ## Limitations
 
+- The `"project"` home is shared by the worktrees of an ordinary clone; the worktrees of a bare repository each get
+  their own.
 - macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
   itself runs natively on Windows. Python 3.10+, standard library only.
 - The `claude` CLI must be on `PATH` (or set `CLAUDE_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
