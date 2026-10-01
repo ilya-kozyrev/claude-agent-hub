@@ -80,9 +80,12 @@ def handover_command(command) -> bool:
             tokens = list(lex)
         except ValueError:
             return False
-        segs, cur, skip = [], [], False
+        segs, cur, skip = [], [], ""
         for tok in tokens:
             if skip:
+                # only /dev/null, a descriptor (`2>&1`) or a HANDOFF file: `jlog x > ~/.bashrc` is not a handover
+                if not (tok == "/dev/null" or re.fullmatch(r"-|\d+", tok) and "&" in skip or AUTOPILOT_FILE.search(tok)):
+                    return False
                 skip = False
                 continue
             if tok in SEPARATORS:
@@ -91,7 +94,7 @@ def handover_command(command) -> bool:
             elif set(tok) <= set("();<>|&"):
                 if not (set(tok) <= set("<>&") and ("<" in tok or ">" in tok)):
                     return False  # a subshell, `|&`, `;;` …: not read with certainty
-                skip = True  # a redirection: its target is the next token (`> file`, `2>&1`)
+                skip = tok  # a redirection: its target is the next token, checked below
             else:
                 cur.append(tok)
         segs.append(cur)

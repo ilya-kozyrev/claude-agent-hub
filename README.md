@@ -566,8 +566,12 @@ hub:
    hand (without the `--auto-handoff` the successor's command carries), resets the count.
 
 Past the block threshold the hub's Bash passes only when every command of the line is `hub handoff`, `hub succeed`,
-`jlog` or `jwait`, and Write/Edit only on a `HANDOFF-*.md` file. Only the registered hub can run `hub succeed`, and
-only one successor per shift starts.
+`jlog` or `jwait` (output redirected only to `/dev/null`, a descriptor or a HANDOFF file), and Write/Edit only on a
+`HANDOFF-*.md` file. Only the registered hub can run `hub succeed`, only with autopilot on (`--force` for you at a
+terminal), and only one successor per shift starts; a refused call prints when to retry and the `jwait` to wait with.
+A successor that never took over stops blocking the shift: `hub succeed --again` drops its record once it is not
+running, and your own prompt in the hub's session drops it once the takeover timeout has passed. A sub-agent of the hub
+shares the hub's session id and could run `hub succeed` too — the hub runs it itself, never delegates it.
 
 A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,
 `ask`, `roles`, `lock list`, `agent status`) and the hub home allowed (`--settings`), so it takes over without a prompt;

@@ -90,6 +90,14 @@ a hub that talked the owner out of using agents.
 - **One successor per shift**: `hub succeed` reserves the shift under a lock before anything starts, so a retry or a
   parallel call is refused; only the registered hub may run it; the successor's `hub takeover --auto-handoff` keeps
   the chain.
+- **No stuck shift** (review round 2): `hub succeed --fallback` reserves under the lock too, and an `agent spawn`
+  "already running" counts as the successor being there; a reservation blocks for the start budget (4 min) only, and
+  every refusal prints the retry time and a ready `jwait`; `hub succeed --again` drops the record of a successor that
+  did not take over and is not running, and the owner's prompt drops it after the takeover timeout; `hub succeed`
+  refuses (exit 2) with autopilot off, `--force` for the owner; a hung `claude --bg` takes only a session started
+  since, and stops a late one; `agent spawn` exports `AGENT_SESSION_ID`, which `--session self` falls back to;
+  `--fallback` re-reads the registry before it stops the session; the block escape allows output only to
+  `/dev/null`, a descriptor or a HANDOFF file.
 - **Chain limit** `AGENT_HUB_AUTO_HANDOFF_CHAIN` (10): at the limit the hub writes its handoff, starts no successor and
   waits for the owner. The owner's own prompt in the hub's session, or a takeover started by hand, resets it.
 - **A successor not in bypass mode** starts with the hub's own commands and the hub home allowed (`--settings`), so

@@ -67,8 +67,11 @@ When the background session cannot start (CLI not logged in, an untrusted direct
 checkout) it starts a headless hub with `agent spawn` instead; bypassPermissions without its accepted disclaimer
 becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
 tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it
-($CLAUDE_CODE_SESSION_ID, else $HUB_TAG; exit 2 otherwise), one successor per shift: a second call while one is
-being started or has not taken over is refused. The successor's takeover carries --auto-handoff, which keeps the
+($CLAUDE_CODE_SESSION_ID, else $HUB_TAG; exit 2 otherwise; a sub-agent of the hub shares its session id and passes —
+the hub never delegates it), only with AGENT_HUB_AUTO_HANDOFF on (exit 2; --force for the owner by hand), one
+successor per shift: a second call while one is
+being started or has not taken over is refused with the time to retry and a ready jwait; --again drops the record
+of a successor that did not take over and is not running. The successor's takeover carries --auto-handoff, which keeps the
 chain; any other takeover resets it.
 reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
 .agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
@@ -506,9 +509,10 @@ def resolve_self(raw: str) -> str:
     """`--session self` = the Claude Code session running the command."""
     if raw.strip() != "self":
         return raw
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or os.environ.get("AGENT_SESSION_ID", "").strip()
     if not sid:
-        raise hc.UsageError("--session self: $CLAUDE_CODE_SESSION_ID is not set here — pass the full session id")
+        raise hc.UsageError("--session self: neither $CLAUDE_CODE_SESSION_ID nor $AGENT_SESSION_ID (set by `agent spawn`) "
+                            "is set here — pass the full session id")
     return sid
 
 
@@ -898,6 +902,9 @@ def cmd_succeed(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir():
         raise hc.UsageError(f"no stage directory {hc.root() / stage}")
+    if not (autopilot.enabled() or a.force or a.dry_run):
+        raise hc.UsageError("autopilot is off (AGENT_HUB_AUTO_HANDOFF in the hub home's config.json): a hub starts no "
+                            "background session unasked. The owner, at a terminal, may pass --force")
     n = handoff_number(stage)
     check_caller(stage, n)
     if a.fallback:
@@ -910,7 +917,7 @@ def cmd_succeed(a) -> int:
     cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
-    return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run)
+    return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again)
 
 
 # ---------------------------------------------------------------- reviewer
@@ -995,6 +1002,9 @@ def main(argv: list) -> int:
     sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
                                                             "and start a headless one")
     sc.add_argument("--why", help="with --fallback: the reason for the journal")
+    sc.add_argument("--again", action="store_true", help="the recorded successor did not take over and is not running: "
+                                                         "drop its record and start a new one")
+    sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand)")
     sc.add_argument("--dry-run", action="store_true")
     r = sub.add_parser("reviewer", help="choose the reviewer for a change and print how to start it")
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")

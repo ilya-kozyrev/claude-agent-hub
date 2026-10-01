@@ -18,6 +18,8 @@ prompt in the hub's session without the marker "[agent-hub auto-handoff k/N]" (t
 """
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -46,6 +48,12 @@ STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "
 # owner answers over Remote Control.
 HUB_ALLOW = ("hub takeover", "hub handoff", "hub succeed", "jlog", "jwait", "ask", "roles", "lock list", "agent status")
 LINK_WAIT_S = 90
+BG_TIMEOUT_S = 60  # one `claude --bg` call
+# How long a reservation of `hub succeed` / `--fallback` blocks the shift: login (30 s), up to three `claude --bg` tries
+# and `claude agents` (30 s). A phase that starts later (the headless start) refreshes it; a reservation older than
+# this belongs to a run that died.
+START_BUDGET_S = 240
+IN_PROGRESS = ("starting", "falling-back")
 
 
 def tool(name: str) -> str:
@@ -107,15 +115,25 @@ def state_lock(stage: str) -> hc.Flock:
 
 
 def reset_chain(stage: str, why: str) -> bool:
-    """Chain back to 0 (the owner is here). True when it was not 0 already; the reset is journaled then."""
+    """Chain back to 0 (the owner is here), and a pending successor that has not taken over within the takeover
+    timeout is dropped, so the shift is not blocked by a dead one (its session is not stopped: the owner decides).
+    A successor still in its window, or a `hub succeed` still running, is kept. True when anything changed; then it is
+    journaled."""
     with state_lock(stage):
         data = load_state(stage)
-        if not data["chain"]:
+        pend = data.get("pending") or {}
+        stale = (pend and not pend.get("taken_over") and pend.get("kind") not in IN_PROGRESS
+                 and _age(pend) >= takeover_timeout())
+        if not data["chain"] and not stale:
             return False
         was = data["chain"]
         data["chain"] = 0
+        if stale:
+            data["pending"] = None
         save_state(stage, data)
-    hc.journal_append(stage, "hub", f"auto-handoff chain reset ({was} → 0): {why}")
+    dropped = (f"; dropped the pending hub-{pend.get('n')} ({pend.get('kind')} {pend.get('id') or pend.get('role')}), "
+               "which did not take over in time — its session is not stopped" if stale else "")
+    hc.journal_append(stage, "hub", f"auto-handoff chain reset ({was} → 0): {why}{dropped}")
     return True
 
 
@@ -243,7 +261,8 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
             "session, else a headless hub) and prints a `jwait` command; (3) run that `jwait` with Bash "
             "run_in_background: true. When it delivers the successor's start line, tell the owner one line — the "
             "successor's name and link from `hub succeed` — and stop: no more tool calls, release no locks (the "
-            f"successor's takeover moves them). If it ends with ALARM: `{tool('hub')} succeed --stage {stage} --fallback`. If "
+            f"successor's takeover moves them). If it ends with ALARM: `{tool('hub')} succeed --stage {stage} --fallback` "
+            "(Bash timeout 300000). If "
             "`hub succeed` reports the chain limit, stop after the handoff and wait for the owner. "
             f"At {block_k} only `hub handoff`, `hub succeed`, `jlog`, `jwait` and the HANDOFF file pass.")
 
@@ -285,6 +304,7 @@ class Successor:
         if old:
             self.notes.append(old)
         self.cli_model = hc.model_map(cwd).get(model, model)  # `claude --bg` gets the id an AGENT_HUB_MODEL_MAP alias names
+        self.since_ms = 0  # `claude agents` rows started before this are not ours (an earlier chain's)
 
     @property
     def marker(self) -> str:
@@ -339,8 +359,9 @@ class Successor:
         self.check_login()
         mode, cwd = self.mode, self.cwd
         tried_bypass = tried_main = False
+        self.since_ms = int(time.time() * 1000) - 2000  # a little slack for the daemon's clock
         while True:
-            res = self.run(self.bg_argv(mode), cwd=cwd)
+            res = self.run(self.bg_argv(mode), cwd=cwd, timeout=BG_TIMEOUT_S)
             out = clean(res.stdout + "\n" + res.stderr)
             if res.returncode == 0:
                 break
@@ -348,10 +369,13 @@ class Successor:
                 # `claude --bg` hung: the session may exist all the same — never start a second one beside it
                 bg_id = self.id_from_agents()
                 if bg_id:
-                    self.notes.append(f"`claude --bg` did not return in 60 s; its session {bg_id} is listed by "
-                                      "`claude agents`")
+                    self.notes.append(f"`claude --bg` did not return in {BG_TIMEOUT_S} s; its session {bg_id} is "
+                                      "listed by `claude agents`")
                     self.mode, self.cwd = mode, cwd
                     return {"id": bg_id, "cwd": str(cwd), "mode": mode}
+                stopped = self.stop_late()
+                raise Start(f"`claude --bg` did not return in {BG_TIMEOUT_S} s and `claude agents` lists no session of "
+                            f"it" + (f"; stopped the late ones {', '.join(stopped)}" if stopped else ""))
             if "disclaimer" in out.lower() and mode == "bypassPermissions" and not tried_bypass:
                 tried_bypass, mode = True, fallback_mode(self.cli_model)
                 self.notes.append(f"bypassPermissions needs its disclaimer accepted once (`claude "
@@ -372,18 +396,30 @@ class Successor:
         self.mode, self.cwd = mode, cwd
         return {"id": bg_id, "cwd": str(cwd), "mode": mode}
 
-    def id_from_agents(self) -> Optional[str]:
-        """The newest active background session with the successor's name (`claude agents --json` lists active ones
-        only; the newest wins over a same-named one left from an earlier chain)."""
+    def our_rows(self) -> list:
+        """Active background sessions (`claude agents --json`) with the successor's name started since this start —
+        a same-named one from an earlier chain is not ours. Oldest first."""
         res = self.run(["agents", "--json"], timeout=30)
         try:
             rows = json.loads(res.stdout)
         except ValueError:
-            return None
+            return []
         hits = [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)
-                and r.get("kind") == "background" and r.get("name") in (self.rc_name, self.title)]
-        hits.sort(key=lambda r: r.get("startedAt") or 0)
+                and r.get("kind") == "background" and r.get("name") in (self.rc_name, self.title)
+                and isinstance(r.get("startedAt"), (int, float)) and r["startedAt"] >= self.since_ms]
+        return sorted(hits, key=lambda r: r["startedAt"])
+
+    def id_from_agents(self) -> Optional[str]:
+        hits = self.our_rows()
         return (hits[-1].get("id") or hits[-1].get("sessionId")) if hits else None
+
+    def stop_late(self) -> list:
+        """After a `claude --bg` that hung and is not listed: stop whatever of that name shows up after all, so no
+        background successor runs beside the headless one. Returns the ids stopped."""
+        ids = [r.get("id") or r.get("sessionId") for r in self.our_rows()]
+        for bg_id in ids:
+            self.remove(bg_id, rm=False)
+        return ids
 
     def wait_link(self, bg_id: str) -> str:
         """The Remote Control link from `claude logs`, polled up to min(90 s, the takeover timeout); "" when it never
@@ -416,7 +452,8 @@ You are the next hub of stage `{self.stage}`. "Hub {self.stage} #{self.n}" hande
 background Remote Control session could not start ({why}), so you run headless. The owner may be away: they reach you
 through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
 
-1. Load the hub skill (`/agent-hub:hub`) and take over: `{self.takeover_cmd()}`.
+1. Load the hub skill (`/agent-hub:hub`) and take over: `{self.takeover_cmd()}`
+   (`self` is this session: $CLAUDE_CODE_SESSION_ID, else the $AGENT_SESSION_ID `agent spawn` exports).
    Then follow the digest and the handoff `{self.handoff}`.
 2. You are a `claude -p` run: the end of your turn ends the process, and a background `jwait` dies with it. Wait with
    `"$HUB_BIN/jwait"` in the foreground (Bash `timeout` 600000, `--for 9m`). When nothing is left to wait for, write a
@@ -437,6 +474,10 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         res = subprocess.run(argv, capture_output=True, text=True, env=dict(self.env, HUB_TAG=self.tag),
                              stdin=subprocess.DEVNULL)
         if res.returncode != 0:
+            if f"agent {role} is already running" in res.stderr + res.stdout:
+                # a previous run (killed before it could record it) started it: the successor is there
+                self.notes.append(f"the headless {role} was already running (started by an earlier run)")
+                return {"role": role, "brief": str(brief)}
             raise hc.Failure(f"the headless successor did not start either: {tail(res.stderr or res.stdout, 400)}")
         return {"role": role, "brief": str(brief)}
 
@@ -491,22 +532,99 @@ def report(stage: str, s: Successor, pend: dict, timeout_s: int) -> None:
               f"ALARM (exit 3) → {tool('hub')} succeed --stage {stage} --fallback")
     else:
         print(f"Exit 0 → tell the owner one line: \"{s.title}\" took over headless — `agent send {pend['role']} \"…\"`; "
-              "then stop: no more tool calls.\nALARM (exit 3) → tell the owner the handoff did not complete and wait "
-              "for them: there is no further fallback.")
+              "then stop: no more tool calls.\nALARM (exit 3) → if `agent status " + pend['role'] + "` says it is not "
+              f"running: `{tool('hub')} succeed --stage {stage} --again --handoff <the handoff>`; else tell the owner the "
+              "handoff did not complete and wait for them.")
+
+
+def _age(pend: dict) -> float:
+    """Seconds since the record's `at`; infinite when it cannot be read."""
+    try:
+        return (hc.now() - hc.dt.datetime.fromisoformat(pend["at"])).total_seconds()
+    except (KeyError, ValueError, TypeError):
+        return float("inf")
 
 
 def blocking(pend: dict, succ: int) -> bool:
-    """A successor for this shift is already started (or being started) and has not taken over. A "starting" record
-    older than the takeover timeout + 5 min is a `hub succeed` that died: not blocking."""
+    """A successor for this shift is being started (a reservation younger than START_BUDGET_S: an older one is a run
+    that died) or was started and has not taken over (until `--fallback`, `--again` or the owner drops it)."""
     if pend.get("n") != succ or pend.get("taken_over"):
         return False
-    if pend.get("kind") != "starting":
+    if pend.get("kind") in IN_PROGRESS:
+        return _age(pend) < START_BUDGET_S
+    return True
+
+
+def wait_hint(stage: str, pend: dict) -> str:
+    """What to do about a blocking record: when to retry, and the ready `jwait` that wakes then."""
+    succ = pend.get("n")
+    match = shlex.quote(r"\[hub-" + str(succ) + r"\] start:|auto-handoff")
+    if pend.get("kind") in IN_PROGRESS:
+        left = max(30, int(START_BUDGET_S - _age(pend)) + 5)
+        at = (hc.now() + hc.dt.timedelta(seconds=left)).strftime("%H:%M")
+        return (f"a run of `hub succeed` holds the shift until about {at}; wait (Bash run_in_background: true): "
+                f"{tool('jwait')} --journal --stage {stage} --match {match} --settle 1 --for {left}s "
+                f"--note \"retry hub succeed\" — then retry")
+    left = max(30, int(takeover_timeout() - _age(pend)))
+    alive = (f"`claude agents` lists {pend.get('id')}" if pend.get("kind") == "bg"
+             else f"`agent status {pend.get('role')}` says it runs")
+    return (f"wait for its takeover (Bash run_in_background: true): {tool('jwait')} --journal --stage {stage} "
+            f"--match {match} --settle 1 --for {left}s --note \"no takeover by hub-{succ}\"; on ALARM: "
+            + (f"`{tool('hub')} succeed --stage {stage} --fallback`" if pend.get("kind") == "bg" else
+               f"`{tool('hub')} succeed --stage {stage} --again --handoff <the handoff>` unless {alive}"))
+
+
+def _agent_module():
+    loader = importlib.machinery.SourceFileLoader("agent_cli", str(hc.BIN / "agent"))
+    spec = importlib.util.spec_from_loader("agent_cli", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def successor_alive(stage: str, pend: dict, cwd) -> bool:
+    """Whether the recorded successor still runs: a background session listed by `claude agents`, a headless agent
+    whose process is alive. When it cannot be told, alive (never drop a record of a live successor)."""
+    if pend.get("kind") == "headless":
+        try:
+            ag = _agent_module()
+            return ag.alive(ag.load_meta(stage, pend["role"]))
+        except (hc.Failure, KeyError, OSError, ValueError):
+            return False  # no agent directory or meta: nothing runs
+    cli = hc.find_claude(cwd)
+    if cli is None:
         return True
     try:
-        age = (hc.now() - hc.dt.datetime.fromisoformat(pend["at"])).total_seconds()
-    except (KeyError, ValueError, TypeError):
-        return False
-    return age < takeover_timeout() + 300
+        res = subprocess.run([cli.path, "agents", "--json"], capture_output=True, text=True, timeout=30,
+                             env=child_env(), stdin=subprocess.DEVNULL)
+        rows = json.loads(res.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return True
+    return any(isinstance(r, dict) and pend.get("id") in (r.get("id"), r.get("sessionId")) for r in rows or [])
+
+
+def drop_dead(stage: str, n: int, cwd) -> None:
+    """`hub succeed --again`: the recorded successor of this shift did not take over and does not run — drop its
+    record and give back its count. A live one is refused, a run in progress too."""
+    pend = load_state(stage).get("pending") or {}
+    if pend.get("n") != n + 1 or pend.get("taken_over"):
+        return
+    if pend.get("kind") in IN_PROGRESS and blocking(pend, n + 1):
+        raise hc.Failure(f"hub-{n + 1} is being started right now — {wait_hint(stage, pend)}")
+    if pend.get("kind") not in IN_PROGRESS and successor_alive(stage, pend, cwd):
+        stop = (f"claude stop {pend.get('id')}" if pend.get("kind") == "bg" else f"agent stop {pend.get('role')}")
+        raise hc.Failure(f"--again: the successor hub-{n + 1} ({pend.get('kind')} {pend.get('id') or pend.get('role')}) "
+                         f"is still running — wait for it, or stop it first (`{stop}`)")
+    with state_lock(stage):
+        data = load_state(stage)
+        if data.get("pending") != pend:
+            raise hc.Failure("--again: the pending record changed meanwhile — look again (`hub succeed` once more)")
+        data["pending"] = None
+        if pend.get("k") and data["chain"] == pend["k"]:
+            data["chain"] -= 1
+        save_state(stage, data)
+    hc.journal_append(stage, f"hub-{n}", f"auto-handoff: dropped hub-{n + 1} ({pend.get('kind')} "
+                                         f"{pend.get('id') or pend.get('role')}): it did not take over and is not running")
 
 
 def _record(stage: str, succ: int, pend: dict) -> None:
@@ -530,7 +648,7 @@ def _release(stage: str, succ: int, k: int) -> None:
 
 
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
-            headless: bool = False, dry_run: bool = False) -> int:
+            headless: bool = False, dry_run: bool = False, again: bool = False) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", n + 1
     model = successor_model(model)
@@ -543,6 +661,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     mode = successor_mode(mode)
     if mode not in MODES:
         raise hc.UsageError(f"permission mode {mode!r}: one of {', '.join(MODES)}")
+    if again and not dry_run:
+        drop_dead(stage, n, cwd)
     started = hc.now().isoformat(timespec="seconds")
     # One successor per shift and the chain counted under the lock, before anything starts: a second `hub succeed`
     # (a retry after a Bash timeout, a parallel call) sees the reservation, and an owner's reset is never overwritten.
@@ -550,9 +670,9 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         data = load_state(stage)
         pend = data.get("pending") or {}
         if blocking(pend, succ) and not dry_run:
-            raise hc.Failure(f"a successor hub-{succ} was already started at {pend.get('at', '?')[:16]} "
-                             f"({pend.get('kind')} {pend.get('id') or pend.get('role') or ''}): wait for its takeover, "
-                             f"or `{tool('hub')} succeed --stage {stage} --fallback`")
+            raise hc.Failure(f"a successor hub-{succ} is already {'being started' if pend.get('kind') in IN_PROGRESS else 'started'} "
+                             f"({pend.get('kind')} {pend.get('id') or pend.get('role') or ''}, at {pend.get('at', '?')[11:16]}): "
+                             + wait_hint(stage, pend))
         at_limit = data["chain"] >= limit
         k = data["chain"] + 1
         if not at_limit and not dry_run:
@@ -595,6 +715,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             why = str(e)
     hc.journal_append(stage, tag, f"auto-handoff: background successor not started — {why}; falling back to a "
                                   "headless hub (agent spawn)")
+    _record(stage, succ, {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
+                          "handoff": str(handoff), "model": model, "k": k})  # a new phase: a fresh start budget
     got = headless_or_owner(stage, s, why)
     pend = {"n": succ, "kind": "headless", "at": started, "handoff": str(handoff), "model": model, "k": k,
             "why": why, "cwd": str(s.cwd), **got}
@@ -615,36 +737,62 @@ def headless_or_owner(stage: str, s: Successor, why: str) -> dict:
 
 def fallback(stage: str, n: int, why: Optional[str]) -> int:
     """The background successor did not take over in time: journal its log tail, stop it, start a headless one from
-    the same handoff (the chain is not counted again). Only for this hub's own successor (hub-<n+1>)."""
-    data = load_state(stage)
-    pend = data.get("pending") or {}
-    if pend.get("n") != n + 1:
-        line = (f"auto-handoff: no successor of hub-{n} pending (pending: "
-                f"{'hub-' + str(pend['n']) if pend.get('n') else 'none'}) — nothing to fall back from")
-        print(line)
-        return 1
-    if pend.get("taken_over"):
-        print(f"hub-{pend.get('n')} already took over at {pend['taken_over'][:16]} — nothing to fall back from")
-        return 0
-    if pend.get("kind") != "bg":
-        line = ("auto-handoff: the headless successor did not take over either — waiting for the owner"
-                if pend.get("kind") == "headless" else
-                f"auto-handoff: hub-{n + 1} is still being started (`hub succeed` running since {pend.get('at', '?')[11:16]}) "
-                "— wait for it")
-        hc.journal_append(stage, f"hub-{n}", line)
-        print(line)
-        return 1
+    the same handoff (the chain is not counted again). Only for this hub's own successor (hub-<n+1>). Reserved under
+    the lock like `hub succeed`, so a retry after a killed run is refused rather than doubled."""
+    now = hc.now().isoformat(timespec="seconds")
+    with state_lock(stage):
+        data = load_state(stage)
+        pend = data.get("pending") or {}
+        if pend.get("n") != n + 1:
+            print(f"auto-handoff: no successor of hub-{n} pending (pending: "
+                  f"{'hub-' + str(pend['n']) if pend.get('n') else 'none'}) — nothing to fall back from")
+            return 1
+        if pend.get("taken_over"):
+            print(f"hub-{pend.get('n')} already took over at {pend['taken_over'][:16]} — nothing to fall back from")
+            return 0
+        if pend.get("kind") in IN_PROGRESS and blocking(pend, n + 1):
+            print(f"auto-handoff: hub-{n + 1} is being started right now — {wait_hint(stage, pend)}")
+            return 1
+        if pend.get("kind") == "headless":
+            line = (f"auto-handoff: the headless successor {pend.get('role')} did not take over either — waiting for "
+                    "the owner")
+            hc.journal_append(stage, f"hub-{n}", line)
+            print(line + "; if it is not running: "
+                  + wait_hint(stage, dict(pend, at="1970-01-01T00:00:00+00:00")).split("on ALARM: ", 1)[-1])
+            return 1
+        if pend.get("kind") == "starting" or not pend.get("id"):
+            print(f"auto-handoff: the run that was starting hub-{n + 1} died before it started anything — "
+                  f"`{tool('hub')} succeed --stage {stage} --handoff {shlex.quote(str(pend.get('handoff', '<the handoff>')))}`")
+            return 1
+        bg = dict(pend, kind="bg") if pend.get("kind") == "falling-back" else pend  # a stale run of --fallback
+        data["pending"] = dict(bg, kind="falling-back", at=now, bg_at=bg.get("bg_at") or bg.get("at"))
+        save_state(stage, data)
     timeout_s = takeover_timeout()
-    s = Successor(stage, n, Path(pend["handoff"]), pend["model"], pend.get("mode") or "default",
-                  Path(pend.get("cwd") or os.getcwd()), pend.get("k") or data["chain"], chain_limit())
-    logs = tail(s.run(["logs", pend["id"]], timeout=30).stdout)
-    s.remove(pend["id"], rm=False)
-    why = why or f"background session {pend['id']} wrote no takeover line in {timeout_s} s"
-    hc.journal_append(stage, s.tag, f"auto-handoff: {why}; stopped it (`claude attach {pend['id']}` shows it); "
+    try:
+        s = Successor(stage, n, Path(bg["handoff"]), bg["model"], bg.get("mode") or "default",
+                      Path(bg.get("cwd") or os.getcwd()), bg.get("k") or data["chain"], chain_limit())
+    except hc.Failure:
+        _record(stage, n + 1, bg)
+        raise
+    logs = tail(s.run(["logs", bg["id"]], timeout=30).stdout)
+    with state_lock(stage):
+        # the successor may have registered while its logs were read: then it is taking over — do not stop it
+        rec = hc.roles_load(stage)["roles"].get("hub") or {}
+        if rec.get("tag") != f"hub-{n}":
+            data = load_state(stage)
+            if (data.get("pending") or {}).get("kind") == "falling-back":
+                data["pending"] = bg
+                save_state(stage, data)
+            print(f"auto-handoff: the hub is now {rec.get('tag')} ({rec.get('title') or rec.get('session')}) — "
+                  f"{bg['id']} is taking over; not stopped")
+            return 0
+        s.remove(bg["id"], rm=False)
+    why = why or f"background session {bg['id']} wrote no takeover line in {timeout_s} s"
+    hc.journal_append(stage, s.tag, f"auto-handoff: {why}; stopped it (`claude attach {bg['id']}` shows it); "
                                     f"claude logs tail: {logs or '—'}; falling back to a headless hub")
     got = headless_or_owner(stage, s, why)
-    new = {"n": s.succ, "kind": "headless", "at": hc.now().isoformat(timespec="seconds"), "handoff": pend["handoff"],
-           "model": pend["model"], "k": s.k, "why": why, "cwd": str(s.cwd), "bg_id": pend["id"], **got}
+    new = {"n": s.succ, "kind": "headless", "at": hc.now().isoformat(timespec="seconds"), "handoff": bg["handoff"],
+           "model": bg["model"], "k": s.k, "why": why, "cwd": str(s.cwd), "bg_id": bg["id"], **got}
     _record(stage, s.succ, new)
     report(stage, s, new, timeout_s)
     return 0

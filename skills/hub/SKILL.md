@@ -76,8 +76,10 @@ are under *Choosing how to launch work*.
 the `hub succeed` command with your model, mode and directory filled in. At a quiet point — no agent waiting for your
 reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,
 start the `jwait` it prints with `run_in_background: true`. Its start line → tell the owner one line (the successor's
-name and link) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback`. Exit 3
-(chain limit) or exit 1 → tell the owner the handoff path and why, and wait for them.
+name and link) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a
+headless successor's ALARM: `--again`, if `agent status` says it is not running). A refusal that prints a `jwait` →
+run that `jwait`, then retry. Exit 3 (chain limit), exit 2, or any other exit 1 → tell the owner the handoff path and
+why, and wait for them. Run `hub succeed` yourself, never from a sub-agent.
 A session whose first prompt carries `[agent-hub auto-handoff k/N]` is an automatic successor: run the takeover
 command the prompt gives, then work the handoff's queue. The owner may be away: questions go to `ask add` with a
 default, and you hand over the same way when your own budget says so.

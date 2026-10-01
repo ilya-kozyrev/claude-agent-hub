@@ -311,6 +311,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve())] + argv
     env = child_env(meta["stage"], meta["tag"])
     env["AGENT_ROLE"] = meta["role"]
+    env["AGENT_SESSION_ID"] = meta["session_id"]  # the run's own id, for `hub takeover --session self` (bin/autopilot.py)
     env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
     with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
         proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,

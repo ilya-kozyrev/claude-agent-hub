@@ -4,7 +4,7 @@
 # The CLI is tests/fake_claude_bg.py: no real `claude --bg` is ever started.
 . "$(dirname "$0")/lib.sh"
 unset CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
-export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2
+export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on
 BR_BIN=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$B")  # the plugin bin/ as the tools resolve it
 HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
 HUB3=33333333-3333-4333-8333-333333333333
@@ -94,7 +94,7 @@ J | grep -q "\[hub-3\] auto-handoff chain reset (2 → 0): a takeover by hand"; 
 setup
 python3 -c 'import json,sys,datetime as d; json.dump({"chain":0,"pending":{"n":2,"kind":"starting","at":d.datetime.now().astimezone().isoformat(timespec="seconds")}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json
 succeed --model opus > $R/res.out 2>&1; check "$?:$(call --bg count)" "1:none" "reservation: a second hub succeed while one is starting is refused"
-$B/hub succeed --stage stage-a --fallback > $R/fbs.out 2>&1; check "$?:$(grep -c 'still being started' $R/fbs.out)" "1:1" "reservation: --fallback while starting waits"
+$B/hub succeed --stage stage-a --fallback > $R/fbs.out 2>&1; check "$?:$(grep -c 'being started right now' $R/fbs.out)" "1:1" "reservation: --fallback while starting waits"
 python3 -c 'import json,sys; json.dump({"chain":0,"pending":{"n":2,"kind":"starting","at":"2020-01-01T00:00:00+00:00"}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json
 succeed --model opus > /dev/null 2>&1; check "$?:$(call --bg count):$(chain)" "0:1:1" "reservation: a stale one (a dead hub succeed) does not block"
 python3 -c 'import json,sys; json.dump({"chain":0,"pending":{"n":5,"kind":"bg","id":"x","at":"2020-01-01T00:00:00+00:00"}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json
@@ -206,7 +206,81 @@ check "$(call stop count):$(call rm count)" "1:none" "fallback: bg session stopp
 J | grep -q "auto-handoff: background session bg-1234abcd wrote no takeover line in 2 s; stopped it.*claude logs tail: /remote-control is active"; check $? 0 "fallback: journal has the reason and the log tail"
 check "$(pending kind):$(pending bg_id):$(chain)" "headless:bg-1234abcd:1" "fallback: headless successor, chain not counted twice"
 $B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check $? 1 "fallback after the headless one: nothing further"
-J | grep -q "the headless successor did not take over either — waiting for the owner"; check $? 0 "…journaled"
+J | grep -q "the headless successor hub-2 did not take over either — waiting for the owner"; check $? 0 "…journaled"
+
+# ================================================================== review round 2
+setst(){ python3 - $R/stage-a/auto-handoff.json "$@" <<'PY'
+import json, sys, datetime as d
+path, chain, kind, age = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+extra = dict(a.split("=", 1) for a in sys.argv[5:])
+at = (d.datetime.now().astimezone() - d.timedelta(seconds=age)).isoformat(timespec="seconds")
+pend = None if kind == "none" else dict({"n": 2, "kind": kind, "at": at, "handoff": "/x/h.md", "model": "opus", "k": 1}, **extra)
+json.dump({"chain": chain, "pending": pend}, open(path, "w"))
+PY
+}
+# (3) autopilot off: hub succeed refuses unless --force
+setup
+AGENT_HUB_AUTO_HANDOFF=off succeed --model opus > $R/off.out 2>&1; check "$?:$(grep -c 'autopilot is off' $R/off.out):$(call --bg count)" "2:1:none" "r2(3): autopilot off — hub succeed refused, nothing started"
+AGENT_HUB_AUTO_HANDOFF=off succeed --model opus --force > /dev/null 2>&1; check "$?:$(call --bg count)" "0:1" "r2(3): --force (the owner by hand) starts it"
+# (4) a reservation blocks only for the start budget, and the refusal says when to retry, with a ready jwait
+setup; setst 1 starting 60
+succeed --model opus > $R/r4.out 2>&1; check "$?:$(grep -c 'holds the shift until about' $R/r4.out):$(grep -c "jwait --journal --stage stage-a --match .* --for [0-9]*s" $R/r4.out)" "1:1:1" "r2(4): a fresh reservation refuses with the retry time and a ready jwait"
+setst 1 starting 300
+succeed --model opus > /dev/null 2>&1; check "$?:$(call --bg count)" "0:1" "r2(4): a reservation older than the start budget (300 s) does not block"
+setup; setst 1 bg 10 id=bg-x
+succeed --model opus > $R/r4b.out 2>&1; check "$?:$(grep -c "wait for its takeover (Bash run_in_background: true): .*jwait --journal --stage stage-a --match .* --for [0-9]*s" $R/r4b.out)" "1:1" "r2(4): a started successor's refusal says how to wait for it"
+# (1) --fallback reserves under the lock: a second run while one runs is refused
+setup; setst 1 falling-back 20 id=bg-1234abcd
+$B/hub succeed --stage stage-a --fallback > $R/r1.out 2>&1; check "$?:$(grep -c 'being started right now' $R/r1.out):$(call stop count)" "1:1:none" "r2(1): --fallback while another --fallback runs is refused, nothing stopped"
+# (1) an earlier --fallback started the headless hub and was killed before recording it: the retry finds it running
+setup
+FAKE_HOLD=40 succeed --model opus --headless > /dev/null 2>&1
+setst 1 bg 700 id=bg-1234abcd cwd=$W
+FAKE_HOLD=40 $B/hub succeed --stage stage-a --fallback > $R/r1b.out 2>&1; rc=$?
+check "$rc:$(pending kind):$(chain)" "0:headless:1" "r2(1): agent spawn's 'already running' = the successor is there, not a failure"
+J | grep -q "BLOCKED"; check $? 1 "r2(1): …no BLOCKED line"
+grep -q "already running (started by an earlier run)" $R/r1b.out; check $? 0 "r2(1): …and it says so"
+$B/agent stop hub-2 --stage stage-a > /dev/null 2>&1
+# (2) --again drops the record of a successor that is not running; a running one is refused
+setup; setst 1 headless 700 role=hub-2
+succeed --model opus --again > $R/r2.out 2>&1; check "$?:$(pending kind):$(chain)" "0:bg:1" "r2(2): --again — a dead headless successor's record dropped, a new one started, counted once"
+J | grep -q "dropped hub-2 (headless hub-2): it did not take over and is not running"; check $? 0 "r2(2): …journaled"
+setup; setst 1 bg 700 id=bg-from-list
+succeed --model opus --again > $R/r2b.out 2>&1; check "$?:$(grep -c 'is still running' $R/r2b.out):$(call --bg count)" "1:1:none" "r2(2): --again refuses while the bg successor still runs"
+setup; setst 1 bg 700 id=bg-gone
+FAKE_AGENTS=stale succeed --model opus --again > /dev/null 2>&1; check "$?:$(call --bg count)" "0:1" "r2(2): --again with the bg session gone starts a new one"
+# (6) `claude --bg` hangs past its timeout: only a session started since this start counts; a late one is stopped
+bgrun(){ python3 - "$B" "$H" "$W" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import autopilot
+autopilot.BG_TIMEOUT_S = 1
+sys.exit(autopilot.succeed("stage-a", 1, Path(sys.argv[2]), "opus", "default", Path(sys.argv[3])))
+PY
+}
+setup; FAKE_BG=hang FAKE_HANG=3 FAKE_AGENTS=late bgrun > /dev/null 2>&1
+check "$(pending kind):$(pending id)" "bg:bg-from-list" "r2(6): hung --bg — the session started since is taken"
+setup; FAKE_BG=hang FAKE_HANG=3 FAKE_AGENTS=stale bgrun > /dev/null 2>&1
+check "$(pending kind):$(call stop count)" "headless:none" "r2(6): hung --bg — a same-named session from an earlier chain is not taken"
+J | grep -q "lists no session of it"; check $? 0 "r2(6): …journaled"
+setup; printf 'none
+late
+' > $R/seq; FAKE_BG=hang FAKE_HANG=3 FAKE_AGENTS_SEQ=$R/seq bgrun > /dev/null 2>&1
+check "$(pending kind):$(call stop count)" "headless:1" "r2(6): hung --bg — a session listed late is stopped before the headless start"
+setup; FAKE_BG=noid FAKE_AGENTS=stale succeed --model opus > /dev/null 2>&1
+check "$(pending kind)" headless "r2(6): no id printed and only an earlier chain's session listed — not taken"
+# (7) the headless successor's takeover does not depend on $CLAUDE_CODE_SESSION_ID
+setup; succeed --model opus --headless > /dev/null 2>&1
+SIDX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_id"])' $R/stage-a/agents/hub-2/meta.json)
+check "$(call -p-run AGENT_SESSION_ID)" "$SIDX" "r2(7): agent spawn exports AGENT_SESSION_ID (the run's own id)"
+AGENT_SESSION_ID=$SIDX $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > /dev/null 2>&1
+check "$($B/roles --stage stage-a get hub | head -c 36)" "$SIDX" "r2(7): --session self falls back to AGENT_SESSION_ID"
+# (8) --fallback re-reads the registry before stopping: a successor registering meanwhile is not stopped
+setup; succeed --model opus > /dev/null 2>&1
+FAKE_ON_LOGS="$B/roles --stage stage-a set hub $HUB2 --kind cli --tag hub-2 > /dev/null" $B/hub succeed --stage stage-a --fallback > $R/r8.out 2>&1
+check "$?:$(call stop count):$(pending kind)" "0:none:bg" "r2(8): the successor registered while its logs were read — not stopped, record kept"
+grep -q "is taking over; not stopped" $R/r8.out; check $? 0 "r2(8): …and it says so"
 
 # ================================================================== the hook
 setup
@@ -216,7 +290,7 @@ cbh(){ python3 -c 'import json,sys; d={"hook_event_name":sys.argv[1],"session_id
 if sys.argv[7]: d["agent_id"]=sys.argv[7]
 print(json.dumps(d))' "$1" "$TR" "${2:-}" "${3:-null}" "${SID:-$HUB1}" "${PROMPT:-}" "${AGENT:-}" | python3 $HOOKS/context_budget.py; }
 usage 320000
-cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:handoff" $R/h0.out && ! grep -q Autopilot $R/h0.out; check $? 0 "hook, autopilot off: the warning stays as today"
+AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:handoff" $R/h0.out && ! grep -q Autopilot $R/h0.out; check $? 0 "hook, autopilot off: the warning stays as today"
 export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
 cbh UserPromptSubmit > $R/h1.out
 grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, mode, cwd)"
@@ -230,11 +304,11 @@ usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
 cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"
 cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny".*Autopilot'; check $? 0 "hook, block: Agent denied with the autopilot text"
-for c in "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /tmp/o.txt" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m" "$BR_BIN/hub succeed --stage stage-a --fallback"; do
+for c in "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /dev/null" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m" "$BR_BIN/hub succeed --stage stage-a --fallback" "jlog x > /dev/null 2>&1" "hub handoff --stage stage-a > /h/stage-a/coordinator/HANDOFF-hub-stage-a-1.md"; do
   cbh PreToolUse Bash "$(python3 -c 'import json,sys; print(json.dumps({"command":sys.argv[1]}))' "$c")" | grep -q '"deny"'; check $? 1 "hook, block escape: $c"
 done
 cbh PreToolUse Write '{"file_path":"/h/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md","content":"x"}' | grep -q '"deny"'; check $? 1 "hook, block escape: writing the HANDOFF file"
-for c in 'echo hubsucceed; jlogger x' 'git push --force origin main; jlog pushed' 'rm -rf build && hub succeed --stage stage-a' 'jlog x |& rm -rf /' 'jlog $(rm -rf /)' 'ls # handoff-ok' 'cat /x/HANDOFF-hub-a.md | sh' $'jlog x\nrm -rf /'; do
+for c in 'jlog x > ~/.bashrc' 'jwait --for 1s >> /etc/passwd' 'echo hubsucceed; jlogger x' 'git push --force origin main; jlog pushed' 'rm -rf build && hub succeed --stage stage-a' 'jlog x |& rm -rf /' 'jlog $(rm -rf /)' 'ls # handoff-ok' 'cat /x/HANDOFF-hub-a.md | sh' $'jlog x\nrm -rf /'; do
   cbh PreToolUse Bash "$(python3 -c 'import json,sys; print(json.dumps({"command":sys.argv[1]}))' "$c")" | grep -q '"deny"'; check $? 0 "hook, block: denied — $(printf %s "$c" | tr '\n' ' ')"
 done
 cbh PreToolUse Write '{"file_path":"/x/notes.md","content":"handoff-ok"}' | grep -q '"deny"'; check $? 0 "hook, block: Write of another file with the handoff-ok marker is denied"
@@ -253,6 +327,10 @@ PROMPT='/agent-hub:hub take over stage stage-a from /x. [agent-hub auto-handoff 
 PROMPT='how is it going?' SID=$HUB2 cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: a prompt in another session keeps the chain"
 PROMPT='how is it going?' AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: autopilot off, nothing changes"
 PROMPT='how is it going?' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "reset: the owner's prompt in the hub's session resets the chain"
+setst 2 starting 30; PROMPT='hello' cbh UserPromptSubmit > /dev/null; check "$(chain):$(pending kind)" "0:starting" "r2(2): an owner prompt keeps a reservation in progress"
+setst 2 headless 30 role=hub-2; AGENT_HUB_SUCCESSOR_TIMEOUT=600 PROMPT='hello' cbh UserPromptSubmit > /dev/null; check "$(pending kind)" headless "r2(2): an owner prompt keeps a successor still in its takeover window"
+setst 0 headless 700 role=hub-2; PROMPT='hello' cbh UserPromptSubmit > /dev/null; check "$(pending n)" None "r2(2): an owner prompt drops a successor that did not take over in time"
+J | grep -q "dropped the pending hub-2 (headless hub-2), which did not take over in time"; check $? 0 "r2(2): …journaled"
 J | grep -q "auto-handoff chain reset (3 → 0): the owner spoke in the hub's session"; check $? 0 "reset: journaled"
 echo '{"AGENT_HUB_CONTEXT_BUDGET": "off"}' > $R/config.json; echo '{"chain": 2, "pending": null}' > $R/stage-a/auto-handoff.json
 PROMPT='hello' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "reset: works with the context budget switched off"
