@@ -16,15 +16,20 @@ What is planned next, in order. An item moves to the [CHANGELOG](CHANGELOG.md) w
 
 ## Next
 
-1. **First-run setup wizard.** `agent-hub:setup` grows from lock resources into the one flow a new user runs after
+1. **Interface language.** `AGENT_HUB_LANG` (default `en`; `ru` ships too; any other language is a JSON
+   catalog in the hub home, no fork). It covers what a person reads — `agent-top` in every view (screen, `--once`,
+   the widget) and the summaries printed for the owner. Journal status words (`DONE`, `BLOCKED`) stay as they are:
+   waiters match them. Text written for the model (skills, hook messages) stays English; the hub answers in the
+   user's language anyway. A test fails the build when a catalog misses a key.
+2. **First-run setup wizard.** `agent-hub:setup` grows from lock resources into the one flow a new user runs after
    installing: where the hub runs (Claude Desktop or a terminal, which decides the optional modules), shared resources
    and the commands that touch them, reviewers, models and context window (the handoff threshold and the context
    budget follow from it), the default delegation level, how the project waits for CI, a `hub-rules.md` of the team's
-   own, the `grilling` skill. Each answer is proved with a check (`lock rules check`, `hub reviewer --all`,
+   own, the `grilling` skill, the interface language. Each answer is proved with a check (`lock rules check`, `hub reviewer --all`,
    `delegation show`), and the flow ends with `hub start`. Running it again shows the current values and changes only
    what you answer differently; `--defaults` for scripted installs. Its questions are shaped by where new users
    actually get stuck.
-2. **Executors on other runtimes, Codex first.** `agent spawn --runtime claude|codex`: the agent is launched with
+3. **Executors on other runtimes, Codex first.** `agent spawn --runtime claude|codex`: the agent is launched with
    `codex exec --json`, its thread id is kept for `agent send` (`codex exec resume`), and a JSONL adapter feeds
    `agent-top`; the journal, role registry, inbox and `EXIT` lines stay the same. Work moves off the Claude plan's
    limits onto another vendor's. Claude Code hooks (the lock guard, the polling guard, the context budget) do not run
