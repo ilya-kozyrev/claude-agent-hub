@@ -10,6 +10,8 @@ all of it at a glance, in the terminal or as a chat widget.
 
 Everything is plain files under one directory and a handful of small Python CLIs. No server, no database.
 
+New here? Start with [Getting started](docs/getting-started.md) — from an idea to merged code in eleven steps.
+
 ## Why
 
 A single chat session is a poor place to run a week of work:

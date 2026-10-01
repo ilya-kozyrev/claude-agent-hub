@@ -1,0 +1,322 @@
+# Getting started: from idea to shipped
+
+This page follows one idea from the first sentence you type to merged code. It is about what **you** say and do, what
+the **hub** does on its own, and what the **agents** do. It is not a command reference: for that, see
+[a-day-with-agent-hub.md](a-day-with-agent-hub.md) (every command, in order) and [architecture.md](architecture.md)
+(file formats).
+
+The running example, used in every step: *"add CSV export to the reports page of my web app"*, with three agents
+named `api`, `ui` and `tests`. Everything below is synthetic.
+
+## The flow in one picture
+
+```mermaid
+flowchart TB
+    subgraph you["You"]
+        y1(["1. Idea"])
+        y2["1. Open a Claude Code session in your repo<br/>and describe the idea"]
+        y3["2. Answer clarifying questions"]
+        y4{"3. Approve the plan and briefs?"}
+        y5["6. Answer agent questions in chat"]
+        y6["7. Glance at /agent-top"]
+        y7{"9. Review OK?"}
+        y8(["10. Merge"])
+    end
+    subgraph hub["Hub session (your interactive chat)"]
+        h1["Load the hub skill, check the<br/>question register for old decisions"]
+        h2["Ask clarifying questions"]
+        h3["Propose a plan: roles, briefs,<br/>stop conditions"]
+        h4["4. Spawn agents: agent spawn"]
+        h5["5. Wait in the background: jwait"]
+        h6["Relay the answer: ask close,<br/>agent send"]
+        h7["11. Write a handoff when the<br/>context fills up"]
+    end
+    subgraph agents["Agents (headless, detached)"]
+        a1["Work in their own checkout,<br/>write one journal line per event"]
+        a2["Ask a question: QUESTION, then BLOCKED"]
+        a3["8. Open pull requests and write a report"]
+        a4["Keep running when the chat is closed"]
+    end
+    y1 --> y2 --> h1 --> h2 --> y3 --> h3 --> y4
+    y4 -- "changes" --> h3
+    y4 -- "yes" --> h4 --> a1
+    h4 --> h5
+    a1 --> a2 --> h5
+    h5 --> h6
+    h6 --> y5
+    y5 --> h6
+    h6 --> a1
+    y6 -.-> a1
+    a1 --> a3 --> h5
+    h5 --> y7
+    y7 -- "fixes needed" --> h6
+    y7 -- "yes" --> y8
+    y8 --> h7
+    h7 -. "next session: hub takeover" .-> h1
+    a1 -.-> a4
+
+    style you fill:#e8f0fe,stroke:#4a6fa5
+    style hub fill:#fdf3e0,stroke:#b8860b
+    style agents fill:#e6f4ea,stroke:#3b7a57
+```
+
+Read it by colour: blue is your part, which is short; yellow is the hub, which plans, waits and relays; green is the
+agents, who do the long work. The numbers match the steps below.
+
+## Install
+
+```text
+/plugin marketplace add ilya-kozyrev/claude-agent-hub
+/plugin install agent-hub@claude-agent-hub
+```
+
+Requirements and the permissions note are in the [README](../README.md#install). Read the permissions note before your
+first agent: headless agents run with `bypassPermissions` by default.
+
+## Step by step
+
+### 1. Open a session in your repo and describe the idea
+
+Start Claude Code in the repository you want to change (this chat becomes the **hub**) and say what you want, plainly:
+
+```text
+Use the agent-hub hub skill. I want CSV export on the reports page of this web app: a button that downloads
+the table as CSV, filtered the same way as the table. Plan it as one stage called csv-export. Don't start
+anything before I approve the plan.
+```
+
+- **Hub:** loads the `hub` skill (the workflow and the tool list). The stage name `csv-export` is just a directory
+  name under the hub home (`~/.claude/agent-hub/csv-export/`); the first `agent spawn` creates it.
+- **You see:** the hub restating the goal.
+- **Wait:** seconds.
+- **Next:** answer its questions.
+
+### 2. Answer the clarifying questions
+
+The hub first looks for decisions you already made (`ask search csv export`; the register is empty on day one), then
+asks what it cannot find in the code. Answer in a sentence each:
+
+```text
+Hub: Which columns? Everything in the table or only visible ones?
+You: Only visible ones, same order.
+Hub: Where is the data loaded — one endpoint or several?
+You: One: GET /api/reports. Add a "format=csv" option there.
+```
+
+- **Hub:** reads the repo, asks, and records anything you cannot decide now as an owner question with a default action
+  and a due time (`ask add`; it lands in `questions.md`), so it will not be asked twice.
+- **Wait:** a few minutes of conversation.
+- **Next:** the plan.
+
+### 3. Review the plan and the briefs
+
+The hub proposes the split before it starts anything: which agents (`api`, `ui`, `tests`), what each one owns, which
+paths each must not touch, how each one proves it is done, and its stop condition ("open a PR and stop; do not merge").
+
+- **Hub:** drafts one **brief** per agent from `templates/brief-executor-template.md`: why, owner decisions that must
+  not be reopened (filled from the register), steps with a checkable "done", verification, and "answer and stop" with a
+  turn limit. It shows you the plan, and the brief files are on disk to read.
+- **You see:** a plan of a screen or two.
+- **Wait:** minutes.
+- **Next:** approve, or say what to change. The plugin has no approval button; you approve by saying so in chat, and
+  you told the hub in step 1 to wait.
+
+```text
+Plan is fine, but tests must not touch the existing fixtures, and ui should reuse our button component.
+Go.
+```
+
+### 4. The hub starts the agents
+
+- **Hub:** runs one `agent spawn` per brief, for example
+  `agent spawn --role api --tag hub-1-api --cwd <api checkout> --model sonnet --brief <brief file>`. Each agent is a
+  detached `claude -p` session with its own process and session id.
+  The plugin does not create git worktrees: give each agent its own checkout or worktree as `--cwd` (the hub can create
+  them) so two agents do not edit the same files.
+- **Files that appear:** `agents/<role>/{brief.md, inbox.md, log.jsonl, meta.json}` and the first lines in today's
+  journal, `coordinator/work/journal-YYYY-MM-DD.md`.
+- **You see:** one "started" line per agent.
+- **Wait:** the run starts within seconds.
+- **Next:** nothing. The hub now waits.
+
+### 5. The hub waits, and so can you
+
+- **Hub:** starts one background `jwait` that wakes it when a `DONE`, `BLOCKED`, `EXIT` or `QUESTION` line addressed to
+  it appears. No polling, no `sleep` loops.
+- **Agents:** work, commit often, and write to the journal only on events. They read their inbox after every major
+  step.
+- **You:** do something else. Closing the chat does not stop agents (see [When you are not needed](#when-you-are-not-needed)).
+- **Wait:** from a few minutes to a few hours, depending on the task.
+
+### 6. Answer an agent's question
+
+An agent that needs a decision writes `@hub QUESTION …` and ends its turn with `BLOCKED`. The hub wakes up.
+
+- **Hub:** checks the register first. If you already decided the matter, it applies the answer with `agent send` and
+  never bothers you. If not, it asks you in chat, registers the question (`ask add --default … --due …`) and tells the
+  agent what to assume meanwhile.
+- **You see:** one question, with the default action and the deadline.
+- **You do:** answer in a sentence.
+- **Hub, then:** `ask close` with your answer, `agent send <role> "…"` (a finished agent resumes with the message),
+  and later `ask done` with evidence that it was carried out.
+- **Wait:** the agent continues within seconds of the message.
+
+If you do not answer by the due time, the default action is taken and the question stays open until you answer.
+
+### 7. Glance at progress
+
+```text
+/agent-top
+```
+
+- **Tool:** the `agent-top` skill builds a snapshot of every agent: live or done, task, current action, unread
+  messages, locks, open owner questions, plan limits. Read-only.
+- **You see:** a widget in chat, or the same as text if the widget tool is missing. In the desktop Code tab the widget
+  has no buttons; it names the commands to type.
+- **Zoom in:** `/agent-top api` shows one agent's task, last thought and result.
+- In a terminal, `agent-top` is a live console, and `agent-top --once` prints a text snapshot.
+
+### 8. Agents open pull requests
+
+When an agent finishes, it writes its report to `coordinator/work/<tag>-REPORT.md`, journals
+`DONE <report path>` and exits. If your briefs said "open a PR and stop", the PRs are open now.
+
+- **Hub:** reads the one-line `DONE`, not the whole log, and tells you what is ready.
+- **You see:** "api: PR 41 open, tests green. ui: PR 42 open." with the report paths.
+- **Next:** review.
+
+### 9. Review
+
+Review is your call; the plugin does not require any. A common pattern: the hub starts a fourth agent (`reviewer`,
+often a different model from the author) with a brief that names the PRs and the criteria. The hub's rule of thumb is
+at most three review rounds per artifact; after that only blockers with a concrete scenario are accepted.
+
+```text
+Have a reviewer agent check PR 41 and 42 against the brief. Report only real problems.
+```
+
+- **You see:** a short verdict per PR, or a fix round: the hub sends the author `agent send api "…"` and waits again.
+- **Next:** when you are satisfied, merge.
+
+### 10. Merge
+
+Merging to main is the one step the plugin guards. A lock, `main-merge`, says who may merge right now, and a hook
+refuses `gh pr merge`, `glab mr merge` and a `git push` to a protected branch while *another* session holds the lock.
+
+```text
+Merge 41, then 42. Take the main-merge lock first so nobody else merges meanwhile.
+```
+
+- **Hub:** `lock take main-merge --repo webapp --until +2h --why "csv-export"`, merges, `lock release`.
+- **You see:** the merge result and the lock released.
+- **Note:** merging is not shipping. Deploying is whatever your project does after a merge; the plugin has no deploy
+  step (it can guard one if you list your deploy command in `lock-rules.json`).
+
+### 11. Hand over when the context fills up
+
+A long stage outlives one chat. When the hub's context is long, or at the end of the day, it loads the `handoff` skill:
+
+```text
+Context is getting long. Write the handoff.
+```
+
+- **Hub:** `hub handoff --stage csv-export --n 1` writes `HANDOFF-hub-csv-export-<date>.md` with locks, agents, the
+  question register and the night queue filled in; the hub fills the rest (first steps, queue, risks) and tells you the
+  path. It releases no locks. Agents keep running.
+- **Next session:** open a fresh chat in the repo and say
+  `Use the hub skill and take over stage csv-export from <the handoff path>.` The new hub runs
+  `hub takeover --stage csv-export --n 2 --session "$CLAUDE_CODE_SESSION_ID"`, which takes over the locks, registers
+  itself as the hub, and prints a digest of the handoff, the register and the live agents.
+
+## A sketch of a real session
+
+Synthetic. Lines starting with `#` are annotations, not part of the chat.
+
+```text
+You:  Use the agent-hub hub skill. Add CSV export to the reports page. One stage, csv-export. Plan first, start nothing.
+# the hub loads the skill and reads the repo
+Hub:  No earlier decisions on "csv export" in the register. Two questions: which columns, and should it be
+      a new endpoint or a format option on GET /api/reports?
+You:  Visible columns only. A format=csv option on the existing endpoint.
+Hub:  Plan: api (endpoint option + streaming), ui (button, reuse ButtonLink), tests (API and UI tests, no
+      fixture changes). Each opens one PR and stops; none merges. Briefs are in work/brief-{api,ui,tests}.md.
+      Open question for you, not blocking: should large exports (> 50k rows) be refused or truncated?
+      Default if you do not answer by 18:00: refuse with a clear error. Registered as Q-C-001.
+You:  Fine. Start.
+# the hub runs agent spawn three times; three "started headless agent" lines appear in the journal
+Hub:  Started api, ui, tests (tags hub-1-api, hub-1-ui, hub-1-tests). I am waiting in the background; I will
+      only speak when something finishes or blocks.
+# 40 minutes pass; the hub is woken by a journal line
+Hub:  ui asks: the reports table has a "Select all" column; export it or skip it? I found no earlier decision.
+      Default if you do not answer: skip it. Asked as Q-C-002.
+You:  Skip it.
+# the hub runs ask close Q-C-002, agent send ui "Q-C-002: skip the select-all column", ask done later
+You:  /agent-top
+```
+
+And what `/agent-top` shows later that afternoon, as text (`agent-top --once`):
+
+```text
+ agent-top ● 1 ✓ 2 csv-export · locks 0 · questions 1 (overdue 0) · limit 5h 27% 7d 41%                       15:20:11
+  ROLE   TASK                           STATUS MODEL           AGE TURN  CTX     $ ✉  NOW / LAST
+● ui     Add the CSV button to the rep… live   sonnet-5-5/hi    0s   18  71k     —    ▸ Bash: gh pr create --title "Add C…
+✓ api    Add format=csv to GET /api/re… done   sonnet-5-5/hi   32m   41  88k $2.10    DONE PR 41 open, report at wor…
+✓ tests  Write API and UI tests for t… done   sonnet-5-5/hi   12m   29  64k $1.35    DONE PR 43 open, report at wor…
+
+Owner questions (ask summary)
+  csv-export — open 1, overdue 0
+    Q-C-001 [csv-export] open — Refuse or truncate exports over 50k rows?
+    blocks: nothing; default by 2026-10-01T18:00: refuse with a clear error
+
+Journal (last 5 lines):
+14:48 [hub-1-api] DONE PR 41 open, report at work/hub-1-api-REPORT.md
+14:59 [hub-1-tests] DONE PR 43 open, report at work/hub-1-tests-REPORT.md
+15:08 [hub-1] @hub-1-ui Q-C-002: skip the select-all column
+15:12 [hub-1-ui] export button wired to the new endpoint; running UI tests
+15:18 [hub-1-ui] UI tests green; opening the PR
+```
+
+Two agents are done, one is finishing its tests, and you are asked for nothing except the one non-blocking question.
+
+## When you are needed
+
+- **Approve the plan and the briefs**, before any agent starts. This is the cheapest moment to change direction.
+- **Answer questions** that touch product, money or anything that leaves your team. The hub brings them one at a time,
+  with a default.
+- **Review and merge.** The hub can run the merge, but the decision to merge is yours.
+- **Permissions.** Agents run with `bypassPermissions` by default. You decide what they must not touch (in the brief),
+  and whether to run them in a worktree or sandbox instead of your main checkout.
+
+## When you are not needed
+
+- **Waiting.** The hub waits with one background `jwait`; it needs no prompting and does not poll.
+- **Closing the chat.** Agents are detached `claude -p` processes in their own process group; they survive the hub
+  session. Their output goes to the journal and report files. Open a new chat later, load the `hub` skill, and the hub
+  reads them (a handoff makes this cleaner).
+- **Repeated questions.** The register means the hub does not ask you what you already answered, in this session or the
+  next.
+- **Routine progress.** Agents write to the journal only on events, so you are not shown running commentary.
+
+## Common first-day mistakes
+
+- **Agents with a loose brief.** A headless agent has nobody to ask in chat and no end unless the brief gives one. Every
+  brief needs a "done" you can check, a stop condition ("open a PR and stop"), a turn limit and a list of what not to
+  touch. The template exists for this.
+- **Ignoring the permissions mode.** `bypassPermissions` is the default because any other mode silently stalls on the
+  first blocked tool. Run agents in their own worktree, say what they must not touch, or set
+  `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
+- **Long waits in the foreground.** A hub that sits in `sleep` or a polling loop fills its context and blocks the chat.
+  The waiting tool is `jwait`, run in the background. Agents are the same in reverse: they end when their turn ends, so
+  a long command is run in the foreground with a raised timeout, not left in the background.
+- **Expecting buttons in the widget.** In the Claude Code desktop tab the `/agent-top` widget cannot send prompts. Type
+  the command it names, such as `agent send api "…"`.
+- **Two agents in one checkout.** The plugin does not make worktrees. Give each agent its own, or they will overwrite
+  each other.
+- **Letting the hub run until it forgets.** Write the handoff while context is left, not after the chat has slowed
+  down. Agents keep running meanwhile, and the next hub picks up from the file.
+
+## Where next
+
+- [a-day-with-agent-hub.md](a-day-with-agent-hub.md): the same flow at command level, with a night queue.
+- [architecture.md](architecture.md): roles, who writes which file, and the file formats.
+- [README](../README.md): configuration variables and limitations.
