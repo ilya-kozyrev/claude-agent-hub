@@ -445,8 +445,8 @@ A session started outside the home needs that grant: `/add-dir <home>` (this ses
 Children need nothing: `agent spawn`, a resume (`agent send` to a finished agent), the autopilot successor and the
 headless successor get `AGENT_HUB_HOME=<the parent's home>`, so parent and children never resolve differently, and
 `--add-dir <home>` when the home is not under their directory. A stage that is not in the resolved home but exists in
-`~/agent-hub` or the legacy home is refused with an error naming where it is: migrate it, set `AGENT_HUB_HOME` to that
-place, or `mkdir -p <home>/<stage>` to start afresh.
+`~/agent-hub` or the legacy home is refused with an error naming where it is: migrate the legacy home (or `mv` that one
+stage when the home is another one), set `AGENT_HUB_HOME` to that place, or `mkdir -p <home>/<stage>` to start afresh.
 
 ```bash
 hub home [--cwd DIR] [--json]   # the home, the layer that chose it, protected or not, the grant lines with your path
@@ -454,8 +454,10 @@ hub home migrate                # dry run: what would move from the legacy home 
 hub home migrate --apply        # do it; --from DIR / --to DIR name other homes
 ```
 
-`migrate --apply` refuses while any agent of any stage of the source is alive and when a source file already exists in
-the target. It copies (modes kept), verifies the count and the bytes, rewrites the old absolute path in every `*.json`
+`migrate --apply` refuses while any agent of any stage of the source is alive or a background hub (an autopilot
+successor) of one of its stages runs, and when a source path already exists in the target. It copies into a staging
+directory beside the target (modes kept), verifies the count and the bytes, moves the copy into place only then (a
+failed copy leaves nothing at the target), rewrites the old absolute path in every `*.json`
 under the new home (roles, agents' meta, `.jwait-state`, `.state`, autopilot state), leaves the `.md` history as written
 and renames the source to `<source>.migrated-YYYYMMDD`. It never deletes; a second run says there is nothing to migrate.
 

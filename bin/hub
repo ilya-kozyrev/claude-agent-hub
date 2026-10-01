@@ -84,7 +84,7 @@ home prints where the hub keeps its files and why there: $AGENT_HUB_HOME, else a
 AGENT_HUB_HOME "project" (<main checkout>/.agent-hub/local/) or "user", else ~/agent-hub — the legacy ~/.claude/agent-hub
 while ~/agent-hub does not exist; whether it is under a .claude directory (protected by Claude Code), and how to grant a
 session access to it. home migrate moves the legacy home (--from) to the resolved one (--to): a dry run unless --apply,
-which refuses while an agent of the source runs, copies, verifies, rewrites the old path in the JSON files and renames the
+which refuses while an agent or a background hub of the source runs, copies, verifies, rewrites the old path in the JSON files and renames the
 source to <source>.migrated-YYYYMMDD (bin/hubhome.py). Exit 0 ok; a dry run exits 1 when --apply would refuse.
 Exit: 0 ok, 1 step failed (reviewer: no reviewer available), 2 usage — or, for handoff, sub-agents of the hub's session
 still running; succeed: 3 chain limit reached.

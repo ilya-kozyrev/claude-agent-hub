@@ -180,7 +180,8 @@ def home(cwd=None) -> Home:
     .agent-hub/config.json counts (default: the hook's session directory, else the working directory)."""
     raw = os.environ.get(HOME_KEY)
     if raw:
-        return Home(Path(raw).expanduser(), "env", "the environment ($AGENT_HUB_HOME)")
+        # absolute: a relative value pinned into a child in another directory would name another home
+        return Home(Path(raw).expanduser().absolute(), "env", "the environment ($AGENT_HUB_HOME)")
     start = cwd or _SESSION_CWD
     if start is None:
         try:
@@ -743,9 +744,13 @@ def check_stage(stage: str) -> str:
         other = stage_elsewhere(stage)
         if other is not None:
             h = home()
-            raise Failure(f"stage {stage} is not in the hub home {h.path} ({h.source}) but in {other}: move it with "
-                          f"`hub home migrate --from {other} --to {h.path}`, or work there with "
-                          f"AGENT_HUB_HOME={other}; to start the stage afresh here, `mkdir -p {h.path / stage}`")
+            # the whole-home move fits only legacy -> the user default; into another home (a project's) it would carry
+            # every other project's stages along
+            move = ("move the old home with `hub home migrate`" if under(other, legacy_home())
+                    and under(h.path, user_home()) else
+                    f"move the stage (`mv {other / stage} {h.path}/`; its records keep the old paths)")
+            raise Failure(f"stage {stage} is not in the hub home {h.path} ({h.source}) but in {other}: {move}, or work "
+                          f"there with AGENT_HUB_HOME={other}; to start the stage afresh here, `mkdir -p {h.path / stage}`")
         _STAGE_SEEN.add(stage)
     return stage
 

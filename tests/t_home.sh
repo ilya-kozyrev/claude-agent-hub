@@ -100,7 +100,11 @@ unset AGENT_HUB_HOME CLAUDE_BIN FAKE_BG_LOG AGENT_HUB_AUTO_HANDOFF AGENT_HUB_SUC
 # ================================================================== a stage in another home
 mkdir -p $HOME/agent-hub/stage-x
 AGENT_HUB_HOME=$S/elsewhere $B/jlog --stage stage-x --tag t "x" > /dev/null 2> $S/e1.err; check $? 1 "a stage absent here but in ~/agent-hub: refused"
-grep -q "stage stage-x is not in the hub home $S/elsewhere .* but in $HOME/agent-hub: move it with .hub home migrate" $S/e1.err; check $? 0 "…naming where it is and the way out"
+grep -q "stage stage-x is not in the hub home $S/elsewhere .* but in $HOME/agent-hub: move the stage (.mv $HOME/agent-hub/stage-x $S/elsewhere/" $S/e1.err; check $? 0 "…naming where it is and moving that one stage (not the whole home)"
+mkdir -p $HOME/.claude/agent-hub/stage-l
+$B/jlog --stage stage-l --tag t "x" > /dev/null 2> $S/e2.err; check $? 1 "a stage in the legacy home while ~/agent-hub is the home: refused"
+grep -q "but in $HOME/.claude/agent-hub: move the old home with .hub home migrate." $S/e2.err; check $? 0 "…pointing at hub home migrate"
+rm -rf $HOME/.claude/agent-hub/stage-l
 AGENT_HUB_HOME=$S/elsewhere $B/jlog --stage stage-new --tag t "x" > /dev/null 2>&1; check $? 0 "control: a stage in no other home starts here"
 mkdir -p $S/elsewhere/stage-x; AGENT_HUB_HOME=$S/elsewhere $B/jlog --stage stage-x --tag t "x" > /dev/null 2>&1; check $? 0 "…and once the stage exists here, it is used"
 
@@ -112,6 +116,7 @@ grep -q '^protected: no' $S/hh2.out && grep -q "/add-dir $HOME/agent-hub" $S/hh2
 (cd $P && $B/hub home > $S/hh3.out 2>&1); grep -q 'needs no grant' $S/hh3.out; check $? 0 "…none needed inside the repository holding the home"
 
 # ================================================================== migrate
+export CLAUDE_BIN=$T/fake_claude_bg.py FAKE_AGENTS=none FAKE_BG_LOG=$S/bg-m.log
 M=$S/mhome; L=$M/.claude/agent-hub; mkdir -p $L/stage-m/agents/a1 $L/stage-m/coordinator/work $L/.jwait-state $L/.state/x
 printf '{"version": 1, "roles": {"a1": {"log": "%s/stage-m/agents/a1/log.jsonl", "cwd": "/w"}}}\n' $L > $L/stage-m/roles.json
 printf '{"dir": "%s/stage-m/agents/a1", "report": "%s/stage-m/coordinator/work/a1-REPORT.md", "other": "%s2/x", "pid": 0, "session_id": "s"}\n' $L $L $L > $L/stage-m/agents/a1/meta.json
@@ -147,10 +152,31 @@ check "$(shasum < $N/stage-m/coordinator/work/journal-2026-10-01.md)" "$md_befor
 grep -q 'nothing to migrate' $S/m4.out; check $? 0 "…says there is nothing to migrate"
 check "$(cd $S/plain && HOME=$M hh $S/plain)" "default $N" "after the move the user default is the home"
 (cd $S/plain && HOME=$M $B/jlog --stage stage-m --tag t "after" > /dev/null 2>&1) && grep -q after $N/stage-m/coordinator/work/journal-$(today).md; check $? 0 "…and the stage goes on there"
+# a background hub of a source stage still runs (an autopilot successor, its home pinned to the source): refused
+A=$S/ma/.claude/agent-hub; mkdir -p $A/stage-a; echo '{"chain": 1, "pending": null}' > $A/stage-a/auto-handoff.json
+(cd $S/plain && HOME=$S/ma FAKE_AGENTS=stale $B/hub home migrate --apply > $S/m6.out 2>&1); check $? 1 "negative: --apply while a background hub of a source stage runs"
+grep -q 'stage-a-hub-2 (bg-older' $S/m6.out && [ -d $A ] && [ ! -e $S/ma/agent-hub ]; check $? 0 "…names it (claude stop) and copies nothing"
+(cd $S/plain && HOME=$S/ma FAKE_AGENTS=none $B/hub home migrate --apply > $S/m7.out 2>&1); check $? 0 "control: with no background hub running, it migrates"
+# a copy that fails half-way: nothing at the target (it would become the live home), the source untouched
+F=$S/mf/.claude/agent-hub; mkdir -p $F/s1 $F/s2; echo a > $F/s1/a.md; echo b > $F/s2/b.md; chmod 000 $F/s2/b.md
+(cd $S/plain && HOME=$S/mf $B/hub home migrate --apply > $S/m8.out 2>&1); rc=$?; chmod 644 $F/s2/b.md
+check $rc 1 "negative: a file that cannot be read fails the migration"
+[ ! -e $S/mf/agent-hub ] && [ -z "$(ls -A $S/mf | grep migrating)" ] && [ -f $F/s1/a.md ]; check $? 0 "…leaves no partial copy at the target (nor a staging directory) and the source in place"
+check "$(cd $S/plain && HOME=$S/mf hh $S/plain | cut -d' ' -f1)" "legacy" "…so the home is still the legacy one"
+# a target path that is a file where the source has a directory: refused before anything is written
+G=$S/mg/.claude/agent-hub; mkdir -p $G/s1; echo a > $G/s1/a.md; mkdir -p $S/mg/agent-hub; echo x > $S/mg/agent-hub/s1
+(cd $S/plain && HOME=$S/mg $B/hub home migrate --apply > $S/m9.out 2>&1); check $? 1 "negative: a file in the target where the source has a directory"
+# a symlink into the old home follows the move
+K=$S/mk/.claude/agent-hub; mkdir -p $K/s1; echo a > $K/s1/a.md; ln -s $K/s1/a.md $K/s1/link.md
+(cd $S/plain && HOME=$S/mk $B/hub home migrate --apply > /dev/null 2>&1)
+check "$(readlink $S/mk/agent-hub/s1/link.md)" "$S/mk/agent-hub/s1/a.md" "a symlink into the old home points into the new one"
+unset CLAUDE_BIN FAKE_AGENTS FAKE_BG_LOG
 # a file of the source already in the target: refused
 L2=$S/m2/.claude/agent-hub; mkdir -p $L2/s $S/m2/agent-hub/s; echo a > $L2/s/f.md; echo b > $S/m2/agent-hub/s/f.md
 (cd $S/plain && HOME=$S/m2 $B/hub home migrate --apply > $S/m5.out 2>&1); check $? 1 "negative: a file already in the target"
 check "$(cat $S/m2/agent-hub/s/f.md)" "b" "…is never overwritten"
+# a relative AGENT_HUB_HOME is made absolute (a child in another directory gets the same home)
+check "$(cd $S && AGENT_HUB_HOME=rel hh $S)" "env $S/rel" "a relative AGENT_HUB_HOME resolves against the working directory"
 
 # ================================================================== the autopilot strips AGENT_SESSION_ID (a unit check)
 AGENT_SESSION_ID=x python3 -c "import sys; sys.path.insert(0, '$B'); import autopilot; sys.exit('AGENT_SESSION_ID' in autopilot.child_env())"; check $? 0 "autopilot.child_env drops AGENT_SESSION_ID"

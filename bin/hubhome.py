@@ -7,8 +7,10 @@ show: the resolved home, the layer that chose it, whether it is under a .claude 
 then the migrate command), and how to grant a session access to it when the session starts elsewhere.
 migrate: from the legacy ~/.claude/agent-hub (--from) to the resolved home (--to; the user default ~/agent-hub when the
 resolved home is the source itself). A dry run unless --apply: it lists what would be copied and which JSON files name
-the old path. --apply refuses while an agent of any stage of the source is alive and when a file of the source already
-exists in the target; it copies (modes and times kept, symlinks as symlinks), verifies the file count and bytes, rewrites
+the old path. --apply refuses while an agent of any stage of the source is alive or a background hub of one of its stages
+runs (`claude agents`, asked when a stage used the autopilot), and when a path of the source already exists in the
+target; it copies into a staging directory beside the target (modes and times kept, symlinks as symlinks, a link into
+the old home retargeted), verifies the file count and bytes, moves the copy into place only then, rewrites
 the old absolute path in every *.json under the new home (roles, agents' meta, .jwait-state, .state, the autopilot
 state) — the Markdown history stays as written — and renames the source to <source>.migrated-YYYYMMDD. Nothing is
 deleted. A second run finds no source and says there is nothing to migrate.
@@ -20,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -115,6 +118,47 @@ def _live_agents(src: Path) -> list:
     return out
 
 
+def _live_successors(src: Path) -> tuple:
+    """(names, note): background hub sessions of the source's stages that still run — an autopilot successor carries
+    the old home in its environment and would recreate it — from `claude agents --json`; asked only when a stage of the
+    source has used the autopilot (an auto-handoff.json). note: why it could not be told, else ""."""
+    states = sorted(src.glob("*/auto-handoff.json"))
+    if not states:
+        return [], ""
+    stages = sorted({p.parent.name for p in states})
+    ids = set()
+    for p in states:
+        try:
+            pend = (json.loads(p.read_text(encoding="utf-8")) or {}).get("pending") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(pend, dict) and pend.get("id"):
+            ids.add(str(pend["id"]))
+    alt = "|".join(map(re.escape, stages))
+    names = re.compile(rf"^(?:(?:{alt})-hub-\d+|Hub (?:{alt}) #\d+)$")
+    try:
+        cli = hc.find_claude(persist=False)
+    except hc.Failure as e:
+        return [], str(e)
+    if cli is None:
+        return [], "no claude CLI found"
+    import autopilot  # noqa: E402
+    try:
+        res = subprocess.run([cli.path, "agents", "--json"], capture_output=True, text=True, timeout=30,
+                             env=autopilot.child_env(), stdin=subprocess.DEVNULL)
+        rows = json.loads(res.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return [], f"`claude agents --json` did not answer ({e})"
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict) or r.get("kind") != "background":
+            continue
+        rid = str(r.get("id") or r.get("sessionId") or "")
+        if names.match(str(r.get("name") or "")) or rid in ids or str(r.get("sessionId") or "") in ids:
+            out.append(f"{r.get('name') or '?'} ({rid}; `claude stop {rid}`)")
+    return out, ""
+
+
 def _old_paths(src: Path) -> list:
     """The spellings of the source's absolute path a JSON file may hold (as given, resolved), longest first."""
     out = {str(src)}
@@ -142,6 +186,35 @@ def _json_hits(root: Path, files: list, pat: re.Pattern) -> list:
         except (OSError, UnicodeDecodeError):
             continue
     return hits
+
+
+def _stage(src: Path, staging: Path, dirs: list, files: list, dst: Path, pat: re.Pattern, new: str) -> list:
+    """Copy the source into `staging` (modes and times kept; a symlink as a symlink, its target moved to the new home
+    when it pointed into the old one) and verify every file's presence and size. Returns the files copied: all but
+    an empty lock file the target already has."""
+    staging.mkdir(parents=True)
+    for d in dirs:
+        (staging / d).mkdir(parents=True, exist_ok=True)
+    copied = []
+    for f in files:
+        s, t = src / f, staging / f
+        if f.name.endswith(EMPTY_LOCK) and (dst / f).is_file() and _size(s) == 0:
+            continue
+        if s.is_symlink():
+            os.symlink(pat.sub(lambda m: new, os.readlink(s)), t)
+        else:
+            shutil.copy2(s, t)
+        copied.append(f)
+    bad = [f for f in copied if not ((staging / f).exists() or (staging / f).is_symlink())
+           or (not (src / f).is_symlink() and _size(staging / f) != _size(src / f))]
+    if bad:
+        raise hc.Failure(f"verification failed: {len(bad)} file(s) missing or of another size "
+                         f"({', '.join(map(str, bad[:5]))})")
+    want = sum(_size(src / f) for f in copied if not (src / f).is_symlink())
+    got = sum(_size(staging / f) for f in copied if not (staging / f).is_symlink())
+    if got != want:
+        raise hc.Failure(f"verification failed: {got} of {want} bytes copied")
+    return copied
 
 
 def _valid_json(text: str) -> bool:
@@ -174,8 +247,12 @@ def migrate(src: Optional[str], dst: Optional[str], apply: bool) -> int:
     pat = _path_re(_old_paths(src_p))
     rewrites = _json_hits(src_p, files, pat)
     conflicts = [f for f in files if (dst_p / f).exists() or (dst_p / f).is_symlink()]
-    conflicts = [f for f in conflicts if not (f.name.endswith(EMPTY_LOCK) and _size(src_p / f) == 0)]
+    conflicts = [f for f in conflicts if not (f.name.endswith(EMPTY_LOCK) and _size(src_p / f) == 0
+                                              and (dst_p / f).is_file())]
+    conflicts += [d for d in dirs if ((dst_p / d).exists() or (dst_p / d).is_symlink()) and not (dst_p / d).is_dir()]
     live = _live_agents(src_p)
+    successors, unknown = _live_successors(src_p)
+    live += successors
     stamp = dt.date.today().strftime("%Y%m%d")
     renamed = src_p.with_name(f"{src_p.name}.migrated-{stamp}")
     if renamed.exists():
@@ -189,7 +266,11 @@ def migrate(src: Optional[str], dst: Optional[str], apply: bool) -> int:
     if hc.is_protected(dst_p):
         print(f"note: the target {dst_p} is under a .claude directory too — protected the same way")
     if live:
-        print("live agents (migrate refuses while they run; `agent stop` them or wait): " + ", ".join(live))
+        print("still running with the old home (migrate refuses while they run; `agent stop` an agent, `claude stop` a "
+              "background hub, or wait): " + ", ".join(live))
+    if unknown:
+        print(f"note: could not check for a running background hub ({unknown}); make sure no autopilot successor of "
+              "these stages runs")
     if conflicts:
         print("already in the target (migrate refuses to overwrite): "
               + ", ".join(str(c) for c in conflicts[:10]) + (" …" if len(conflicts) > 10 else ""))
@@ -197,9 +278,9 @@ def migrate(src: Optional[str], dst: Optional[str], apply: bool) -> int:
         print("dry run: nothing written; run again with --apply")
         return 1 if (live or conflicts) else 0
     if live:
-        raise hc.Failure(f"{len(live)} agent(s) of the source still run: {', '.join(live)}")
+        raise hc.Failure(f"{len(live)} session(s) of the source still run: {', '.join(live)}")
     if conflicts:
-        raise hc.Failure(f"{len(conflicts)} file(s) of the source already exist in {dst_p}")
+        raise hc.Failure(f"{len(conflicts)} path(s) of the source already exist in {dst_p}")
     # the rewritten JSON, worked out before anything is written: a path with a quote in it must stop the run here
     new, planned = str(dst_p), []
     for rel in rewrites:
@@ -208,31 +289,32 @@ def migrate(src: Optional[str], dst: Optional[str], apply: bool) -> int:
         if _valid_json(text) and not _valid_json(out):
             raise hc.Failure(f"rewriting {src_p / rel} would break its JSON; nothing written")
         planned.append((rel, out))
-    dst_p.mkdir(parents=True, exist_ok=True)
-    for d in dirs:
-        (dst_p / d).mkdir(parents=True, exist_ok=True)
-    copied = []
-    for f in files:
-        s, t = src_p / f, dst_p / f
-        if t.exists() and f.name.endswith(EMPTY_LOCK):
-            continue
-        if s.is_symlink():
-            os.symlink(os.readlink(s), t)
-        else:
-            shutil.copy2(s, t)
-        copied.append(f)
-    # verify before anything is rewritten or renamed: every file there, every size equal
-    bad = [f for f in copied if not ((dst_p / f).exists() or (dst_p / f).is_symlink())
-           or _size(dst_p / f) != _size(src_p / f)]
-    got = sum(_size(dst_p / f) for f in copied if f not in bad)
-    want = sum(_size(src_p / f) for f in copied)
-    if bad or got != want:
-        raise hc.Failure(f"verification failed: {len(bad)} file(s) missing or of another size ({', '.join(map(str, bad[:5]))}),"
-                         f" {got} of {want} bytes; the source {src_p} is untouched, the partial copy is in {dst_p}")
-    print(f"copied and verified: {len(copied)} files, {got} bytes")
-    for rel, out in planned:
-        hc.atomic_write(dst_p / rel, out)
+    # Copy into a staging directory beside the target and move it into place only once verified: a half-done copy at
+    # ~/agent-hub would become the live home (an existing ~/agent-hub wins over the legacy one).
+    staging = dst_p.with_name(f".{dst_p.name}.migrating-{os.getpid()}")
+    try:
+        copied = _stage(src_p, staging, dirs, files, dst_p, pat, new)
+        for rel, out in planned:
+            hc.atomic_write(staging / rel, out)
+    except (OSError, hc.Failure) as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise hc.Failure(f"{e}; nothing was written to {dst_p}, the source {src_p} is untouched") from None
+    print(f"copied and verified: {len(copied)} files, {sum(_size(src_p / f) for f in copied)} bytes")
     print(f"rewrote the old path in {len(planned)} JSON file(s)")
+    if not dst_p.exists():
+        os.rename(staging, dst_p)
+    else:  # a target that already holds other files: move ours in beside them
+        moved = 0
+        try:
+            for d in dirs:
+                (dst_p / d).mkdir(parents=True, exist_ok=True)
+            for f in copied:
+                os.rename(staging / f, dst_p / f)
+                moved += 1
+        except OSError as e:
+            raise hc.Failure(f"moving the verified copy into {dst_p} failed after {moved} of {len(copied)} files ({e}); "
+                             f"the rest is in {staging}, the source {src_p} is untouched") from None
+        shutil.rmtree(staging, ignore_errors=True)
     src_p.rename(renamed)
     print(f"renamed {src_p} -> {renamed}")
     if os.environ.get("AGENT_HUB_HOME") and hc.under(os.environ["AGENT_HUB_HOME"], src_p):

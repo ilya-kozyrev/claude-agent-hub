@@ -25,8 +25,9 @@ The hub's files move out of `~/.claude`, which Claude Code protects, and where t
   `{"permissions": {"additionalDirectories": ["<home>"]}}` for `~/.claude/settings.json`, `claude --add-dir <home>`.
 - **`hub home migrate [--from DIR] [--to DIR] [--apply]`** moves the legacy home (default `--from`) to the resolved one.
   A dry run by default (files, bytes, JSON files to rewrite; exits 1 when `--apply` would refuse). `--apply` refuses
-  while any agent of any stage of the source is alive and when a source file already exists in the target; it copies
-  (modes kept), verifies the count and the bytes, rewrites the old absolute path in every `*.json` under the new home
+  while any agent of any stage of the source is alive or a background hub of one of its stages runs, and when a source
+  path already exists in the target; it copies into a staging directory (modes kept), verifies the count and the bytes,
+  moves the copy into place only then (a failed copy leaves nothing at the target), rewrites the old absolute path in every `*.json` under the new home
   (roles, agents' meta, `.jwait-state`, `.state`, autopilot state), leaves the `.md` history as written and renames the
   source to `<source>.migrated-YYYYMMDD`. It never deletes; a second run says there is nothing to migrate.
 - **Hooks resolve the home for the session's directory** (the hook input's `cwd`); the tools for their working
@@ -36,8 +37,8 @@ The hub's files move out of `~/.claude`, which Claude Code protects, and where t
   `--add-dir <home>` when the home is not under the agent's directory (the successor also keeps the
   `additionalDirectories` of its `--settings`), so a child never writes to another home than its parent.
 - **A stage in another home is an error, not a silent split.** A stage that is not in the resolved home but exists in
-  `~/agent-hub` or the legacy home makes the tools refuse, naming where it is: migrate it, set `AGENT_HUB_HOME` to that
-  place, or `mkdir -p <home>/<stage>` to start afresh.
+  `~/agent-hub` or the legacy home makes the tools refuse, naming where it is: migrate the legacy home (or `mv` that one
+  stage when the home is another one), set `AGENT_HUB_HOME` to that place, or `mkdir -p <home>/<stage>` to start afresh.
 - **`AGENT_SESSION_ID` is stripped from the autopilot successor's environment** (a review follow-up of #13): a headless
   hub's own id, inherited, would make the successor's `hub takeover --session self` name the old hub.
 
