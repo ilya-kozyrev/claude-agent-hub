@@ -8,9 +8,10 @@ Agent discipline: the hooks that keep long agent work cheap ship with the plugin
   (a subagent from its own), warns once per step above `AGENT_HUB_CONTEXT_WARN` and points at `agent-hub:handoff`;
   above `AGENT_HUB_CONTEXT_BLOCK` denies the tools in `AGENT_HUB_CONTEXT_BLOCK_TOOLS` unless the call hands work over
   (`AGENT_HUB_CONTEXT_ESCAPE`: a `HANDOFF-*.md` path or `handoff-ok`).
-- **Polling guard** (`hooks/polling_guard.py`, on by default, switchable per repository): denies foreground wait loops,
-  long bare `sleep`, self-matching `pgrep -f`, and one-off CI status reads from configurable `gh`/`glab` pattern lists
-  (`AGENT_HUB_CI_STATUS_DENY` / `_ALLOW`; logs, traces, write calls and a pipeline lookup by sha pass). Background
+- **Polling guard** (`hooks/polling_guard.py`, on by default, switchable per repository): denies foreground wait loops
+  (also inside `bash -c "…"` and text fed to a shell), long bare `sleep` (with `s/m/h/d` units), self-matching `pgrep -f`, and one-off CI status reads from configurable `gh`/`glab` pattern lists
+  (`AGENT_HUB_CI_STATUS_DENY` / `_ALLOW`; logs, traces, write calls incl. `-f`/`--field` and a pipeline lookup by sha
+  pass; a list whose every pattern is broken falls back to the defaults). Background
   commands, printed text and heredocs are exempt; `# poll-ok: <reason>` passes deliberately. The message names
   `run_in_background`, `jwait` and the project's own wait command (`AGENT_HUB_WAIT_HINT`). Every `jwait` form the hub
   prints passes it (tested, including extra wake words).
@@ -21,6 +22,8 @@ Agent discipline: the hooks that keep long agent work cheap ship with the plugin
   `Agent`/`Task` tool and for `agent spawn` (refused with exit 2, the rule named); a shorthand `{"model": "high|xhigh"}`;
   agent definitions are found in the project, `~/.claude/agents` and installed plugins (`agent-hub:worker-high`).
   No model name is built in; `docs/examples/subagent-policy.json` is a complete example.
+- Effort rules are read from the user (environment, else hub home) **and** the repository; each set is evaluated on its
+  own and any deny wins, so a repository can only add restrictions.
 - **Worker subagents** `agent-hub:worker-low|medium|high|xhigh`: pinned effort, model chosen per call.
 - `config.json` accepts JSON lists and objects for the list-valued settings; `hubcore.setting_json`.
 

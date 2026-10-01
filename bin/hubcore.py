@@ -44,7 +44,8 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
-# the polling guard and the subagent effort rules are team conventions a repository may set as well.
+# the polling guard is a team convention a repository may set; a repository's effort rules apply in addition to the
+# user's, never instead (bin/subagent_rules.py evaluates both).
 HUB_WIDE_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_CONTEXT_WARN", "AGENT_HUB_CONTEXT_WARN_STEP",
                   "AGENT_HUB_CONTEXT_BLOCK", "AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_CONTEXT_ESCAPE",
                   "AGENT_HUB_CONTEXT_TODO",

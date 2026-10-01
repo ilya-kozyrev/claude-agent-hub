@@ -11,7 +11,7 @@ CLI subcommands (the /delegation skill, through bin/delegation):
   show                print the level, where it comes from, and its policy
   set N [--global]    this session's override (needs $CLAUDE_CODE_SESSION_ID), or the default for all sessions
   clear               drop this session's override
-  try [--tool T] [--type NAME] [--model M]   evaluate the rules for a hypothetical Agent call
+  try [TYPE [MODEL]] [--tool T] [--type NAME] [--model M]   evaluate the rules for a hypothetical Agent call
 
 Settings (hub home config.json or environment; see README "Agent discipline"):
   AGENT_HUB_DELEGATION          on | off (default off)
@@ -21,7 +21,7 @@ Settings (hub home config.json or environment; see README "Agent discipline"):
   AGENT_HUB_DELEGATION_COMMON   text appended to every level's policy
   AGENT_HUB_DELEGATION_RULES    rule list (bin/subagent_rules.py); default: level 0 denies Agent, Task, Workflow
   AGENT_HUB_EFFORT_RULES        rule list (or shorthand) for every subagent launch, also applied by `agent spawn`;
-                                a repository's .agent-hub/config.json may set it too (default none)
+                                the user's and the repository's sets both apply, any deny wins (default none)
   AGENT_HUB_STATE_DIR           state directory (default <hub home>/.state); levels live in <state>/delegation/
 
 Resolution of the level: this session's override > $AGENT_HUB_DELEGATION_LEVEL > the global level (set --global)
@@ -165,8 +165,7 @@ def decide(tool: str, tool_input: dict, cwd, session_id) -> str | None:
         if res and res[0] == "deny":
             return sr.deny_reason(res, label)
     if tool in ("Agent", "Task"):
-        label = "AGENT_HUB_EFFORT_RULES"
-        return sr.deny_reason(sr.evaluate(sr.effort_rules(cwd), call, label), label)
+        return sr.check_effort(call, cwd)
     return None
 
 
@@ -263,7 +262,12 @@ def main(argv: list) -> int:
         p.add_argument("--type", default="", dest="subagent_type")
         p.add_argument("--model", default="")
         p.add_argument("--cwd", default=os.getcwd())
+        p.add_argument("positional", nargs="*", metavar="TYPE [MODEL]")
         a = p.parse_args(argv[2:])
+        if a.positional:
+            a.subagent_type = a.positional[0]
+            if len(a.positional) > 1:
+                a.model = a.positional[1]
         ti = {k: v for k, v in (("subagent_type", a.subagent_type), ("model", a.model)) if v}
         level = resolve(sid)[0] if enabled() else None
         print(json.dumps(sr.agent_call(a.tool, ti, a.cwd, level), ensure_ascii=False))

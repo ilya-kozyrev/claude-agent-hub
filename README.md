@@ -372,7 +372,7 @@ worker subagents.
 | Hook | Default | Prevents |
 |---|---|---|
 | `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`agent-hub:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). |
-| `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done`, a bare `sleep` over 30 s, `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls, a pipeline lookup by commit sha, and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
+| `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
 | `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. |
 
 Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call.
@@ -394,8 +394,9 @@ as "this model only at xhigh" is a rule, not another agent file.
 ### Settings
 
 All settings follow [Configuration](#configuration): environment first, then `config.json`. **Hub home only** marks
-the user's own limits, which a cloned repository must not loosen; the others may also come from the repository's
-`.agent-hub/config.json`.
+the user's own limits, which a repository's `.agent-hub/config.json` cannot set; the others may also come from it.
+The environment still wins for every key, so whatever sets environment variables for a session (your shell, a
+`settings.json` `env` block) can change these limits too — the guarantee is about repository config files.
 
 | Setting | Default | Where | Meaning |
 |---|---|---|---|
@@ -403,7 +404,7 @@ the user's own limits, which a cloned repository must not loosen; the others may
 | `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` | hub home only | First warning, then one more every step. |
 | `AGENT_HUB_CONTEXT_BLOCK` | `500000` | hub home only | From here the tools below are denied. |
 | `AGENT_HUB_CONTEXT_BLOCK_TOOLS` | `["Agent", "Task", "SendMessage"]` | hub home only | Tools denied past the block threshold. |
-| `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it passes (handing over). |
+| `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it anywhere passes (handing over). Deliberately loose: the block is a nudge that leaves a trace in the transcript, not a lock — a prompt that merely cites a handoff file passes. |
 | `AGENT_HUB_CONTEXT_TODO` | points at `agent-hub:handoff` | hub home only | The "what to do" sentence of both messages. |
 | `AGENT_HUB_STATE_DIR` | `<hub home>/.state` | hub home only | Warning buckets and delegation levels. |
 | `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |
@@ -416,12 +417,12 @@ the user's own limits, which a cloned repository must not loosen; the others may
 | `AGENT_HUB_DELEGATION_LEVELS` | built-in texts | hub home only | `{"3": {"name": "BALANCED", "policy": "…"}, …}` — your text per level. |
 | `AGENT_HUB_DELEGATION_COMMON` | one sentence | hub home only | Appended to every level's policy. |
 | `AGENT_HUB_DELEGATION_RULES` | level 0 denies `Agent`, `Task`, `Workflow` | hub home only | Rule list, evaluated while the dial is on (may test `level`). |
-| `AGENT_HUB_EFFORT_RULES` | none | repo or home | Rule list or shorthand for every subagent launch: the `Agent`/`Task` tool and `agent spawn`. |
+| `AGENT_HUB_EFFORT_RULES` | none | repo **and** home | Rule list or shorthand for every subagent launch: the `Agent`/`Task` tool and `agent spawn`. The user's set (environment, else hub home) and the repository's are evaluated separately and any deny wins: a repository can add restrictions, never loosen yours. |
 
 ### Subagent rules
 
 `AGENT_HUB_DELEGATION_RULES` and `AGENT_HUB_EFFORT_RULES` share one format: a JSON list, first match decides, no
-match allows. A rule's `when` tests fields of the call with globs (a list means "any of"):
+match allows (each set on its own — see `AGENT_HUB_EFFORT_RULES` above). A rule's `when` tests fields of the call with globs (a list means "any of"):
 
 | Field | Value |
 |---|---|

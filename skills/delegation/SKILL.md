@@ -18,7 +18,7 @@ Parse the user's arguments and run exactly one command (the plugin's `bin/` is o
 | `N` (0-5) | `delegation set N` — this session only |
 | `global N` | `delegation set N --global` — every session without its own level |
 | `clear` | `delegation clear` — back to the global level |
-| `try <type> [<model>]` | `delegation try --type <type> --model <model>` — what the rules would say about such an Agent call |
+| `try <type> [<model>]` | `delegation try <type> [<model>]` — what the rules would say about such an Agent call (no model: the definition's or inherited) |
 
 The output holds the effective level and its policy. Work by it from this turn on: the command prints it exactly so
 that a change applies now, not from the next message.

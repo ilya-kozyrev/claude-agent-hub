@@ -94,6 +94,29 @@ denied "sleep 120  # wait-ok: deliberate" 0 $R/repo; check $? 1 "poll: own escap
 denied "sleep 120  # poll-ok: deliberate" 0 $R/repo; check $? 0 "poll: the default marker no longer applies there"
 ( export AGENT_HUB_POLL_GUARD=off; denied 'sleep 120' ); check $? 1 "poll: the environment switches it off"
 python3 $HOOKS/polling_guard.py --defaults | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["AGENT_HUB_CI_STATUS_DENY"] and d["AGENT_HUB_CI_STATUS_ALLOW"]'; check $? 0 "poll: --defaults prints both lists"
+# bypasses: a loop in quotes, text fed to a shell; sleep with a unit; a write with a field; marker and list fallbacks
+BYPASS=(
+  'timeout 600 bash -c "until [ -f /tmp/x ]; do sleep 20; done"'
+  $'bash <<\'EOF\'\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+  $'cat <<\'EOF\' | sh\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+  "echo 'until [ -f /tmp/done ]; do sleep 30; done' | bash"
+  "printf 'while true; do sleep 60; done' | xargs -0 sh -c"
+  'sleep 5m; ls'
+  'sleep 1h'
+  'sleep 2d && echo done'
+)
+i=0; for c in "${BYPASS[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: bypass $i denied"; done
+denied 'sleep 20s; ls'; check $? 1 "poll: sleep 20s passes"
+denied 'sleep 0.25m; ls'; check $? 1 "poll: sleep 0.25m (15 s) passes"
+denied "glab api $P/merge_requests/1/notes -f body=\"the jobs are green\""; check $? 1 "poll: glab api with a field is a write, not a status read"
+denied "gh api repos/acme/webapp/issues/1/comments -F body=@pipelines.md"; check $? 1 "poll: gh api with a field is a write"
+echo '{"AGENT_HUB_POLL_ESCAPE": "ok!"}' > $R/repo/.agent-hub/config.json
+denied "sleep 120  # ok! deliberate" 0 $R/repo; check $? 1 "poll: an escape word ending in a non-word character works"
+echo '{"AGENT_HUB_CI_STATUS_DENY": ["(unclosed", "[bad"]}' > $R/repo/.agent-hub/config.json
+denied "glab ci status" 0 $R/repo; check $? 0 "poll: an all-invalid deny list falls back to the defaults"
+echo '{"AGENT_HUB_CI_STATUS_DENY": []}' > $R/repo/.agent-hub/config.json
+denied "glab ci status" 0 $R/repo; check $? 1 "poll: a deliberate empty list switches the CI rules off"
+rm $R/repo/.agent-hub/config.json
 
 # every jwait form the hub prints (takeover digest and the hub skill) passes the guard, foreground and background
 python3 - "$B" "$T/../skills/hub/SKILL.md" > $R/jwait-forms.txt <<'PY'
@@ -158,6 +181,10 @@ rm $R/config.json
 mkdir -p $R/cb1/subagents; usage 520000 $R/cb1/subagents/agent-a1.jsonl; echo '{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":5}}}' >> $TR
 python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"cb1","agent_id":"a1","transcript_path":sys.argv[1],"tool_name":"Agent","tool_input":{}}))' $TR | python3 $HOOKS/context_budget.py | grep -q '"deny"'; check $? 0 "budget: a subagent is measured by its own transcript"
 python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"cb1","agent_id":"zz","transcript_path":sys.argv[1],"tool_name":"Agent","tool_input":{}}))' $TR | python3 $HOOKS/context_budget.py > $R/cb3.out; check "$(wc -c < $R/cb3.out | tr -d ' ')" 0 "budget: a subagent without a transcript stays silent"
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"cb1","agent_id":"a1","transcript_path":sys.argv[1]}))' $TR | python3 $HOOKS/context_budget.py | grep -q 'Context budget: 520k'; check $? 0 "budget: a subagent is warned by its own size"
+echo '{"AGENT_HUB_CONTEXT_ESCAPE": "(unclosed"}' > $R/config.json
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"cb1","agent_id":"a1","transcript_path":sys.argv[1],"tool_name":"Agent","tool_input":{"prompt":"handoff-ok"}}))' $TR | python3 $HOOKS/context_budget.py | grep -q '"deny"'; check $? 1 "budget: a broken escape regex falls back to the default (handoff-ok passes)"
+rm $R/config.json
 echo 'garbage' | python3 $HOOKS/context_budget.py > $R/cb4.out 2>&1; check "$?:$(wc -c < $R/cb4.out | tr -d ' ')" "0:0" "budget: broken input fails open"
 
 # ================================================================== delegation dial and subagent rules
@@ -231,9 +258,17 @@ echo 'not json' | python3 $HOOKS/delegation.py pre-tool > $R/d5.out 2>/dev/null;
 mkdir -p $R/proj/.agent-hub $R/other/.git; cp $EXAMPLE $R/config.json
 echo '{"AGENT_HUB_EFFORT_RULES": {"opus": "low"}}' > $R/proj/.agent-hub/config.json
 dden Agent general-purpose opus $R/other; check $? 0 "effort rules: the hub home's apply in a repository without its own"
-dden Agent general-purpose other-model $R/proj; check $? 1 "effort rules: a repository's own rules replace the home's"
-dg Agent agent-hub:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type agent-hub:worker-high). \[AGENT_HUB_EFFORT_RULES rule 1\]'; check $? 0 "effort rules: shorthand {model: efforts}, the rule is named"
+dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: a repository's rules do not replace the user's (any deny wins)"
+dg Agent agent-hub:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type agent-hub:worker-high). \[AGENT_HUB_EFFORT_RULES (proj/.agent-hub) rule 1\]'; check $? 0 "effort rules: the repository adds a restriction (shorthand), the set and rule are named"
+dden Agent agent-hub:worker-high opus $R/other; check $? 1 "effort rules: …which does not apply outside it"
 dden Agent agent-hub:worker-low opus $R/proj; check $? 1 "effort rules: shorthand allows the listed effort"
+echo '{"AGENT_HUB_EFFORT_RULES": []}' > $R/proj/.agent-hub/config.json
+dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: an empty repository list does not switch the user's off"
+dg Agent general-purpose opus $R/proj | grep -q 'AGENT_HUB_EFFORT_RULES (hub home) rule'; check $? 0 "effort rules: the user's deny names the hub home set"
+dden Task general-purpose opus $R/other; check $? 0 "effort rules: the Task tool is checked like Agent"
+$B/delegation try --cwd $R/other agent-hub:worker-high > $R/try1.out; check $? 1 "delegation try TYPE without a model: deny (model inherited), exit 1"
+grep -q '"model_from": "inherit"' $R/try1.out; check $? 0 "delegation try: prints the call's fields"
+$B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
 rm $R/proj/.agent-hub/config.json
 
 # agent spawn applies AGENT_HUB_EFFORT_RULES (stand-in CLI; a denied spawn never starts)
@@ -248,7 +283,7 @@ rm $R/config.json
 $B/agent spawn --role s5 --cwd $W --model sonnet --effort low --brief $W/b.md > $R/sp5.out 2>&1; check $? 0 "spawn: no rules configured, nothing refused"
 mkdir -p $W/.git $W/.agent-hub; echo '{"AGENT_HUB_EFFORT_RULES": {"sonnet": "high|xhigh"}}' > $W/.agent-hub/config.json
 $B/agent spawn --role s6 --cwd $W --model sonnet --effort medium --brief $W/b.md > $R/sp6.out 2>&1; check $? 2 "spawn: the agent repository's shorthand refuses Sonnet at medium"
-grep -q 'sonnet runs only at effort high or xhigh (got medium.*AGENT_HUB_EFFORT_RULES rule 1' $R/sp6.out; check $? 0 "spawn: …naming the rule"
+grep -q 'sonnet runs only at effort high or xhigh (got medium.*AGENT_HUB_EFFORT_RULES (w/.agent-hub) rule 1' $R/sp6.out; check $? 0 "spawn: …naming the rule"
 $B/agent spawn --role s7 --cwd $W --model sonnet --effort high --brief $W/b.md > $R/sp7.out 2>&1; check $? 0 "spawn: …and accepts it at high"
 for r in s2 s4 s5 s7; do $B/agent stop $r > /dev/null 2>&1; done
 

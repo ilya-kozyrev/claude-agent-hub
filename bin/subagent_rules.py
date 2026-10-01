@@ -21,7 +21,9 @@ No matching rule = allow. `when` keys (all must match; a value is a glob or a li
 
 `reason` may name any of these fields in braces: "{model} at {effort} is not allowed".
 
-AGENT_HUB_EFFORT_RULES may also be the shorthand object {"<model>": "<effort>|<effort>", …}: each model (a glob, or a
+AGENT_HUB_EFFORT_RULES is read from two places, each evaluated on its own, and a deny from either wins: the user's
+(environment, else the hub home's config.json) and the repository's .agent-hub/config.json — a repository can only
+add restrictions. It may also be the shorthand object {"<model>": "<effort>|<effort>", …}: each model (a glob, or a
 plain word matched anywhere in the model name) runs only at the listed efforts. {"sonnet": "high|xhigh"} is
 
     [{"when": {"model": "*sonnet*", "effort": ["high", "xhigh"]}, "decision": "allow"},
@@ -215,12 +217,55 @@ def expand(rules):
     return out
 
 
-def effort_rules(cwd=None) -> list:
-    """AGENT_HUB_EFFORT_RULES from the environment, the repository at `cwd`, or the hub home."""
+def _hubcore():
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
     import hubcore  # noqa: E402
 
-    return expand(hubcore.setting_json("AGENT_HUB_EFFORT_RULES", [], cwd=cwd)) or []
+    return hubcore
+
+
+def _parse(name: str, raw: str):
+    if not raw.lstrip().startswith(("[", "{")):
+        _warn(f"{name}: not a JSON list or object; ignored")
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        _warn(f"{name}: not valid JSON ({e}); ignored")
+        return None
+
+
+def effort_rule_sets(cwd=None) -> list:
+    """[(label, rules)] of AGENT_HUB_EFFORT_RULES: the user's (the environment, else the hub home's config.json),
+    then the repository's at `cwd`. Each set is evaluated on its own and a deny from any of them wins, so a
+    repository can add restrictions but never loosen the user's."""
+    hc = _hubcore()
+    name = "AGENT_HUB_EFFORT_RULES"
+    layers = []
+    env = os.environ.get(name)
+    if env:
+        layers.append((f"{name} (environment)", env))
+    else:
+        layers.append((f"{name} (hub home)", hc.read_config(hc.root() / "config.json", project=False).get(name)))
+    proj = hc.project_dir(cwd) if cwd else None
+    if proj:
+        layers.append((f"{name} ({proj.name}/{hc.CONFIG_DIRNAME})",
+                       hc.read_config(proj / hc.CONFIG_DIRNAME / "config.json", project=True).get(name)))
+    out = []
+    for label, raw in layers:
+        rules = expand(_parse(label, raw)) if raw else None
+        if rules:
+            out.append((label, rules))
+    return out
+
+
+def check_effort(call: dict, cwd=None) -> Optional[str]:
+    """The first deny any effort rule set gives `call`, with the set and rule named; None = allowed."""
+    for label, rules in effort_rule_sets(cwd):
+        reason = deny_reason(evaluate(rules, call, label), label)
+        if reason:
+            return reason
+    return None
 
 
 def deny_reason(res, label: str) -> Optional[str]:
@@ -231,6 +276,5 @@ def deny_reason(res, label: str) -> Optional[str]:
 
 
 def check_spawn(model_given: str, model_id: str, effort: Optional[str], cwd=None) -> Optional[str]:
-    """The deny reason AGENT_HUB_EFFORT_RULES gives an `agent spawn`, or None."""
-    label = "AGENT_HUB_EFFORT_RULES"
-    return deny_reason(evaluate(effort_rules(cwd), spawn_call(model_given, model_id, effort), label), label)
+    """The deny reason AGENT_HUB_EFFORT_RULES gives an `agent spawn` (the user's and the agent repository's)."""
+    return check_effort(spawn_call(model_given, model_id, effort), cwd)

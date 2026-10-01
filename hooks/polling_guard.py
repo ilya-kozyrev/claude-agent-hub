@@ -9,13 +9,14 @@ alarms. This hook denies:
 * a loop (`until` / `while` / `for`) with `sleep` inside that has no upper bound, or one above
   AGENT_HUB_POLL_MAX_BOUNDED_WAIT seconds (iterations x longest sleep); if it waits on `pgrep -f <pattern>` without
   the bracket trick (`[p]ytest`), the reason says the pattern matches the waiting shell itself;
-* a bare `sleep` longer than AGENT_HUB_POLL_MAX_SLEEP seconds;
+* a bare `sleep` longer than AGENT_HUB_POLL_MAX_SLEEP seconds (`5m`, `1h`, `2d` suffixes count);
 * a one-off CI status read: a command segment matching AGENT_HUB_CI_STATUS_DENY and none of
   AGENT_HUB_CI_STATUS_ALLOW (defaults for `gh` and `glab` below: status, list, view and watch are denied; logs,
   traces, actions, write methods and a pipeline lookup by commit sha are allowed).
 
 Not touched: `run_in_background: true` commands; short bounded retries; text inside `echo` / `printf` / `cat` and
-heredoc bodies (that is writing a waiter, not running it); commands carrying the escape marker
+heredoc bodies (that is writing a waiter, not running it) — unless that text is fed to a shell (`| bash`,
+`bash <<EOF`, `| xargs`), which runs it; a loop inside `bash -c "…"` counts; commands carrying the escape marker
 `# poll-ok: <reason>` (AGENT_HUB_POLL_ESCAPE), which leaves the reason in the transcript.
 
 Settings (environment, the repository's .agent-hub/config.json, or the hub home's config.json):
@@ -50,11 +51,18 @@ DEFAULT_CI_ALLOW = [
     r"/(?:trace|retry|play|cancel|erase|artifacts|logs|rerun|rerun-failed-jobs)\b",
     r"[?&](?:head_)?sha=[^&\s'\"]+",
     r"(?:-X|--method)[\s=]*['\"]?(?:POST|PUT|DELETE|PATCH)\b",
+    r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?:[\s=]|$)",  # fields make `gh/glab api` a POST
     r"\bgh\s+run\s+view\b.*\s--log(?:-failed)?\b",
 ]
 
-_SLEEP = re.compile(r"(?:^|[\s;&|(])(?:command\s+)?sleep\s+(\d+(?:\.\d+)?)")
-_LOOP = re.compile(r"(?:^|[\s;&|(])(?:until|while|for)\s")
+# The leading class includes quotes: `bash -c "until …; do sleep 20; done"` is a loop all the same.
+_SLEEP = re.compile(r"(?:^|[\s;&|('\"])(?:command\s+)?sleep\s+(\d+(?:\.\d+)?)([smhd]?)(?![\w.])")
+_LOOP = re.compile(r"(?:^|[\s;&|('\"])(?:until|while|for)\s")
+_UNTIL_WHILE = re.compile(r"(?:^|[\s;&|('\"])(?:until|while)\s")
+_UNIT = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+# A consumer that runs its stdin (or its argument) as commands: text fed to it is not "only printed".
+_SHELL_CONSUMER = re.compile(r"^\s*(?:\w+=\S+\s+)*(?:sudo\s+|env\s+|timeout\s+\S+\s+|nohup\s+)*"
+                             r"(?:\S*/)?(?:bash|sh|zsh|dash|ksh|eval|source|\.|xargs)\b")
 _SEQ = re.compile(r"seq\s+(?:-?\w+\s+)?(\d+)\s+(\d+)")
 _BRACE_RANGE = re.compile(r"\{(\d+)\.\.(\d+)\}")
 _FOR_LIST = re.compile(r"\bfor\s+\w+\s+in\s+([^;$({\n]+?)(?:;|\s+do\b)")
@@ -103,6 +111,9 @@ class Config:
                     out.append(re.compile(str(p), re.IGNORECASE))
                 except re.error as e:
                     print(f"agent-hub: {name}: bad regex {p!r} ({e}); skipped", file=sys.stderr)
+            if src and not out:  # every configured pattern broken: not the same as a deliberate []
+                print(f"agent-hub: {name}: no valid pattern; using the defaults", file=sys.stderr)
+                return [re.compile(p, re.IGNORECASE) for p in default]
             return out
 
         self.enabled = (hc.setting("AGENT_HUB_POLL_GUARD", cwd=cwd) if hc else None) or "on"
@@ -110,22 +121,38 @@ class Config:
         self.max_sleep = num("AGENT_HUB_POLL_MAX_SLEEP", DEFAULTS["max_sleep"])
         self.max_bounded = num("AGENT_HUB_POLL_MAX_BOUNDED_WAIT", DEFAULTS["max_bounded_wait"])
         self.escape_word = ((hc.setting("AGENT_HUB_POLL_ESCAPE", cwd=cwd) if hc else None) or DEFAULTS["escape"]).strip()
-        self.escape = re.compile(r"#\s*" + re.escape(self.escape_word) + r"\b")
+        tail = r"\b" if re.match(r"\w", self.escape_word[-1:]) else ""
+        self.escape = re.compile(r"#\s*" + re.escape(self.escape_word) + tail)
         self.ci_deny = patterns("AGENT_HUB_CI_STATUS_DENY", DEFAULT_CI_DENY)
         self.ci_allow = patterns("AGENT_HUB_CI_STATUS_ALLOW", DEFAULT_CI_ALLOW)
         hint = hc.setting("AGENT_HUB_WAIT_HINT", cwd=cwd) if hc else None
         self.hint = f"  • {hint.strip()}\n" if hint else DEFAULT_HINT
 
 
+def _heredoc(m) -> str:
+    """A heredoc body is dropped unless its command is a shell (`bash <<EOF`, `cat <<EOF | sh`)."""
+    whole = m.string
+    line_start = whole.rfind("\n", 0, m.start()) + 1
+    before = _SEGMENT_SEP.split(whole[line_start:m.start()])[-1]
+    opening = m.group(0).split("\n", 1)[0]
+    piped = re.search(r"\|\s*(.*)$", opening)
+    if _SHELL_CONSUMER.match(before) or (piped and _SHELL_CONSUMER.match(piped.group(1))):
+        return "\n" + m.group(0).split("\n", 1)[-1]
+    return " "
+
+
 def executable_part(cmd: str) -> str:
-    """The command without what it only prints or writes to a file."""
-    cmd = _HEREDOC.sub(" ", cmd)
-    return ";".join(seg for seg in _SEGMENT_SEP.split(cmd) if not _PRINTING.match(seg))
+    """The command without what it only prints or writes to a file. Text that is printed into a shell
+    (`echo '…' | bash`, `bash <<EOF`) is kept: it runs."""
+    cmd = _HEREDOC.sub(_heredoc, cmd)
+    # Printed text piped into a shell runs. The split on `;` ignores quotes, so decide for the whole command.
+    fed_to_shell = any(_SHELL_CONSUMER.match(part) for part in re.split(r"(?<!\|)\|(?!\|)", cmd)[1:])
+    return ";".join(seg for seg in _SEGMENT_SEP.split(cmd) if fed_to_shell or not _PRINTING.match(seg))
 
 
 def bounded_iterations(cmd: str):
     """Upper bound of the loop's iterations, or None when there is none."""
-    if re.search(r"(?:^|[\s;&|(])(?:until|while)\s", cmd):
+    if _UNTIL_WHILE.search(cmd):
         return None  # a counter inside the body cannot be proven from the text
     m = _SEQ.search(cmd)
     if m:
@@ -152,7 +179,7 @@ def self_matching_pgrep(cmd: str):
 
 def wait_reason(command: str, cfg: Config):
     """Why a (printing-stripped) command is a foreground wait, or None."""
-    sleeps = [float(x) for x in _SLEEP.findall(command)]
+    sleeps = [float(n) * _UNIT[u] for n, u in _SLEEP.findall(command)]
     if not sleeps:
         return None
     longest = max(sleeps)
