@@ -1,8 +1,8 @@
 # Handoff <role> — <stage> — <YYYY-MM-DD HH:MM> — ENTRY POINT
 
 <!-- ≤ 12 KB (the handoff_size hook refuses a HANDOFF-*.md over 15 KB). Delete the role's older handoffs.
-     Chronology and measurements go to journal-<date>.md next to it. Delete this file when the wave is closed.
-     `hub handoff --stage <stage> --n <N>` writes a pre-filled draft of this shape. -->
+     Chronology and measurements go to journal-<date>.md next to it. Delete this file when the work it hands over is closed.
+     `hub handoff --stage <stage>` writes a pre-filled draft of this shape. -->
 
 Shift journal: `journal-<YYYY-MM-DD>.md`. Written by session "<title>" (<model>).
 
@@ -22,9 +22,9 @@ Shift journal: `journal-<YYYY-MM-DD>.md`. Written by session "<title>" (<model>)
      (Q-A-00N); unblocked ones first. -->
 1.
 
-## 3. Night queue
+## 3. Night queue (optional module — delete this section if the stage has none)
 <!-- Not a copy: `<hub home>/<stage>/night-queue.md` (format and permission matrix live there;
-     `nightq check --stage <stage>` must exit 0). The successor first writes its own id into `coordinator:`. -->
+     `nightq check --stage <stage>` must exit 0). -->
 `night-queue.md`: open <N>, next — <item>.
 
 ## 4. Owner questions
@@ -35,5 +35,5 @@ Shift journal: `journal-<YYYY-MM-DD>.md`. Written by session "<title>" (<model>)
 
 ## 5. Risks and loose ends
 <!-- What breaks when nobody watches and how it shows; bookings and windows (`lock list`); bugs found
-     (issue or "none"); worktrees to clean up. -->
+     (issue or "none"); worktrees to clean up (`git worktree list`). -->
 -

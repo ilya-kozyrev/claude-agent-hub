@@ -722,7 +722,7 @@ Written by session "{name}" ({me_id}, TODO model).
 1. TODO
 
 ## 3. Night queue
-`night-queue.md`: {f"open {q['open']}, next — {q['next'] or '—'}" if q else 'no file'}.
+{f"`night-queue.md`: open {q['open']}, next — {q['next'] or '—'}." if q else "Not used (an optional module; delete this section)."}
 
 ## 4. Owner questions
 `ask summary`: {summary or '—'}.
@@ -730,7 +730,8 @@ Written by session "{name}" ({me_id}, TODO model).
 TODO: questions asked in chat without a record — `ask add` first, then their ids here.
 
 ## 5. Risks and loose ends
-- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up.
+- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`git worktree list`;
+  finished ones: `git worktree remove <path>`).
 
 ## 6. Skills for the successor
 `hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.

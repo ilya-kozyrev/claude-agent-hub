@@ -1,26 +1,23 @@
-# Brief: <what to do, one sentence> (<hub>, <date time>)
+# Brief: <what to do, one sentence>
 
-<!-- Template for a hub executor's brief. Every section is facts and paths, not a retelling of the conversation. ≤ 6 KB.
-The hub fills "Owner decisions" from `ask search <topic words>` before sending; if nothing is found, write
-"no decisions on this topic (ask search <words>)". -->
-
-Executor — <model> (<effort>), journal tag `<hub-N-role>`. Production — <read-only | what is allowed and on which word (ask id)>.
-`WK` = `<hub home>/<stage>/coordinator/work`. Repo / branch / worktree: <…>.
+<!-- Short template for a headless agent's brief. Facts and paths, not a retelling of the conversation.
+`agent spawn` appends a footer that tells the agent how to report (journal tag, report file, inbox, status words), so
+this file only says what to do. More controls (production permissions, size limits, evidence rules):
+brief-executor-advanced.md. -->
 
 ## Why
-<The problem and its cost in one paragraph, with numbers and a source (journal, report, request).>
+<The problem and what it costs, in a few lines, with a source (an issue, a journal line, a report).>
 
-## Owner decisions — do not reopen
-<id — the decision in ≤ 1 line, one per decision; from `ask search <words>`.>
-The executor applies these as given. Data that disagrees with them is a fact for the report (a number, a query), not a
-proposal to reopen them and not a question to the owner; the hub decides.
+## Decisions already made — do not reopen
+<One line each, from `ask search <topic words>`; or "none on record (ask search <words>)".>
 
-## What to do
-1. <Step> — <a "done" criterion checkable by a number or a command>.
+## Steps
+1. <Step> — done when <a check: a command, a number, a test>.
+2. <…>
 
 ## Verification
-<A positive and a negative control of the same query; targeted tests; what to show in the report / PR.>
+<What proves it works: the tests to run, and one check that would fail if the change were wrong.>
 
-## Answer and stop
-Report `$WK/<tag>-REPORT.md` (≤ <N> KB, the outcome in the first line). Last action — `jlog --tag <tag> "DONE …"` or
-`BLOCKED …`. At most <N> turns. A negative claim only with a positive control. <What not to do: writes, merges, nearby code.>
+## Stop
+<Where to stop: e.g. "push the branch and open a PR; do not merge". What not to touch.> At most <N> turns.
+Commit work in progress before long test runs.

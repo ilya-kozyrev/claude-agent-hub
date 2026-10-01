@@ -9,7 +9,7 @@ argument-hint: "[stage] [what the next shift focuses on]"
 A handoff is the successor's entry point, not a diary: facts with their source, the queue with stop conditions, and
 pointers to the registers — never copies of them.
 
-1. Generate the draft: `hub handoff --stage <S> --n <your N>` (prints the path). It fills in the locks you hold, the
+1. Generate the draft: `hub handoff --stage <S>` (prints the path; your shift number comes from `roles.json`). It fills in the locks you hold, the
    headless agents and their state, the night queue, `ask summary` and the register digest, and — if
    `<stage>/handoff-facts.sh` exists — its environment rows; everything else is `TODO`.
    Without a stage hub, start from `${CLAUDE_PLUGIN_ROOT}/templates/HANDOFF-template.md` and save it as
