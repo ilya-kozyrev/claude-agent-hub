@@ -598,6 +598,10 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 - `sendPrompt` buttons do not work in the Claude Code desktop tab, so the `/agent-top` widget has no buttons; it names
   the commands to type instead.
 
+## Roadmap
+
+What comes next and in what order: [ROADMAP.md](ROADMAP.md).
+
 ## Tests
 
 ```bash
