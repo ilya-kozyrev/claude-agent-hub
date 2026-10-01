@@ -72,4 +72,16 @@ check $rc 0 "partial: a question without a newline is delivered once stable"
 grep -q 'ship?' $O/o12.out; check $? 0 "partial: …with its text"
 printf '\n' >> $F
 $B/jwait --file $F --match 'AWAITING ANSWER' --caller p1 --settle 1 --for 4s >/dev/null 2>&1; check $? 3 "partial: completing the line later does not deliver it again"
+# 12. the default deadline is 2 h: a background Bash task is not guaranteed to live longer
+secs=$(python3 - "$B" <<'PY'
+import importlib.machinery, importlib.util, sys
+sys.path.insert(0, sys.argv[1])
+import hubcore as hc
+loader = importlib.machinery.SourceFileLoader("jwait_cli", sys.argv[1] + "/jwait")
+spec = importlib.util.spec_from_loader("jwait_cli", loader); jw = importlib.util.module_from_spec(spec); loader.exec_module(jw)
+print(int(hc.parse_duration(jw.DEFAULT_FOR).total_seconds()))
+PY
+)
+check "$secs" 7200 "default --for is 2h"
+$B/jwait --help | tr '\n' ' ' | grep -q 'default --for 2h'; check $? 0 "--help says the default is 2h"
 exit $fail

@@ -31,6 +31,16 @@ STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 # "- 14:35 [hub-16] text"; the tag may hold spaces ("[qa-2 r5b]").
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
+MODEL_ALIASES = ("opus", "sonnet", "haiku")
+# A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
+# "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
+# command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
+MODEL_ID_RE = re.compile(r"claude-[A-Za-z0-9._:@\[\]-]{1,100}")
+MODEL_ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# What an alias of AGENT_HUB_MODEL_MAP may stand for: any provider's model id (a Bedrock "us.anthropic.claude-…:0" or
+# an inference-profile ARN, a Vertex "…@2025…", a `claude-…` id) — the same characters plus "/", no `claude-` prefix.
+MODEL_VALUE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@\[\]/-]{0,199}")
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
                  "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
@@ -56,11 +66,14 @@ HUB_WIDE_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_CONTEXT_WARN", "AGENT_H
 PROJECT_KEYS += ("AGENT_HUB_POLL_GUARD", "AGENT_HUB_POLL_MAX_SLEEP", "AGENT_HUB_POLL_MAX_BOUNDED_WAIT",
                  "AGENT_HUB_POLL_ESCAPE", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW",
                  "AGENT_HUB_WAIT_HINT", "AGENT_HUB_EFFORT_RULES")
+# Reviewers (bin/reviewers.py): the list, and the model and effort of a built-in `agent` reviewer. A repository may
+# set them all; a `check` command in a repository's list is never run (see reviewers.py).
+PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REVIEW_EFFORT")
 BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
-             "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW")
+             "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
 
 
 def root() -> Path:
@@ -175,6 +188,9 @@ def _warn(msg: str) -> None:
     print(f"agent-hub: {msg}", file=sys.stderr)
 
 
+warn = _warn  # for the tools that report a bad setting themselves (bin/reviewers.py, `hub reviewer`)
+
+
 def read_config(path: Path, project: bool) -> dict:
     """Settings of one config.json as {NAME: str}. A broken file or a key the layer may not set is reported on
     stderr and ignored, so a typo never stops a tool (but never passes silently either)."""
@@ -217,19 +233,26 @@ def read_config(path: Path, project: bool) -> dict:
     return out
 
 
-def setting(name: str, default: Optional[str] = None, cwd=None) -> Optional[str]:
-    """$NAME if set and non-empty, else the project's .agent-hub/config.json (for PROJECT_KEYS; the project is
-    found from `cwd`, default the working directory), else <hub home>/config.json, else `default`."""
+def setting_origin(name: str, default: Optional[str] = None, cwd=None) -> tuple:
+    """(value, origin) of a setting, origin one of "env", "project", "home", "default": which layer supplied it.
+    A setting whose meaning depends on who wrote it (a command a repository must not run) asks for it."""
     raw = os.environ.get(name)
     if raw:
-        return raw
+        return raw, "env"
     if name in PROJECT_KEYS:
         proj = project_dir(cwd)
         if proj:
             val = read_config(proj / CONFIG_DIRNAME / "config.json", project=True).get(name)
             if val:
-                return val
-    return read_config(root() / "config.json", project=False).get(name) or default
+                return val, "project"
+    val = read_config(root() / "config.json", project=False).get(name)
+    return (val, "home") if val else (default, "default")
+
+
+def setting(name: str, default: Optional[str] = None, cwd=None) -> Optional[str]:
+    """$NAME if set and non-empty, else the project's .agent-hub/config.json (for PROJECT_KEYS; the project is
+    found from `cwd`, default the working directory), else <hub home>/config.json, else `default`."""
+    return setting_origin(name, default, cwd)[0]
 
 
 def setting_json(name: str, default=None, cwd=None):
@@ -262,6 +285,46 @@ def _zone() -> dt.tzinfo:
 TZ = _zone()
 TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
 DEFAULT_MESSAGE_CAP = 10
+
+
+_MAP_WARNED: set = set()
+
+
+def model_map(cwd=None) -> dict:
+    """Alias -> full id from AGENT_HUB_MODEL_MAP ("sonnet=claude-…,opus=claude-…"; env, else the agent's repo
+    .agent-hub/config.json, else the hub home's config.json); empty = pass aliases through. A pair whose alias or
+    id has characters outside MODEL_ALIAS_RE / MODEL_VALUE_RE is reported once and left out: what a repository's
+    config maps an alias to goes into the agent's command line and its journal."""
+    out = {}
+    for part in (setting("AGENT_HUB_MODEL_MAP", cwd=cwd) or "").split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if not (k and v):
+                continue
+            if not (MODEL_ALIAS_RE.fullmatch(k) and MODEL_VALUE_RE.fullmatch(v)):
+                if (k, v) not in _MAP_WARNED:
+                    _MAP_WARNED.add((k, v))
+                    _warn(f"AGENT_HUB_MODEL_MAP: {k[:30]!r}={v[:30]!r}{'…' if len(v) > 30 else ''} is not an alias "
+                          "and a model id (letters, digits and . _ : @ [ ] / - only); left out")
+                continue
+            out[k] = v
+    return out
+
+
+def model_problem(model, cwd=None) -> Optional[str]:
+    """None when `agent spawn --model` takes `model`: an alias (opus, sonnet, haiku), an alias of
+    AGENT_HUB_MODEL_MAP, or a full id claude-… — and in each case only the characters above; else the reason."""
+    if not isinstance(model, str) or not model:
+        return "not a model name"
+    if model in MODEL_ALIASES:
+        return None
+    if MODEL_ALIAS_RE.fullmatch(model) and model in model_map(cwd):
+        return None
+    if MODEL_ID_RE.fullmatch(model):
+        return None
+    return (f"one of {', '.join(MODEL_ALIASES)}, an alias from AGENT_HUB_MODEL_MAP, or a full id claude-… "
+            "(letters, digits and . _ : @ [ ] - only)")
 
 
 def int_setting(name: str, default: int, minimum: int = 1) -> int:

@@ -1,6 +1,6 @@
 ---
 name: hub
-description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm.
+description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm.
 ---
 
 # Stage hub: tools and recommended rules
@@ -51,7 +51,10 @@ yet, offer the `agent-hub:setup` skill: it asks which shared resources the proje
    checked). Run `hub takeover` from the project's checkout: the project layer is found from the working directory.
 
 Leaving: `hub handoff --stage <S>` writes a `HANDOFF-hub-*.md` draft with the facts filled in and TODOs; fill the TODOs
-(skill `handoff`). Locks are not released — the successor's `hub takeover` takes them.
+(skill `handoff`). Locks are not released — the successor's `hub takeover` takes them. It first looks for sub-agents of
+your own session (`--session`, else the registered hub's and the session you run it in) that still run and refuses —
+exit 2, listing id, description and age — because they die with you and the successor cannot message them; the ways out
+are under *Choosing how to launch work*.
 
 ## Waiting
 
@@ -63,7 +66,10 @@ delivers them.
 - `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER' --for 2h` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
-  (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there.
+  (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there. `--for` defaults to 2h, the longest a background Bash
+  task is guaranteed. Called with `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry
+  entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
+  wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
   delivered too.
 - `jwait --until 20:23 --note "check the nightly import"` — an alarm; exit 3 and a line `ALARM …`.
@@ -108,29 +114,48 @@ line.
 
 ## Choosing how to launch work
 
-First "yes" decides (details and evidence: `${CLAUDE_PLUGIN_ROOT}/docs/launch-modes.md`):
-1. Review of a pushed branch on the cloud credit → cloud session. 2. The owner should talk to it → Desktop session.
-3. Must outlive this hub session (handoff, restart, night) or runs over ~30 min → `agent spawn`.
-4. Anyone but this hub session must talk to it or see its status → `agent spawn`. 5. The hub is near its handoff
-threshold → `agent spawn`. 6. The hub needs the answer before its next step and it fits in ~10 min → foreground
-sub-agent. 7. Otherwise (≤ ~30 min, the hub stays up, it has other work) → background sub-agent
-(`run_in_background: true`).
+Decide from what is visible before the start — what the work does and who must reach it. The first "yes" decides
+(table, modes and the experiments behind them: `${CLAUDE_PLUGIN_ROOT}/docs/launch-modes.md`). Estimated duration is a
+hint, never the criterion: a hub cannot estimate task time reliably.
+
+1. **A review** → `hub reviewer --for <class>`, then start what it prints (*Reviews*, below).
+2. **The owner should talk to it** → a Desktop session, or `claude --bg` for an owner who lives in a terminal.
+3. **It commits or pushes, waits on CI, a deploy or another party, touches production, or must be reachable by
+   someone other than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
+4. **Read-only, the answer is a short digest, nothing external to wait on** (read a log, check a fact, probe an
+   environment, summarise a file) → a sub-agent: **foreground** when the hub has nothing else to do until the answer,
+   otherwise **background** (`run_in_background: true`).
 
 - A background sub-agent lives in the hub's process: it dies when that process exits, and only this session can
   message or resume it (SendMessage to its id). Compaction does not hurt it. Ask it for a short result (≤ 20 lines,
   details in a file): its completion notice and result land in your context.
-- Before `hub handoff` nothing may still run as a sub-agent: wait for it, or stop it and `agent spawn` the remainder
-  with the partial result, or name it in the handoff as lost.
+- **Every sub-agent brief ends with a call budget:** "if not done after N tool calls, stop and return a partial result
+  and what is left". Recommended N: 40 for a probe or a read, up to 80 for a wide read-only investigation; it is a
+  recommendation, set yours in `hub-rules.md`. *Why:* nobody watches a sub-agent; without a bound a confused one runs
+  until its context is full, and the hub pays for it.
+- **`hub handoff` refuses while a sub-agent of your session still runs** (exit 2; it lists id, description and age).
+  Three ways out, per sub-agent: wait for it (its notice is minutes away); stop it and re-launch the rest with
+  `agent spawn`, with its brief and the partial result; or record it as lost — `hub handoff --allow-live-subagents`
+  writes the list into the draft's TODO section.
 - Its shell inherits your `HUB_TAG`: if it journals, one final line `jlog --tag hub-<N>/<name> "DONE <path>"` (your
   `jwait` ignores your sub-tags; the notice wakes you). An executor's sub-agents do not journal — its `DONE` reports
   for them, and any `DONE` line wakes the hub.
 - A headless agent may use background sub-agents: `agent spawn` lifts the CLI's 10-minute wait ceiling for them
   (`AGENT_HUB_BG_WAIT_CEILING_MS`). `agent-top` lists the sub-agents of registered sessions as `<role>/<id>`, read-only.
 
+### Reviews
+
+`hub reviewer --for <class>` walks the configured reviewers (`AGENT_HUB_REVIEWERS`, default one ordinary `agent
+spawn`) and prints the first that is available now and exactly how to start it: an `agent spawn --role review-… --brief
+<BRIEF>` line, or "load skill `<skill>`" for a reviewer skill the user plugged in. Write the brief from
+`${CLAUDE_PLUGIN_ROOT}/templates/brief-review.md`, start the reviewer as printed, and **verify each finding against the
+code** before acting on it — a review is a colleague's opinion. Classes, the config, the skill reviewer contract:
+`${CLAUDE_PLUGIN_ROOT}/docs/reviewers.md`.
+
 ## Executors
 
-- Long work (a merge steward, a rehearsal, anything over ~30 min — see "Choosing how to launch work") is a headless
-  agent, not an in-session sub-agent:
+- Work that commits, pushes or waits (a merge steward, a rehearsal, a CI wait — see "Choosing how to launch work") is
+  a headless agent, not an in-session sub-agent:
   `agent spawn --role R --cwd DIR --model opus|sonnet|haiku [--effort high] --brief FILE [--worktree [BRANCH]]`.
   It survives the hub's handoff and any hub can talk to it. The executor's tag is `hub-<N>-<role>` (a sub-tag
   `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it). A run that ends abnormally or
@@ -164,7 +189,7 @@ refuse a command. To set the resources up, use the `agent-hub:setup` skill.
 ## Project configuration
 
 A repository can carry its own hub conventions in `<repo>/.agent-hub/` (the hub home and `<hub home>/<stage>/` hold
-the same files): `config.json` (defaults: model map, effort, permission mode, the lock repo), `lock-rules.json`
+the same files): `config.json` (defaults: model map, effort, permission mode, the lock repo, the reviewers), `lock-rules.json`
 (shared resources and their commands), `brief-footer.md` (appended to every brief of an agent spawned with `--cwd` in
 that repository), `handoff-facts.sh` (the § 1 rows of `hub handoff`), `takeover.sh` (an extra verified step of
 `hub takeover`), `hub-rules.md` (overrides of the recommended rules below) and `HUB-NOTES.md` (the team's knowledge).
@@ -183,9 +208,10 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    and every wake-up re-reads the hub's whole context.
 2. **A wake-up with nothing new is a turn of "no action"**, without analysis. *Why:* the same — a hub that thinks
    aloud on every wake-up spends its context on nothing.
-3. **Long work is a headless agent.** *Why:* an in-session sub-agent belongs to its parent session — another session
-   cannot address it and it does not carry over to the next hub; a headless one has its own session id, keeps working
-   through a handoff and any hub can message it.
+3. **Work that commits or pushes, waits on something external, touches production or must be reachable by others is a
+   headless agent.** *Why:* an in-session sub-agent belongs to its parent session — another session cannot address it
+   and it does not carry over to the next hub; a headless one has its own session id, keeps working through a handoff
+   and any hub can message it.
 4. **A change to a production script is written by an executor and reviewed; the hub does not write it.** *Why:* the
    hub's context is the stage's memory; spending it on code costs the plan, and a hub reviewing its own code is not a
    review.
@@ -203,6 +229,13 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    decision. *Why:* they are the decisions that cannot be undone by the next commit.
 9. **Grill before you brief** (above). *Why:* a brief with a silent assumption produces confident work on the wrong
    problem.
+10. **A change gets the review its class says** (`hub reviewer --for <class>`): `docs` — documentation, or tooling and
+    configuration whose own positive and negative controls ran and are shown in the PR — gets no model review; `code`
+    gets one review; `risky` (money, migrations, production, permissions) gets the same single review with its brief
+    narrowed to that risk, not a second reviewer. *Why:* a review costs a full read of the diff and its context, and a
+    second reviewer on the same risk mostly finds the same thing twice; a narrower brief gets more out of one reader.
+11. **The reviewer is a different model from the author.** *Why:* a reader of the author's own model reads the code
+    the way it was written and returns a confident summary, which reads like agreement.
 
 ## Optional modules (macOS + Claude Desktop)
 

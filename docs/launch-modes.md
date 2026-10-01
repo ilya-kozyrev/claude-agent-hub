@@ -1,8 +1,9 @@
 # Choosing how to launch work
 
 A hub can hand a piece of work to six kinds of worker. They differ in what kills them, who can talk to them, what lands
-in the hub's context and what they cost. This page gives the decision table the `hub` skill applies, the defaults with
-numbers, and the experiments behind them (Claude Code CLI 2.1.274, macOS, 2026-10-01).
+in the hub's context and what they cost. This page gives the decision table the `hub` skill applies, the reasoning
+behind it, and the experiments (Claude Code CLI 2.1.274, macOS, 2026-10-01). The table rests on what is visible before
+the start — what the work does and who must reach it — not on an estimate of how long it takes.
 
 ## The modes
 
@@ -16,7 +17,9 @@ numbers, and the experiments behind them (Claude Code CLI 2.1.274, macOS, 2026-1
 | Visible in | the hub's UI, `agent-top` | `agent-top` (rows `<parent role>/<id>`), `/tasks` | `agent-top`, `agent status`, the journal | `claude agents` | the cloud UI | Desktop |
 | Starting context | ~16k tokens (E13) | ~16k tokens | ~27k tokens + the brief footer | as a new session | — | — |
 
-Cloud sessions are for review today: a bundle made from a GitLab checkout cannot push back. A `claude --bg` session
+A cloud session fits read-only work such as a review (a bundle made from a GitLab checkout cannot push back); a user
+who has the credit for it plugs it in as a reviewer skill (`docs/reviewers.md`), it is not a launch mode of its own
+here. A `claude --bg` session
 works (E14) but is not wired into the hub's tools: it has no stream-json log for `agent-top`, no `EXIT` line when it
 dies, and `--dangerously-skip-permissions` needs a one-time interactive acceptance.
 
@@ -33,17 +36,19 @@ Claude Code's other parallel mechanisms, and where they sit here:
 
 ## Decision table
 
-Ask the questions in order; the first "yes" decides.
+Ask the questions in order; the first "yes" decides. Estimated duration is a hint, never the deciding criterion.
 
 | # | Question | Launch as |
 |---|---|---|
-| 1 | Is it a review of a pushed branch that may spend the cloud credit? | cloud session |
+| 1 | Is it a review of a change? | `hub reviewer --for <class>` — the reviewer the user configured; by default an `agent spawn` ([reviewers](reviewers.md)) |
 | 2 | Should the owner talk to it directly? | Desktop session (or `claude --bg` if the owner lives in a terminal) |
-| 3 | Must it outlive this hub session — a handoff, a Desktop restart, a night — or run longer than **~30 min**? | `agent spawn` |
-| 4 | Must anyone except this hub session talk to it, or must other sessions see its status in the journal? | `agent spawn` |
-| 5 | Is the hub near its handoff threshold (see below)? | `agent spawn` |
-| 6 | Does the hub need the answer before its next step, and does it fit in **~10 min**? | foreground sub-agent |
-| 7 | Otherwise (the hub has other work, ≤ ~30 min, the hub stays up) | background sub-agent |
+| 3 | Does it commit or push, wait on CI, a deploy or another party, or touch production? Must anyone except this hub session talk to it, or must other sessions see its status in the journal? | `agent spawn` |
+| 4 | Is the hub near its handoff threshold (see below)? | `agent spawn` |
+| 5 | Is it read-only, with a short digest as its answer and nothing external to wait on — and does the hub have nothing else to do until the answer? | foreground sub-agent |
+| 6 | The same, but the hub has other work meanwhile | background sub-agent |
+
+What a read-only digest is: read a log, check a fact, probe an environment, summarise a file. If the work is not that
+and none of rows 1–4 fit, it is almost always row 3: something is committed, waited for or reached by someone else.
 
 Other axes:
 - **Parallelism.** Background sub-agents run in parallel inside the hub's process (20 at once and 3 levels of
@@ -58,18 +63,34 @@ Other axes:
   parent's transcript (a completion notice for a background one, the Agent call's result for a foreground one, E18)
   and from whether the parent's process still runs (`~/.claude/sessions/<pid>.json`, E19).
 
-Why ~30 min for a background sub-agent: it dies with the hub's process and only the hub's own session can resume it
-(E5, E6, E8). The longer it runs, the likelier a restart, a handoff or a quit app costs the redo. The number is a
-judgement; the measured limits are the ones above and the 10-minute ceiling below.
+Why not by duration: a hub cannot estimate task time reliably, and a wrong guess costs the same whatever the number —
+a sub-agent dies with the hub's process and only the hub's own session can resume it (E5, E6, E8). What the hub can see
+before the start is what the work does. Work that commits, waits or must be reached by others needs a process of its
+own; a read-only digest does not. The one dangerous moment, the hub's session ending while a sub-agent of it still
+runs, is closed mechanically: `hub handoff` refuses while one is live (next section).
+
+**A call budget in every sub-agent brief.** Nobody watches a sub-agent, so its brief ends with a limit: "if not done
+after N tool calls, stop and return a partial result and what is left". The `hub` skill recommends N = 40 for a probe or
+a read and up to 80 for a wide read-only investigation; it is a recommendation, a project sets its own in
+`hub-rules.md`. A partial result with "what is left" lets the hub relaunch the rest narrower, instead of paying for a
+sub-agent that wandered until its context was full.
 
 ## The hub near its threshold
 
 A background sub-agent cannot be handed over: the successor is another session and cannot message it (E8), and when
-the old hub closes it dies (E5). Before `hub handoff`, or once the context crosses the threshold you fixed in advance:
-- nothing new starts as a sub-agent that may outlive the hub — it is an `agent spawn`;
-- a running background sub-agent is either waited for (its notice is minutes away), or stopped and its remainder
-  relaunched with `agent spawn` with the brief and the partial result, or named in the handoff as lost work.
-Compaction is not a reason: a sub-agent keeps running through it and its notice arrives afterwards (E7).
+the old hub closes it dies (E5). Once the context crosses the threshold you fixed in advance, nothing new starts as a
+sub-agent that may outlive the hub — it is an `agent spawn`.
+
+`hub handoff --stage S [--session ID]` looks for sub-agents of the hub's own session before it writes the draft: the
+session's transcript folder, the parent's completion notices and the running-sessions registry — the same discovery and state
+logic as `agent-top` (`bin/subagents.py`; E18, E19). If any is live it exits 2 and lists them (id, description, age).
+Per sub-agent, three ways out:
+- **wait** for it (its notice is minutes away);
+- **stop it and re-launch the remainder with `agent spawn`**, with the brief and the partial result;
+- **record it as lost**: `hub handoff --allow-live-subagents` writes the list into the draft's TODO section.
+
+A finished sub-agent (a notice, or a foreground one whose Agent call returned) never blocks. Compaction is not a reason
+to hand over: a sub-agent keeps running through it and its notice arrives afterwards (E7).
 
 ## Sub-agents inside a headless agent
 

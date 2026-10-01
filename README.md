@@ -264,7 +264,8 @@ branch is merged, `git worktree remove <path>`.
 The brief template is short: why, decisions already made, steps with a check for "done", verification, where to stop and
 a turn limit. `agent spawn` appends a footer that tells the agent how to talk back: `jlog "DONE <report path>"` when
 finished, `jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
-The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules.
+The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules;
+`templates/brief-review.md` is the brief for a reviewer.
 
 A full working day, step by step: [docs/a-day-with-agent-hub.md](docs/a-day-with-agent-hub.md).
 
@@ -307,8 +308,13 @@ sequenceDiagram
 If a run crashes or ends without a status word, a small wrapper journals `EXIT <role>: …` under the agent's tag, so
 the hub's `jwait` wakes anyway.
 
-Headless agent, foreground or background sub-agent of the hub, `claude --bg`, cloud or Desktop session — which to
-use when, with the measurements behind it: [docs/launch-modes.md](docs/launch-modes.md).
+Headless agent, foreground or background sub-agent of the hub, `claude --bg` or Desktop session — which to use when,
+decided by what the work does and who must reach it rather than by how long it takes, with the measurements behind it:
+[docs/launch-modes.md](docs/launch-modes.md). `hub handoff` refuses while a sub-agent of the hub's session still runs.
+
+Reviews are configurable: by default a reviewer is an ordinary `agent spawn`, and `hub reviewer --for <class>` chooses
+among the reviewers you listed — your own reviewer skills included — and prints how to start it:
+[docs/reviewers.md](docs/reviewers.md).
 
 ## Owner questions
 
@@ -380,13 +386,15 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `HUB_STAGE` | `default` | Stage when `--stage` is not given (environment only). |
 | `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically; environment only). |
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. Hub-wide. |
-| `AGENT_HUB_MODEL_MAP` | none | Pin aliases to model ids, e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). |
+| `AGENT_HUB_MODEL_MAP` | none | Pin aliases to model ids, e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). A model id may use letters, digits and `. _ : @ [ ] / -` only (a Bedrock id or an ARN is fine); a pair outside that is reported and left out. |
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. `lock rules init` writes it into `.agent-hub/config.json`. |
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub takeover` takes the hub repository's main-merge as if `--take-main-merge` were given. Without it, a free main-merge of a configured hub repository is reported in the digest. |
 | `CLAUDE_BIN` | `claude` on PATH | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
 | `AGENT_INIT_TIMEOUT` | `120` | Seconds to wait for a new run's init event before calling the spawn failed. |
+| `AGENT_HUB_REVIEWERS` | one `agent` entry | Ordered JSON list of reviewers, first available wins (`hub reviewer`); entries are agents or reviewer skills, with an optional `check` command, `until` date and change classes. A `check` is never run from a repository's config. [docs/reviewers.md](docs/reviewers.md). |
+| `AGENT_HUB_REVIEW_MODEL`, `AGENT_HUB_REVIEW_EFFORT` | `opus`, `high` | Model and effort of an `agent` reviewer that names none. Pick a model other than your executors' (the reviewer is not the author). |
 | `AGENT_HUB_BG_WAIT_CEILING_MS` | `0` | How long an agent's run, after its turn ends, waits for its background sub-agents before the CLI kills them (passed as `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; `0` = until they finish, the CLI's own default is 10 min). |
 | `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal (Claude Desktop only). Hub-wide. |
 | `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`. Hub-wide. |

@@ -68,21 +68,12 @@ _spec = importlib.util.spec_from_loader("roles_cli", _loader)
 roles_cli = importlib.util.module_from_spec(_spec)
 _loader.exec_module(roles_cli)
 
-ALIASES = ("opus", "sonnet", "haiku")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ALIASES = hc.MODEL_ALIASES
+EFFORTS = hc.EFFORTS
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 
-def model_map(cwd=None) -> dict:
-    """Alias -> full id from AGENT_HUB_MODEL_MAP ("sonnet=claude-…,opus=claude-…"; env, else the agent's repo
-    .agent-hub/config.json, else the hub home's config.json); empty = pass aliases through."""
-    out = {}
-    for part in (hc.setting("AGENT_HUB_MODEL_MAP", cwd=cwd) or "").split(","):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            if k.strip() and v.strip():
-                out[k.strip()] = v.strip()
-    return out
+model_map = hc.model_map
 
 
 STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT")
@@ -349,8 +340,9 @@ def cmd_spawn(a) -> int:
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     # Settings come from the agent's repository (its .agent-hub/config.json), not from the caller's.
     mmap = model_map(cwd)
-    if a.model not in ALIASES and a.model not in mmap and not a.model.startswith("claude-"):
-        raise hc.UsageError(f"--model: one of {ALIASES}, an alias from AGENT_HUB_MODEL_MAP, or a full id claude-…")
+    problem = hc.model_problem(a.model, cwd)
+    if problem:
+        raise hc.UsageError(f"--model: {problem}")
     given, a.model = a.model, mmap.get(a.model, a.model)
     default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
     if default_effort not in EFFORTS:

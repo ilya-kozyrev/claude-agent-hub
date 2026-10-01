@@ -48,6 +48,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
+from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as _line_ts,  # noqa: E402
+                       live_sessions, loads as _loads, parse_ts, process_table, read_json)
 
 BIN = hc.BIN
 STALE_S = 300                     # a live agent silent this long is flagged "quiet"
@@ -58,16 +61,9 @@ FEED_MAX_ITEMS = 4000
 ARCHIVE_RE = re.compile(r"^(?P<role>.+)\.(?:failed-)?\d{8}-\d{6}$")
 _TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"(\w+)"')
 _RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` events with "duration_api_ms" first
-_TOOL_ID_RE = re.compile(rb'"tool_use_id"\s*:\s*"([^"]+)"')
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _DONE_RE = re.compile(r"\bDONE\b")
 ASK_LINE_RE = re.compile(r"^(\S+) — open (\d+), overdue (\d+)")
-UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-SUB_RECENT_S = 3600               # finished sub-agents older than this are hidden without --all / `a`
-SUB_LOST_S = 1800                 # no notice, silent this long, parent's liveness unknown: count it as died
-SUB_DIRS_TTL = 30.0               # how long a session's sub-agent folders are cached before the next glob
-_NOTICE_RE = re.compile(rb"<task-id>([\w-]+)</task-id>.*?<status>(\w+)</status>", re.S)
-SUB_STATE = {"completed": "done", "failed": "error"}   # any other notice status (killed, stopped) is "dead"
 
 
 # ---------------------------------------------------------------- text helpers
@@ -198,15 +194,6 @@ def tildify(p: str) -> str:
 
 def hhmmss(ts) -> str:
     return dt.datetime.fromtimestamp(ts, hc.TZ).strftime("%H:%M:%S") if ts else ""
-
-
-def parse_ts(raw):
-    if not isinstance(raw, str):
-        return None
-    try:
-        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
 
 
 def short_model(m: str, effort) -> str:
@@ -395,14 +382,6 @@ def event_type(line: bytes) -> bytes:
     return b"result" if _RESULT_RE.search(line) else b""
 
 
-def _loads(line: bytes):
-    try:
-        ev = json.loads(line)
-    except ValueError:
-        return None
-    return ev if isinstance(ev, dict) else None
-
-
 class Item:
     __slots__ = ("ts", "kind", "text", "detail", "sub", "tool_id", "tool")
 
@@ -496,150 +475,7 @@ class Feed:
         return out
 
 
-class Notices:
-    """How the sub-agents of one parent session ended, read incrementally from the parent's transcript.
-    by_id: {agent id: (status, epoch)} from <task-notification> blocks — the last one wins (a resumed sub-agent
-    notifies again); only notices the CLI queued count (a queue-operation, a queued_command attachment or a user
-    message that is the notice itself), not text that quotes one. results: {tool_use_id: (is_error, epoch)} of every
-    tool result — a foreground sub-agent gets no notice, its Agent call just returns. The whole file is read once
-    (only lines holding a marker are parsed), then only what was appended."""
-
-    def __init__(self, path: Path):
-        self.path, self.ino, self.offset, self.by_id, self.results = path, None, 0, {}, {}
-
-    def update(self) -> "Notices":
-        try:
-            st = os.stat(self.path)
-        except OSError:
-            return self
-        if st.st_ino != self.ino or st.st_size < self.offset:
-            self.ino, self.offset, self.by_id, self.results = st.st_ino, 0, {}, {}
-        if st.st_size <= self.offset:
-            return self
-        try:
-            with open(self.path, "rb") as fh:
-                fh.seek(self.offset)
-                while True:
-                    line = fh.readline()
-                    if not line or not line.endswith(b"\n"):
-                        break
-                    self.offset += len(line)
-                    if b"<task-notification>" in line:
-                        self._notice(line)
-                    if b'"tool_result"' in line and _TOOL_ID_RE.search(line):
-                        self._results(line)
-        except OSError:
-            pass
-        return self
-
-    def _results(self, line: bytes) -> None:
-        ev = _loads(line)
-        if not ev or ev.get("type") != "user":
-            return
-        at = parse_ts(ev.get("timestamp"))
-        content = (ev.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
-                self.results[str(b["tool_use_id"])] = (bool(b.get("is_error")), at)
-
-    def _notice(self, line: bytes) -> None:
-        ev = _loads(line)
-        if not ev:
-            return
-        typ = ev.get("type")
-        if typ == "queue-operation" and ev.get("operation") == "enqueue":
-            text = ev.get("content")
-        elif typ == "attachment" and isinstance(ev.get("attachment"), dict) and ev["attachment"].get("type") == "queued_command":
-            text = ev["attachment"].get("prompt")
-        elif typ == "user":
-            text = (ev.get("message") or {}).get("content")
-        else:
-            return
-        if not isinstance(text, str) or not text.lstrip().startswith("<task-notification>"):
-            return
-        at = parse_ts(ev.get("timestamp"))
-        for m in _NOTICE_RE.finditer(text.encode("utf-8", "replace")):
-            self.by_id[m.group(1).decode("utf-8", "replace")] = (m.group(2).decode("ascii", "replace"), at)
-
-
-def _line_ts(line: bytes):
-    """Epoch of a transcript line's own top-level "timestamp", or None (a tool result may nest its own)."""
-    ev = _loads(line)
-    return parse_ts(ev.get("timestamp")) if ev else None
-
-
-def live_sessions(table):
-    """{session id: pid} of running Claude Code processes, from <claude config>/sessions/<pid>.json (the CLI writes
-    one per process and removes it on exit); None when that folder does not exist (liveness unknown)."""
-    d = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "sessions"
-    if not d.is_dir():
-        return None
-    out = {}
-    for f in d.glob("*.json"):
-        rec = read_json(f)
-        if not isinstance(rec, dict) or not isinstance(rec.get("pid"), int) or not rec.get("sessionId"):
-            continue
-        pid = rec["pid"]
-        if table is not None:
-            # the file is named by pid, so a new CLI on a reused pid overwrites it; a reuse by anything else is
-            # caught here (an interactive session's command line holds no session id, only the binary)
-            if "claude" not in table.get(pid, ""):
-                continue
-        else:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                continue
-            except PermissionError:
-                pass
-        out[str(rec["sessionId"])] = pid
-    return out
-
-
-def projects_root() -> Path:
-    """Where Claude Code keeps session transcripts: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects."""
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
-
-
 # ---------------------------------------------------------------- collecting
-
-def process_table():
-    """{pid: command line} of every process, or None when `ps` is unusable."""
-    try:
-        r = subprocess.run(["ps", "-ww", "-axo", "pid=,command="], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
-        return None
-    table = {}
-    for ln in r.stdout.splitlines():
-        parts = ln.strip().split(None, 1)
-        if len(parts) == 2 and parts[0].isdigit():
-            table[int(parts[0])] = parts[1]
-    return table or None
-
-
-def is_alive(meta: dict, table) -> bool:
-    pid, sid = meta.get("pid"), meta.get("session_id") or ""
-    if not isinstance(pid, int) or not pid:
-        return False
-    if table is None:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            pass
-        return True
-    return bool(sid) and sid in table.get(pid, "")   # a reused pid runs another command line
-
-
-def read_json(path: Path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
 
 def discover_stages(only) -> list:
     if only:
@@ -699,7 +535,7 @@ class Collector:
     def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
-        self.notices, self.sub_dirs, self.metas = {}, {}, {}
+        self.subs = subagents.Finder(lambda log: self.log_state(log).last_user_ts)
         self.ext = External()
         self.feed = None
 
@@ -792,86 +628,25 @@ class Collector:
             "_rate": (ls.rate, ls.rate_mtime) if ls.rate else None,
         }
 
-    # -- sub-agents (read-only: only their parent session can message them)
-    def _sub_dirs(self, sid: str) -> list:
-        hit = self.sub_dirs.get(sid)
-        if hit and time.monotonic() - hit[0] < SUB_DIRS_TTL:
-            return hit[1]
-        try:
-            dirs = sorted(projects_root().glob(f"*/{sid}/subagents"))
-        except OSError:
-            dirs = []
-        self.sub_dirs[sid] = (time.monotonic(), dirs)
-        return dirs
-
+    # -- sub-agents (read-only: only their parent session can message them; discovery and state: bin/subagents.py)
     def _subagents(self, stage: str, registry: dict, table, live, now: float) -> list:
         out = []
         for prole, rec in sorted(registry.items()):
             sid = rec.get("cli_session_id") or rec.get("session") or ""
             if not UUID_RE.fullmatch(sid):
                 continue
-            pid = rec.get("pid")
-            if rec.get("kind") == "headless" and isinstance(pid, int) and is_alive({"pid": pid, "session_id": sid}, table):
-                parent_alive = True
-            elif live is not None:
-                parent_alive = sid in live
-            else:
-                parent_alive = None           # no session registry to ask: fall back to the silence rule
-            for sdir in self._sub_dirs(sid):
-                path = sdir.parent.parent / f"{sid}.jsonl"
-                notes = self.notices.setdefault(path, Notices(path)).update()
-                for mp in sorted(sdir.glob("agent-*.meta.json")):
-                    info = self._subagent(stage, prole, rec, mp, notes, parent_alive, now)
-                    if info:
-                        out.append(info)
+            for sub in self.subs.of_session(sid, subagents.parent_alive(rec, sid, table, live), now, self.show_all):
+                out.append(self._subagent(stage, prole, rec, sub, now))
         return out
 
-    def _meta(self, path: Path) -> dict:
-        try:
-            key = (path, os.stat(path).st_mtime_ns)
-        except OSError:
-            return {}
-        hit = self.metas.get(key)
-        if hit is None:
-            hit = read_json(path)
-            hit = self.metas[key] = hit if isinstance(hit, dict) else {}
-        return hit
-
-    def _subagent(self, stage: str, prole: str, prec: dict, meta_path: Path, notes: Notices, parent_alive, now: float):
-        aid = meta_path.name[len("agent-"):-len(".meta.json")]
-        log = meta_path.with_name(f"agent-{aid}.jsonl")
-        try:
-            mtime = log.stat().st_mtime
-        except OSError:
-            mtime = None
-        meta = self._meta(meta_path)
-        background = meta.get("requestShape") == "background"
-        status, at = notes.by_id.get(aid, (None, None))
-        # a foreground call ends with its tool result; with no known shape only a notice counts (a background
-        # call's tool result is just "launched")
-        if status is None and meta.get("requestShape") == "foreground" and meta.get("toolUseId") in notes.results:
-            err, at = notes.results[meta["toolUseId"]]
-            status = "failed" if err else "completed"
-        old = mtime is None or now - mtime > SUB_RECENT_S
-        if not self.show_all and old and (status is not None or parent_alive is not True):
-            return None                       # finished (or orphaned) long ago: not even its transcript is read
-        ls = self.log_state(log)
-        # resumed (SendMessage) after it ended: its transcript got a new user line after the end; compared on the
-        # CLI's own timestamps, not on file times
-        resumed = status is not None and at is not None and ls.last_user_ts is not None and ls.last_user_ts > at
-        finished = status is not None and not resumed
-        if finished:
-            state = SUB_STATE.get(status, "dead")
-        elif parent_alive is True:
-            state = "live"
-        elif parent_alive is False or mtime is None or now - mtime > SUB_LOST_S:
-            state = "dead"
-        else:
-            state = "live"
+    def _subagent(self, stage: str, prole: str, prec: dict, sub, now: float):
+        ls = self.log_state(sub.log)
+        aid, mtime, status, state = sub.aid, sub.mtime, sub.status, sub.state
         alive = state == "live"
         age = None if mtime is None else max(0, now - mtime)
         act = ls.action() if alive else None
-        desc = one_line(str(meta.get("description") or ""))
+        desc = sub.description
+        meta = sub.meta
         return {
             "kind": "subagent", "parent": prole,
             "stage": stage, "role": f"{prole}/{aid[:7]}", "dir_name": f"{prole}/{aid}",
@@ -885,13 +660,13 @@ class Collector:
             "started_at": None, "runs": 1,
             "turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated, "ctx_tokens": ls.ctx or None,
             "cost_usd": None,
-            "result": None if not finished else {"subtype": status, "is_error": state == "error", "num_turns": None,
-                                                 "text": ls.last_text[:400]},
+            "result": None if status is None else {"subtype": status, "is_error": state == "error", "num_turns": None,
+                                                   "text": ls.last_text[:400]},
             "action": None if not act else {"tool": act["tool"], "text": act["text"], "detail": act["detail"],
                                             "elapsed_s": None if not act["ts"] else max(0, int(now - act["ts"]))},
             "last_text": ls.last_text, "unread": [],
-            "cwd": None, "log_path": str(log), "log_bytes": ls.size, "brief_path": "", "inbox_path": "",
-            "report_path": None, "agent_type": meta.get("agentType"), "background": background,
+            "cwd": None, "log_path": str(sub.log), "log_bytes": ls.size, "brief_path": "", "inbox_path": "",
+            "report_path": None, "agent_type": meta.get("agentType"), "background": sub.background,
         }
 
     # -- locks / roles
