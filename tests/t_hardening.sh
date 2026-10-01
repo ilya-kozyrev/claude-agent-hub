@@ -201,8 +201,9 @@ tk_setup none; printf '{"AGENT_HUB_DEFAULT_REPO": "webapp", "AGENT_HUB_TAKE_MAIN
 (cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI) > /dev/null 2>&1
 check "$(mm)" "-" "N2 negative: a JSON boolean false takes nothing"
 rm -f $R/board.md
-(cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo webapp --until +1h --why x) > /dev/null
-(cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo mobile --until +1h --why x) > /dev/null
+printf '{"resources": {"stage": "staging"}}\n' > $P/stage-rules.json
+(cd $OUT && AGENT_HUB_LOCK_RULES=$P/stage-rules.json CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo webapp --until +1h --why x) > /dev/null
+(cd $OUT && AGENT_HUB_LOCK_RULES=$P/stage-rules.json CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo mobile --until +1h --why x) > /dev/null
 (cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock release stage) > $P/n3.out 2>&1; rc=$?
 check $rc 1 "N3: release without --repo and two own locks of the kind: exit 1"
 grep -q 'stage (webapp)' $P/n3.out && grep -q 'stage (mobile)' $P/n3.out && grep -q -- '--repo' $P/n3.out; check $? 0 "…names both and says --repo"
