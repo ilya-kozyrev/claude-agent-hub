@@ -95,13 +95,34 @@ settle the open decisions with the owner, in this order:
 Skip the grilling for a task whose decisions are all on record or that the owner specified completely; say so in one
 line.
 
+## Choosing how to launch work
+
+First "yes" decides (details and evidence: `${CLAUDE_PLUGIN_ROOT}/docs/launch-modes.md`):
+1. Review of a pushed branch on the cloud credit → cloud session. 2. The owner should talk to it → Desktop session.
+3. Must outlive this hub session (handoff, restart, night) or runs over ~30 min → `agent spawn`.
+4. Anyone but this hub session must talk to it or see its status → `agent spawn`. 5. The hub is near its handoff
+threshold → `agent spawn`. 6. The hub needs the answer before its next step and it fits in ~10 min → foreground
+sub-agent. 7. Otherwise (≤ ~30 min, the hub stays up, it has other work) → background sub-agent
+(`run_in_background: true`).
+
+- A background sub-agent lives in the hub's process: it dies when that process exits, and only this session can
+  message or resume it (SendMessage to its id). Compaction does not hurt it. Ask it for a short result (≤ 20 lines,
+  details in a file): its completion notice and result land in your context.
+- Before `hub handoff` nothing may still run as a sub-agent: wait for it, or stop it and `agent spawn` the remainder
+  with the partial result, or name it in the handoff as lost.
+- Its shell inherits your `HUB_TAG`: if it journals, one final line `jlog --tag hub-<N>/<name> "DONE <path>"` (your
+  `jwait` ignores your sub-tags; the notice wakes you). An executor's sub-agents do not journal — its `DONE` reports
+  for them, and any `DONE` line wakes the hub.
+- A headless agent may use background sub-agents: `agent spawn` lifts the CLI's 10-minute wait ceiling for them
+  (`AGENT_HUB_BG_WAIT_CEILING_MS`). `agent-top` lists the sub-agents of registered sessions as `<role>/<id>`, read-only.
+
 ## Executors
 
 - Executors and stewards stay silent between events. They write to the hub only MERGED / STOP / DONE / BLOCKED / a
   question: the status word, the report path and one sentence. The full report is `work/<tag>-REPORT.md`.
 - A wake-up with nothing new is a hub turn of "no action", without analysis.
-- Long work (a merge steward, a rehearsal, anything over an hour) is a headless agent, not an in-session sub-agent:
-  `agent spawn --role R --cwd DIR --model opus|sonnet|haiku [--effort high] --brief FILE`. It survives the hub's
+- Long work (a merge steward, a rehearsal, anything over ~30 min — see "Choosing how to launch work") is a headless
+  agent: `agent spawn --role R --cwd DIR --model opus|sonnet|haiku [--effort high] --brief FILE`. It survives the hub's
   handoff, any hub can talk to it, and the old hub closes at handoff instead of staying its host.
   The executor's tag is `hub-<N>-<role>` (a sub-tag `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it).
   A run that ends abnormally or without a status word leaves `EXIT <role>: …` in the journal under its tag.

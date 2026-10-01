@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Choosing how to launch work.** `docs/launch-modes.md` and a section of the `hub` skill: when a piece of work is a
+  foreground or background sub-agent of the hub, a headless agent, a cloud or a Desktop session, with defaults
+  (~10 min / ~30 min) and the rule for a hub near its handoff threshold, backed by experiments with the CLI.
+- `agent spawn` runs wait for their background sub-agents: `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` by default
+  (the CLI kills them after 10 min otherwise); new setting `AGENT_HUB_BG_WAIT_CEILING_MS`.
+- `agent-top` lists the sub-agents of the sessions in a stage's role registry, read-only, as `<role>/<id>`: state from
+  the parent's completion notices, current action, feed from the sub-agent's transcript.
+
 ## 0.3.0 — 2026-10-01
 
 Agent discipline: the hooks that keep long agent work cheap ship with the plugin, every rule configurable.
