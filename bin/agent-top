@@ -9,7 +9,10 @@
 Shows every agent of every stage (<hub home>/<stage>/agents/<R>/): state (live / done / error / died — decided as
 `agent status` does: the pid is alive AND its command line holds the session id; else the last `result` event of
 the log), age of the last log event, model turns, context size, cost of the finished runs, the current action
-(the last tool_use with no tool_result yet), the last thing the agent said, unread inbox messages. Enter opens an
+(the last tool_use with no tool_result yet), the last thing the agent said, unread inbox messages. Sub-agents (the Agent tool) of the sessions in a stage's
+role registry are listed too, read-only, as `<parent role>/<id>`: found in the parent session's transcript folder
+(<claude config>/projects/*/<session>/subagents/), done/error/stopped from the parent's completion notice; with no
+notice it is live until its parent (a headless agent) is gone or its transcript is silent for 30 min. Enter opens an
 agent: live feed of its log (thoughts ✎, commands ▸, short results ◂), brief, inbox. `j` — stage journal with a
 filter, `s` — locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
 `agent send` / `agent stop` after a y/N confirmation; nothing else is ever written.
@@ -19,7 +22,7 @@ r refresh · ? help · q quit.  --read-only disables m and x.
 Logs are read incrementally from the last offset (log.jsonl reaches several MB): only assistant/result lines are
 parsed, a log over $AGENT_TOP_SCAN_MAX bytes (8 MB) is scanned from its tail and its turn count is marked with +.
 Files of agents are never opened for writing.
-Env: AGENT_HUB_HOME (hub home, default ~/.claude/agent-hub), AGENT_HUB_TZ (time zone of clocks and the journal,
+Env: AGENT_HUB_HOME (hub home, default ~/.claude/agent-hub), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
 default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB), NO_COLOR.
 Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
 """
@@ -57,6 +60,13 @@ _TOOL_ID_RE = re.compile(rb'"tool_use_id"\s*:\s*"([^"]+)"')
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _DONE_RE = re.compile(r"\bDONE\b")
 ASK_LINE_RE = re.compile(r"^(\S+) — open (\d+), overdue (\d+)")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+SUB_RECENT_S = 3600               # finished sub-agents older than this are hidden without --all / `a`
+SUB_LOST_S = 1800                 # no completion notice and silent this long: the parent session most likely ended
+SUB_DIRS_TTL = 30.0               # how long a session's sub-agent folders are cached before the next glob
+_NOTICE_RE = re.compile(rb"<task-id>([\w-]+)</task-id>.*?<status>(\w+)</status>")
+_TS_FIELD_RE = re.compile(rb'"timestamp"\s*:\s*"([^"]+)"')
+SUB_STATE = {"completed": "done", "failed": "error"}   # any other notice status (killed, stopped) is "dead"
 
 
 # ---------------------------------------------------------------- text helpers
@@ -257,6 +267,7 @@ class LogState:
         self.inbox_touch, self.done_at = -1, -1
         self.truncated = False
         self.rate, self.rate_mtime = None, 0.0
+        self.effort = None                # a session transcript records the effort on each assistant line
 
     @property
     def turns(self) -> int:
@@ -335,6 +346,8 @@ class LogState:
             if msg.get("id"):
                 self.sub_ids.add(msg["id"])
             return
+        if isinstance(ev.get("effort"), str):
+            self.effort = ev["effort"]
         mid = msg.get("id")
         if mid:
             self.turn_ids.add(mid)
@@ -370,6 +383,10 @@ def event_type(line: bytes) -> bytes:
     m = _TYPE_RE.match(line)
     if m:
         return m.group(1)
+    if line.startswith(b'{"parentUuid"'):
+        # a session transcript line (a sub-agent's log): its own "type" key comes after the nested message's
+        ev = _loads(line)
+        return str(ev.get("type") or "").encode() if ev else b""
     return b"result" if _RESULT_RE.search(line) else b""
 
 
@@ -474,6 +491,49 @@ class Feed:
         return out
 
 
+class Notices:
+    """Completion notices of sub-agents in their parent session's transcript, read incrementally:
+    {agent id: (status, epoch of the notice)}; the last notice of an id wins (a resumed sub-agent notifies again)."""
+
+    def __init__(self, path: Path):
+        self.path, self.ino, self.offset, self.by_id = path, None, 0, {}
+
+    def update(self) -> dict:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return self.by_id
+        if st.st_ino != self.ino or st.st_size < self.offset:
+            self.ino, self.offset, self.by_id = st.st_ino, 0, {}
+        if st.st_size <= self.offset:
+            return self.by_id
+        try:
+            with open(self.path, "rb") as fh:
+                if self.offset == 0 and st.st_size > SCAN_MAX:
+                    fh.seek(st.st_size - SCAN_MAX)
+                    self.offset = st.st_size - SCAN_MAX + len(fh.readline())
+                fh.seek(self.offset)
+                while True:
+                    line = fh.readline()
+                    if not line or not line.endswith(b"\n"):
+                        break
+                    self.offset += len(line)
+                    if b"<task-notification>" not in line:
+                        continue
+                    ts = _TS_FIELD_RE.search(line)
+                    at = parse_ts(ts.group(1).decode("utf-8", "replace")) if ts else None
+                    for m in _NOTICE_RE.finditer(line):
+                        self.by_id[m.group(1).decode("utf-8", "replace")] = (m.group(2).decode("ascii", "replace"), at)
+        except OSError:
+            pass
+        return self.by_id
+
+
+def projects_root() -> Path:
+    """Where Claude Code keeps session transcripts: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+
+
 # ---------------------------------------------------------------- collecting
 
 def process_table():
@@ -572,6 +632,7 @@ class Collector:
     def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
+        self.notices, self.sub_dirs = {}, {}
         self.ext = External()
         self.feed = None
 
@@ -602,6 +663,7 @@ class Collector:
                     r = info.pop("_rate")
                     if r and (rate is None or r[1] > rate[1]):
                         rate = r
+            agents += self._subagents(stage, reg["roles"], table, now)
         agents.sort(key=lambda a: (a["group"], a["stage"], a["role"], a["dir_name"]))
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
         locks = self._locks(now)
@@ -640,6 +702,7 @@ class Collector:
         act = ls.action() if alive else None
         role = meta.get("role") or (m.group("role") if m else d.name)
         return {
+            "kind": "headless", "parent": None,
             "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
             "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
@@ -659,6 +722,84 @@ class Collector:
             "cwd": meta.get("cwd"), "log_path": str(log), "log_bytes": ls.size, "brief_path": str(d / "brief.md"),
             "inbox_path": str(d / "inbox.md"), "report_path": meta.get("report"),
             "_rate": (ls.rate, ls.rate_mtime) if ls.rate else None,
+        }
+
+    # -- sub-agents (read-only: only their parent session can message them)
+    def _sub_dirs(self, sid: str) -> list:
+        hit = self.sub_dirs.get(sid)
+        if hit and time.monotonic() - hit[0] < SUB_DIRS_TTL:
+            return hit[1]
+        try:
+            dirs = sorted(projects_root().glob(f"*/{sid}/subagents"))
+        except OSError:
+            dirs = []
+        self.sub_dirs[sid] = (time.monotonic(), dirs)
+        return dirs
+
+    def _subagents(self, stage: str, registry: dict, table, now: float) -> list:
+        out = []
+        for prole, rec in sorted(registry.items()):
+            sid = rec.get("cli_session_id") or rec.get("session") or ""
+            if not UUID_RE.fullmatch(sid):
+                continue
+            pid = rec.get("pid")
+            parent_gone = rec.get("kind") == "headless" and isinstance(pid, int) and \
+                not is_alive({"pid": pid, "session_id": sid}, table)
+            for sdir in self._sub_dirs(sid):
+                path = sdir.parent.parent / f"{sid}.jsonl"
+                notes = self.notices.setdefault(path, Notices(path)).update()
+                for mp in sorted(sdir.glob("agent-*.meta.json")):
+                    info = self._subagent(stage, prole, rec, mp, notes, parent_gone, now)
+                    if info:
+                        out.append(info)
+        return out
+
+    def _subagent(self, stage: str, prole: str, prec: dict, meta_path: Path, notes: dict, parent_gone: bool, now: float):
+        meta = read_json(meta_path)
+        meta = meta if isinstance(meta, dict) else {}
+        aid = meta_path.name[len("agent-"):-len(".meta.json")]
+        log = meta_path.with_name(f"agent-{aid}.jsonl")
+        try:
+            mtime = log.stat().st_mtime
+        except OSError:
+            mtime = None
+        status, at = notes.get(aid, (None, None))
+        # the transcript's last write lands a few ms after the notice; a later write means it was resumed
+        finished = status is not None and (at is None or mtime is None or mtime <= at + 2)
+        if finished:
+            state = SUB_STATE.get(status, "dead")
+        elif parent_gone or mtime is None or now - mtime > SUB_LOST_S:
+            state = "dead"
+        else:
+            state = "live"
+        if not self.show_all and state != "live" and (mtime is None or now - mtime > SUB_RECENT_S):
+            return None
+        ls = self.log_state(log)
+        alive = state == "live"
+        age = None if mtime is None else max(0, now - mtime)
+        act = ls.action() if alive else None
+        desc = one_line(str(meta.get("description") or ""))
+        return {
+            "kind": "subagent", "parent": prole,
+            "stage": stage, "role": f"{prole}/{aid[:7]}", "dir_name": f"{prole}/{aid}",
+            "tag": prec.get("tag") or prole, "title": desc or str(meta.get("agentType") or "sub-agent"),
+            "model": str(meta.get("model") or ""), "effort": ls.effort,
+            "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
+            "quiet": bool(alive and age is not None and age > self.stale_s),
+            "alive": alive, "pid": None, "session_id": aid, "retired": False, "archived": False,
+            "age_s": None if age is None else int(age),
+            "last_event_at": None if mtime is None else dt.datetime.fromtimestamp(mtime, hc.TZ).isoformat(timespec="seconds"),
+            "started_at": None, "runs": 1,
+            "turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated, "ctx_tokens": ls.ctx or None,
+            "cost_usd": None,
+            "result": None if not finished else {"subtype": status, "is_error": state == "error", "num_turns": None,
+                                                 "text": ls.last_text[:400]},
+            "action": None if not act else {"tool": act["tool"], "text": act["text"], "detail": act["detail"],
+                                            "elapsed_s": None if not act["ts"] else max(0, int(now - act["ts"]))},
+            "last_text": ls.last_text, "unread": [],
+            "cwd": None, "log_path": str(log), "log_bytes": ls.size, "brief_path": "", "inbox_path": "",
+            "report_path": None, "agent_type": meta.get("agentType"),
+            "background": meta.get("requestShape") == "background",
         }
 
     # -- locks / roles
@@ -785,6 +926,8 @@ def what_now(a: dict) -> tuple:
         return ("⋯ " + a["last_text"] if a["last_text"] else "⋯ thinking"), "dim"
     if a["result"] and a["state"] in ("done", "error"):
         return (a["last_text"] or a["result"]["text"] or a["result"]["subtype"] or ""), "dim"
+    if a.get("kind") == "subagent":
+        return (a["last_text"] or "no completion notice — its parent session ended or it was stopped"), "dim" if a["last_text"] else "err"
     return (a["last_text"] or "no process, no result — died or was killed"), ("dim" if a["last_text"] else "err")
 
 
@@ -904,7 +1047,7 @@ def detail_rows(a, width: int) -> list:
         return []
     rows = [R(("─" * width, "dim"))]
     head = f" {a['role']} · {a['tag']} · {short_model(a['model'], a['effort'])} · {WORD[a['state']]}" + \
-           (f" pid {a['pid']}" if a["alive"] else "") + f" · {fmt_age(a['age_s'])} ago"
+           (f" pid {a['pid']}" if a["alive"] and a["pid"] else "") + f" · {fmt_age(a['age_s'])} ago"
     rows.append(R((clip(head, width), "bold")))
     if a["title"]:
         rows.append(R((clip(" " + a["title"], width), "dim")))
@@ -942,7 +1085,7 @@ def list_rows(snap: dict, width: int, sel_key, height=None, detail: bool = True)
 def card_rows(a: dict, width: int) -> list:
     rows = []
     g, st = GLYPH[a["state"]]
-    state = ("quiet " if a["quiet"] else "") + WORD[a["state"]] + (f" pid {a['pid']}" if a["alive"] else "")
+    state = ("quiet " if a["quiet"] else "") + WORD[a["state"]] + (f" pid {a['pid']}" if a["alive"] and a["pid"] else "")
     rows.append(R((f" {g} ", st), (a["role"], "bold"), (f" · {a['stage']} · {short_model(a['model'], a['effort'])} · ", "dim"),
                   (state, st), (f" · {fmt_age(a['age_s'])} ago", "warn" if a["quiet"] else "dim")))
     bits = [f"tag {a['tag']}", f"turns {a['turns']}{'+' if a['turns_approx'] else ''}" + (f" (+{a['sub_turns']} sub-agent turns)" if a["sub_turns"] else ""), f"ctx {fmt_k(a['ctx_tokens'])}",
@@ -960,7 +1103,13 @@ def card_rows(a: dict, width: int) -> list:
         r = a["result"]
         rows += wrap_rows(f"result: {r['subtype']}{', error' if r['is_error'] else ''} — {one_line(r['text'])[:300]}", width,
                           "err" if r["is_error"] else "done", " ", "   ", 3)
-    if a["state"] == "dead":
+    if a.get("kind") == "subagent":
+        rows += wrap_rows(f"sub-agent of {a['parent']} ({a.get('agent_type') or '?'}, "
+                          f"{'background' if a.get('background') else 'foreground'}); read-only here — only its parent "
+                          f"session can message it (SendMessage to {a['session_id']})", width, "dim", " ", "   ", 3)
+        if a["state"] == "dead":
+            rows.append(R((" no completion notice: its parent session ended or it was stopped", "err")))
+    elif a["state"] == "dead":
         rows.append(R((" no process, no result — died or was killed; agent send without text resumes it", "err")))
     for u in a["unread"][:3]:
         rows += wrap_rows(f"✉ unread ({(u['at'] or '')[11:16]}): {u['msg']}", width, "warn", " ", "   ", 2)
@@ -1522,6 +1671,9 @@ class App:
             return
         if a["archived"]:
             self.say("archive folder of an old run — no actions", "warn")
+            return
+        if a.get("kind") == "subagent":
+            self.say(f"sub-agent of {a['parent']}: only its parent session can message or stop it", "warn")
             return
         if k == "m":
             self.mode = "input"
