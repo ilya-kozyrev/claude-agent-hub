@@ -188,7 +188,11 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
   `jlog`, `jwait` and the rest directly. To use them in your own terminal too, add `bin/` to your `PATH` or symlink the
   tools. A Claude Code session's id is in `$CLAUDE_CODE_SESSION_ID` (`echo` it in the session). When it is empty, for
   example in a plain shell outside Claude Code, `lock take` refuses unless you pass `--force`: the lock would have no
-  owner the hook could recognise.
+  owner the hook could recognise. The plugin's `bin/` comes after your own `PATH` entries, so an older command of the
+  same name wins — in practice the GitHub CLI `hub` from Homebrew, or an old copy of `jlog` in `~/.local/bin`. `hub start`
+  and a SessionStart hook warn once when any command of the plugin (every executable in its `bin/`: `hub`, `jlog`,
+  `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
+  first on `PATH` or remove the old tool.
 - **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
   (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name); four pinned-effort worker subagents.
 - **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
@@ -200,6 +204,9 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
     only in the hub home, in repositories that have `.agent-hub/`, under the directories of the hub-wide setting
     `AGENT_HUB_SCOPE_DIRS`, and, for `questions`, in agents started by `agent spawn`. A session in an unrelated
     project hears nothing from them.
+  - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
+    `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
+    time in the same places as `questions`, and once per distinct set of paths elsewhere.
 - Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`.
 
 ### After install: run `agent-hub:setup` in each repository
@@ -269,6 +276,9 @@ branch is merged, `git worktree remove <path>`.
 The brief template is short: why, decisions already made, steps with a check for "done", verification, where to stop and
 a turn limit. `agent spawn` appends a footer that tells the agent how to talk back: `jlog "DONE <report path>"` when
 finished, `jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
+The footer names `jlog` as `"$HUB_BIN/jlog"`, and the agent starts with the plugin's `bin/` first on its `PATH` and in
+`$HUB_BIN` (rebuilt at every spawn and resume, so a resumed agent follows a plugin update): an older `jlog` found first
+would write to a journal the hub never reads.
 The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules;
 `templates/brief-review.md` is the brief for a reviewer.
 
@@ -285,6 +295,18 @@ A full working day, step by step: [docs/a-day-with-agent-hub.md](docs/a-day-with
 - **Give every brief a turn limit and a stop condition**, and cut day-long work into pieces: a fresh agent for each, with
   a short report or handoff file between them. The turn limit is a line in the brief; agent-hub does not enforce it.
 - **`agent-top` shows a dollar figure only when the CLI reports one** (the cost of finished runs); a live run shows `—`.
+- **Agents run on the latest models if Claude Code is current.** `--model opus|sonnet|haiku|fable` goes to the CLI,
+  which resolves the alias to the newest model of that family: Claude Code 2.1.285 and later gives `claude-sonnet-5-5`,
+  `claude-opus-5-5`, `claude-haiku-4-5-20251001` and `claude-fable-5-1`, an older CLI gives older models. Keep Claude Code
+  updated; `agent spawn` and `hub start` warn when the CLI is older than 2.1.285, and without `CLAUDE_BIN` they start the
+  newer of `claude` on `PATH` and the CLI bundled with Claude Desktop (`agent spawn` prints which). The plugin pins no
+  ids, since a pin goes stale with the next release: the id each run reports is shown by `agent status`, the journal's
+  `started headless agent` line, the roles note and `agent-top` (`sonnet-5-5`, not `sonnet`). The CLI's version is read
+  with `claude --version` (5 s at most; the line `<version> (Claude Code)`) and remembered by path, size and modification
+  time in `<hub home>/.state/cli-version/`. If you must hold a model, pin it with
+  `AGENT_HUB_MODEL_MAP`.
+- **Turns are counted per run.** `agent status` and `agent-top` show the last run's turns next to the total once an
+  agent was resumed (`turns 31 (total 60)`; `31/60` in the agent-top list), so a limit in the brief can be checked.
 
 ## Agent lifecycle
 
@@ -391,12 +413,12 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `HUB_STAGE` | `default` | Stage when `--stage` is not given (environment only). |
 | `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically; environment only). |
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. Hub-wide. |
-| `AGENT_HUB_MODEL_MAP` | none | Pin aliases to model ids, e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). A model id may use letters, digits and `. _ : @ [ ] / -` only (a Bedrock id or an ARN is fine); a pair outside that is reported and left out. |
+| `AGENT_HUB_MODEL_MAP` | none | Opt-in pin of aliases to model ids (without it an alias follows the CLI, which resolves it to its latest model), e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). A model id may use letters, digits and `. _ : @ [ ] / -` only (a Bedrock id or an ARN is fine); a pair outside that is reported and left out. |
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. `lock rules init` writes it into `.agent-hub/config.json`. |
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub takeover` takes the hub repository's main-merge as if `--take-main-merge` were given. Without it, a free main-merge of a configured hub repository is reported in the digest. |
-| `CLAUDE_BIN` | `claude` on PATH | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
+| `CLAUDE_BIN` | the newer of `claude` on PATH and the CLI bundled with Claude Desktop | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
 | `AGENT_INIT_TIMEOUT` | `120` | Seconds to wait for a new run's init event before calling the spawn failed. |
 | `AGENT_HUB_REVIEWERS` | one `agent` entry | Ordered JSON list of reviewers, first available wins (`hub reviewer`); entries are agents or reviewer skills, with an optional `check` command, `until` date and change classes. A `check` is never run from a repository's config. [docs/reviewers.md](docs/reviewers.md). |
 | `AGENT_HUB_REVIEW_MODEL`, `AGENT_HUB_REVIEW_EFFORT` | `opus`, `high` | Model and effort of an `agent` reviewer that names none. Pick a model other than your executors' (the reviewer is not the author). |
@@ -593,9 +615,14 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 
 - macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
   itself runs natively on Windows. Python 3.10+, standard library only.
-- The `claude` CLI must be on `PATH` (or set `CLAUDE_BIN`); on macOS the CLI bundled with Claude Desktop is a fallback.
+- The `claude` CLI must be on `PATH` (or set `CLAUDE_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
+  is newer. Model aliases follow the CLI: with Claude Code older than 2.1.285 they resolve to older models.
 - Headless agents run with `bypassPermissions` by default. Give every agent a brief that says what it must not
   touch, or set `AGENT_HUB_PERMISSION_MODE`.
+- The hub must be an interactive session (Claude Desktop, or a terminal session): its background `jwait` wakes it. In
+  `claude -p` the hub's background Bash `jwait` is killed when the turn ends; `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+  keeps background sub-agents alive, not background Bash tasks, so a headless hub learns about `DONE` only from its
+  next message.
 - One machine, one person: the files are local and the locks are advisory `flock`s plus a hook, not a distributed lock
   service. Two people cannot share a hub home (see [Team use](#team-use)).
 - Locks guard only what the hook recognises: merges and pushes to protected branches, and the commands your

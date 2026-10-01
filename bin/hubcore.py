@@ -20,10 +20,12 @@ import glob
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 BIN = Path(os.path.dirname(os.path.realpath(__file__)))
 DEFAULT_STAGE = "default"
@@ -32,7 +34,10 @@ STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
-MODEL_ALIASES = ("opus", "sonnet", "haiku")
+MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
+# The first Claude Code CLI whose aliases resolve to the latest models (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1);
+# an older CLI resolves the same aliases to older models. The plugin pins no ids: the alias follows the CLI.
+MIN_CLI_VERSION = (2, 1, 285)
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -313,7 +318,7 @@ def model_map(cwd=None) -> dict:
 
 
 def model_problem(model, cwd=None) -> Optional[str]:
-    """None when `agent spawn --model` takes `model`: an alias (opus, sonnet, haiku), an alias of
+    """None when `agent spawn --model` takes `model`: an alias (opus, sonnet, haiku, fable), an alias of
     AGENT_HUB_MODEL_MAP, or a full id claude-… — and in each case only the characters above; else the reason."""
     if not isinstance(model, str) or not model:
         return "not a model name"
@@ -375,13 +380,174 @@ def truthy(raw: Optional[str]) -> bool:
 
 
 def child_env(extra: Optional[dict] = None) -> dict:
-    """Environment for calling the sibling tools: same home, and this bin/ first on PATH."""
+    """Environment for calling the sibling tools: same home, this bin/ first on PATH and in $HUB_BIN."""
     env = dict(os.environ)
     env["AGENT_HUB_HOME"] = str(root())
     env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
+    env["HUB_BIN"] = str(BIN)  # for a brief written by an older run: rebuilt at every spawn and resume, so it follows updates
     if extra:
         env.update(extra)
     return env
+
+
+# ---------------------------------------------------------------- the CLI and the PATH
+
+# `claude --version` prints "<version> (Claude Code)". A wrapper (a version manager's shim) may print other lines with
+# other version numbers first: take the line in that format, else a last line that starts with a version.
+_CLI_VERSION_RE = re.compile(r"^\s*(\d+)\.(\d+)\.(\d+)\s+\(Claude Code\)\s*$", re.M)
+_LEADING_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)(?![\w.])")
+_VERSION_CACHE: dict = {}
+VERSION_TIMEOUT = 5  # seconds `<cli> --version` may take; a hanging shim must not stall every spawn
+
+
+def parse_version(text) -> Optional[tuple]:
+    text = str(text or "")
+    m = _CLI_VERSION_RE.search(text)
+    if not m:
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        m = _LEADING_VERSION_RE.match(lines[-1]) if lines else None
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def fmt_version(v) -> str:
+    return ".".join(str(x) for x in v)
+
+
+def state_dir() -> Path:
+    """<hub home>/.state, or $AGENT_HUB_STATE_DIR (hub-wide)."""
+    raw = setting("AGENT_HUB_STATE_DIR")
+    return Path(raw).expanduser() if raw else root() / ".state"
+
+
+def _version_cache_file() -> Path:
+    return state_dir() / "cli-version" / "cache.json"
+
+
+def cli_version(path: str, cwd=None, persist: bool = True) -> Optional[tuple]:
+    """`<path> --version` parsed as (major, minor, patch); None when the CLI does not run, takes longer than
+    VERSION_TIMEOUT or prints no version. Cached per process, and on disk by path, size and modification time (a CLI
+    update changes them): a spawn costs no extra process. A failure is cached for the process only. The disk cache is
+    read always and written only when `persist` and the hub home exists (a dry run writes nothing)."""
+    if path in _VERSION_CACHE:
+        return _VERSION_CACHE[path]
+    try:
+        st = os.stat(shutil.which(path) or path)
+        stamp = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+    except OSError:
+        stamp = None
+    cache_file, disk = _version_cache_file(), {}
+    if stamp:
+        try:
+            disk = json.loads(cache_file.read_text(encoding="utf-8"))
+            hit = disk.get(path) if isinstance(disk, dict) else None
+            if isinstance(hit, dict) and hit.get("mtime_ns") == stamp["mtime_ns"] and hit.get("size") == stamp["size"]:
+                v = parse_version(hit.get("version"))
+                if v:
+                    _VERSION_CACHE[path] = v
+                    return v
+        except (OSError, ValueError):
+            disk = {}
+    try:
+        res = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=VERSION_TIMEOUT,
+                             stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None)
+        version = parse_version(res.stdout) if res.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        version = None
+    _VERSION_CACHE[path] = version
+    if version and stamp and persist and root().is_dir():
+        disk = disk if isinstance(disk, dict) else {}
+        disk.pop(path, None)
+        disk[path] = dict(stamp, version=fmt_version(version))
+        try:
+            atomic_write(cache_file, json.dumps(dict(list(disk.items())[-20:]), indent=1) + "\n")
+        except OSError:
+            pass
+    return version
+
+
+def desktop_cli() -> Optional[tuple]:
+    """(version, path) of the newest CLI bundled with Claude Desktop on macOS (the directory name is the version);
+    None when there is none."""
+    base = Path.home() / "Library/Application Support/Claude/claude-code"
+    found = []
+    for d in base.glob("*/claude.app/Contents/MacOS/claude"):
+        v = parse_version(d.parents[3].name)
+        if v:
+            found.append((v, str(d)))
+    return max(found) if found else None
+
+
+class Cli(NamedTuple):
+    path: str
+    version: Optional[tuple]
+    how: str  # why this one
+
+    def describe(self) -> str:
+        return f"{self.path} ({fmt_version(self.version) if self.version else 'version unknown'}; {self.how})"
+
+
+def find_claude(cwd=None, persist: bool = True) -> Optional[Cli]:
+    """The CLI the tools start. $CLAUDE_BIN (a path or a name on PATH; `desktop` = the newest CLI bundled with Claude
+    Desktop, which survives Desktop updates) wins. Otherwise the newer of `claude` on PATH and the newest bundled with
+    Claude Desktop: an old `claude` on PATH must not hold the agents back on old models (PATH keeps a tie and a
+    version it cannot read). None when there is no CLI at all. persist=False: do not write the version cache."""
+    b = setting("CLAUDE_BIN", cwd=cwd)
+    if b and b.strip().lower() == "desktop":
+        app = desktop_cli()
+        if not app:
+            raise Failure("CLAUDE_BIN=desktop, but no CLI bundled with Claude Desktop was found under "
+                          f"{Path.home() / 'Library/Application Support/Claude/claude-code'}")
+        return Cli(app[1], app[0], "CLAUDE_BIN=desktop")
+    if b:
+        return Cli(b, cli_version(b, cwd, persist), "CLAUDE_BIN")
+    on_path, app = shutil.which("claude"), desktop_cli()
+    if on_path:
+        pv = cli_version(on_path, cwd, persist)
+        if app and pv is not None and app[0] > pv:
+            return Cli(app[1], app[0], f"the newest bundled with Claude Desktop; `claude` on PATH is older: "
+                                       f"{on_path} {fmt_version(pv)}")
+        return Cli(on_path, pv, "claude on PATH" + (f"; the Claude Desktop bundle is {fmt_version(app[0])}"
+                                                    if app and app[0] != pv else ""))
+    return Cli(app[1], app[0], "bundled with Claude Desktop; no claude on PATH") if app else None
+
+
+def cli_warning(cli: Optional[Cli]) -> Optional[str]:
+    """One line when the chosen CLI is older than MIN_CLI_VERSION, else None."""
+    if cli is None or cli.version is None or cli.version >= MIN_CLI_VERSION:
+        return None
+    return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}: update "
+            "Claude Code; with an older CLI the aliases (opus, sonnet, haiku, fable) resolve to older models "
+            "(pin ids with AGENT_HUB_MODEL_MAP if you must stay on it)")
+
+
+def plugin_tools() -> list:
+    """The plugin's commands: every executable file of this bin/ without an extension (the .py files are modules)."""
+    try:
+        return sorted(p.name for p in BIN.iterdir() if "." not in p.name and p.is_file() and os.access(p, os.X_OK))
+    except OSError:
+        return []
+
+
+def shadowed_tools(path=None) -> list:
+    """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file outside this
+    bin/ (`command -v`: the first match on PATH; a symlink into this bin/ counts as ours)."""
+    path = os.environ.get("PATH", "") if path is None else path
+    out = []
+    for name in plugin_tools():
+        found = shutil.which(name, path=path)
+        if found and os.path.dirname(os.path.realpath(found)) != str(BIN):
+            out.append((name, found))
+    return out
+
+
+def shadow_warning(shadowed: list) -> Optional[str]:
+    """One line naming every shadowing path and the fix, or None."""
+    if not shadowed:
+        return None
+    names = ", ".join(f"`{n}` is {p}" for n, p in shadowed)
+    return (f"{names} — not the plugin's own tool in {BIN}. A same-named command earlier on PATH answers instead "
+            "(GitHub CLI `hub` from Homebrew is the usual one): put the plugin's bin/ first on PATH, or remove the old "
+            f"tool; until then call the plugin's tools by absolute path ({BIN}/<tool>)")
 
 
 def sessions_dir() -> Path:

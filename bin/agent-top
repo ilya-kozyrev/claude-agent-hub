@@ -8,7 +8,9 @@
 
 Shows every agent of every stage (<hub home>/<stage>/agents/<R>/): state (live / done / error / died — decided as
 `agent status` does: the pid is alive AND its command line holds the session id; else the last `result` event of
-the log), age of the last log event, model turns, context size, cost of the finished runs, the current action
+the log), the model (the id the run reported: sonnet-5-5, not the alias it was asked for), age of the last log event,
+model turns (the last run's next to the total once an agent was resumed: 31/60), context size, cost of the finished
+runs, the current action
 (the last tool_use with no tool_result yet), the last thing the agent said, unread inbox messages. Sub-agents
 (the Agent tool) of the sessions in a stage's role registry are listed too, read-only, as `<parent role>/<id>`:
 found in the parent session's transcript folder (<claude config>/projects/*/<session>/subagents/); done/error/died
@@ -202,6 +204,17 @@ def short_model(m: str, effort) -> str:
     return m + ("/" + eff if eff else "")
 
 
+def model_label(a: dict) -> str:
+    """model/effort as shown: the id the run reported ("sonnet-5-5"), else the model that was asked for."""
+    return short_model(a.get("model_id") or a["model"], a["effort"])
+
+
+def turns_label(a: dict, sep: str = "/") -> str:
+    """Turns of the agent: "29", or the last run's next to the total once a resumed run's differ ("31/60")."""
+    total = f"{a['turns']}{'+' if a['turns_approx'] else ''}"
+    return total if a["run_turns"] == a["turns"] else f"{a['run_turns']}{sep}{total}"
+
+
 def tool_brief(name: str, inp) -> tuple:
     """(headline, detail) of a tool call: what the agent is doing, and the command behind it."""
     inp = inp if isinstance(inp, dict) else {}
@@ -245,6 +258,8 @@ class LogState:
     def reset(self):
         self.ino, self.offset, self.size, self.mtime = None, 0, 0, 0.0
         self.turn_ids, self.sub_ids, self.n_anon = set(), set(), 0
+        self.run_turn_ids, self.run_n_anon = set(), 0   # the same for the last run (a resumed session logs one init per run)
+        self.model = None                 # the id the last run's init event reports (what an alias resolved to)
         self.events = self.inits = self.tool_calls = 0
         self.pending = {}                 # tool_use_id -> {"tool", "text", "detail", "ts"}
         self.last_text, self.last_text_ts = "", None
@@ -261,6 +276,10 @@ class LogState:
     @property
     def turns(self) -> int:
         return len(self.turn_ids) + self.n_anon
+
+    @property
+    def run_turns(self) -> int:
+        return len(self.run_turn_ids) + self.run_n_anon
 
     @property
     def sub_turns(self) -> int:
@@ -326,6 +345,10 @@ class LogState:
             if re.search(rb'"subtype"\s*:\s*"init"', line[:300]):
                 self.running, self.inits = True, self.inits + 1
                 self.pending.clear()
+                self.run_turn_ids, self.run_n_anon = set(), 0
+                ev = _loads(line)
+                if isinstance(ev, dict) and isinstance(ev.get("model"), str):
+                    self.model = ev["model"]
         elif typ == b"rate_limit_event":
             ev = _loads(line)
             if ev and isinstance(ev.get("rate_limit_info"), dict):
@@ -343,8 +366,10 @@ class LogState:
         mid = msg.get("id")
         if mid:
             self.turn_ids.add(mid)
+            self.run_turn_ids.add(mid)
         else:
             self.n_anon += 1
+            self.run_n_anon += 1
         usage = msg.get("usage")
         if isinstance(usage, dict):
             ctx = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
@@ -609,6 +634,7 @@ class Collector:
             "kind": "headless", "parent": None,
             "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
             "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
+            "model_id": meta.get("resolved_model") or ls.model,
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": meta.get("pid"), "session_id": meta.get("session_id"),
@@ -616,7 +642,8 @@ class Collector:
             "age_s": None if age is None else int(age),
             "last_event_at": None if mtime is None else dt.datetime.fromtimestamp(mtime, hc.TZ).isoformat(timespec="seconds"),
             "started_at": meta.get("started_at"), "runs": len(meta.get("runs") or []),
-            "turns": ls.turns, "sub_turns": ls.sub_turns, "turns_approx": ls.truncated, "ctx_tokens": ls.ctx or None,
+            "turns": ls.turns, "run_turns": ls.run_turns, "sub_turns": ls.sub_turns, "turns_approx": ls.truncated,
+            "ctx_tokens": ls.ctx or None,
             "cost_usd": None if ls.cost_sum is None else round(ls.cost_sum, 4),
             "result": None if not res else {"subtype": res.get("subtype"), "is_error": bool(res.get("is_error")),
                                             "num_turns": res.get("num_turns"), "text": str(res.get("result") or "")[:400]},
@@ -651,14 +678,15 @@ class Collector:
             "kind": "subagent", "parent": prole,
             "stage": stage, "role": f"{prole}/{aid[:7]}", "dir_name": f"{prole}/{aid}",
             "tag": prec.get("tag") or prole, "title": desc or str(meta.get("agentType") or "sub-agent"),
-            "model": str(meta.get("model") or ""), "effort": ls.effort,
+            "model": str(meta.get("model") or ""), "model_id": None, "effort": ls.effort,
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": None, "session_id": aid, "retired": False, "archived": False,
             "age_s": None if age is None else int(age),
             "last_event_at": None if mtime is None else dt.datetime.fromtimestamp(mtime, hc.TZ).isoformat(timespec="seconds"),
             "started_at": None, "runs": 1,
-            "turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated, "ctx_tokens": ls.ctx or None,
+            "turns": ls.turns, "run_turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated,
+            "ctx_tokens": ls.ctx or None,
             "cost_usd": None,
             "result": None if status is None else {"subtype": status, "is_error": state == "error", "num_turns": None,
                                                    "text": ls.last_text[:400]},
@@ -824,12 +852,13 @@ def header_row(snap: dict, width: int, view_label: str) -> Row:
     return Row(bits + [(" " * fillw, "head"), (clock, "head")], fill="head")
 
 
-def list_layout(width: int, multi: bool) -> list:
-    """Columns [(name, width)] that fit; the last text column takes what is left."""
+def list_layout(width: int, multi: bool, turns_w: int = 5) -> list:
+    """Columns [(name, width)] that fit; the last text column takes what is left. turns_w: the TURN column grows when
+    a resumed agent shows "last run/total"."""
     cols = [("glyph", 2), ("role", 10)]
     if multi:
         cols.insert(1, ("stage", 8))
-    optional = [("state", 7, 90), ("tag", 15, 122), ("model", 14, 100), ("age", 6, 0), ("turns", 5, 0),
+    optional = [("state", 7, 90), ("tag", 15, 122), ("model", 14, 100), ("age", 6, 0), ("turns", turns_w, 0),
                 ("ctx", 5, 78), ("cost", 6, 96), ("unread", 3, 60)]
     for name, w, min_w in optional:
         if width >= min_w:
@@ -872,11 +901,11 @@ def cell(a: dict, name: str, w: int):
     if name == "task":
         return pad(clip(task_text(a), w - 1), w), "norm"
     if name == "model":
-        return pad(short_model(a["model"], a["effort"]), w), "dim"
+        return pad(model_label(a), w), "dim"
     if name == "age":
         return rj(fmt_age(a["age_s"]), w), ("warn" if a["quiet"] else "norm")
     if name == "turns":
-        return rj(f"{a['turns']}{'+' if a['turns_approx'] else ''}", w), "norm"
+        return rj(turns_label(a), w), "norm"
     if name == "ctx":
         return rj(fmt_k(a["ctx_tokens"]), w), "dim"
     if name == "cost":
@@ -913,7 +942,7 @@ def detail_rows(a, width: int) -> list:
     if not a:
         return []
     rows = [R(("─" * width, "dim"))]
-    head = f" {a['role']} · {a['tag']} · {short_model(a['model'], a['effort'])} · {WORD[a['state']]}" + \
+    head = f" {a['role']} · {a['tag']} · {model_label(a)} · {WORD[a['state']]}" + \
            (f" pid {a['pid']}" if a["alive"] and a["pid"] else "") + f" · {fmt_age(a['age_s'])} ago"
     rows.append(R((clip(head, width), "bold")))
     if a["title"]:
@@ -932,7 +961,7 @@ def list_rows(snap: dict, width: int, sel_key, height=None, detail: bool = True)
     """(rows, index of the selected agent row) for the list view; height=None — no windowing (--once)."""
     agents = snap["agents"]
     multi = len({a["stage"] for a in agents}) > 1
-    cols = list_layout(width, multi)
+    cols = list_layout(width, multi, max([5] + [dispw(turns_label(a)) + 1 for a in agents]))
     rows = [list_head_row(cols, width)]
     if not agents:
         rows.append(R((" no agents (a — show all, including old ones)", "dim")))
@@ -953,9 +982,10 @@ def card_rows(a: dict, width: int) -> list:
     rows = []
     g, st = GLYPH[a["state"]]
     state = ("quiet " if a["quiet"] else "") + WORD[a["state"]] + (f" pid {a['pid']}" if a["alive"] and a["pid"] else "")
-    rows.append(R((f" {g} ", st), (a["role"], "bold"), (f" · {a['stage']} · {short_model(a['model'], a['effort'])} · ", "dim"),
+    rows.append(R((f" {g} ", st), (a["role"], "bold"), (f" · {a['stage']} · {model_label(a)} · ", "dim"),
                   (state, st), (f" · {fmt_age(a['age_s'])} ago", "warn" if a["quiet"] else "dim")))
-    bits = [f"tag {a['tag']}", f"turns {a['turns']}{'+' if a['turns_approx'] else ''}" + (f" (+{a['sub_turns']} sub-agent turns)" if a["sub_turns"] else ""), f"ctx {fmt_k(a['ctx_tokens'])}",
+    bits = [f"tag {a['tag']}", f"turns {turns_label(a, ' (total ')}{')' if a['run_turns'] != a['turns'] else ''}"
+            + (f" (+{a['sub_turns']} sub-agent turns)" if a["sub_turns"] else ""), f"ctx {fmt_k(a['ctx_tokens'])}",
             f"$ {fmt_cost(a['cost_usd'])}", f"runs {a['runs']}"]
     rows += wrap_rows(" · ".join(bits), width, "dim", " ", "   ")
     if a["title"]:
@@ -1191,7 +1221,9 @@ def render_widget(snap: dict) -> str:
         if a["quiet"]:
             word, tone = "quiet", "warning"
         now, _ = what_now(a)
-        meta = [short_model(a["model"], a["effort"]), f"{fmt_age(a['age_s'])} ago", f"{a['turns']} turn{'' if a['turns'] == 1 else 's'}"]
+        turns = f"{a['run_turns']} turns (total {a['turns']})" if a["run_turns"] != a["turns"] else \
+            f"{a['turns']} turn{'' if a['turns'] == 1 else 's'}"
+        meta = [model_label(a), f"{fmt_age(a['age_s'])} ago", turns]
         if a["cost_usd"] is not None:
             meta.append(fmt_cost(a["cost_usd"]))
         if a["unread"]:

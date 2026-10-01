@@ -62,8 +62,8 @@ Platform: macOS or Linux (Windows is not supported; see the [README](../README.m
 Requirements and the permissions note are in the [README](../README.md#install). Read the permissions note before your
 first agent: headless agents run with `bypassPermissions` by default.
 
-Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill. A
-new, empty project may skip it for now: the hub offers it when it is needed. The skill asks which branches are
+Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill
+(a new, empty project: see [A new, empty project](#a-new-empty-project)). The skill asks which branches are
 protected, whether the project has environments or other resources that two sessions must not change at once (staging,
 a deploy window, a migration chain), and which commands touch each; writes `.agent-hub/lock-rules.json` and
 `config.json`; and proves the rules with `lock rules check`. A project with no deployment ends with `main-merge` only,
@@ -76,6 +76,15 @@ You do not need every tool on day one. One hub and a few agents need three: **`a
 than one interactive session, more than one shift, or a shared resource. The walkthrough below uses them in the order
 they come up; skip what you do not need yet. The night queue and the night nudge are optional modules for macOS with
 Claude Desktop and do not appear here.
+
+A small change the hub may make itself; say "through agents" if you want otherwise. The hub does not ask you how to run
+the work (agents or not, worktrees, commits): it decides, says so in one line and records the decision.
+
+### A new, empty project
+
+A new, empty project may skip `agent-hub:setup` for now: the hub offers it when it is needed. A repository with no
+commits cannot start an agent in a worktree (`agent spawn --worktree` refuses it), so the hub makes the first commit
+itself and says so in one line.
 
 ## Step by step
 
@@ -157,6 +166,9 @@ Go.
 
 - **Hub:** starts one background `jwait` that wakes it when a `DONE`, `BLOCKED`, `EXIT` or `QUESTION` line addressed to
   it appears. No polling, no `sleep` loops.
+  The hub must be an interactive session (Claude Desktop or a terminal session): there its background `jwait` wakes
+  it. A hub run as `claude -p` has its background `jwait` killed when the turn ends and learns about `DONE` only from
+  its next message.
 - **Agents:** work, commit often, and write to the journal only on events. They read their inbox after every major
   step.
 - **You:** do something else. Closing the chat does not stop agents (see [When you are not needed](#when-you-are-not-needed)).

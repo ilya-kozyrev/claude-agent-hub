@@ -9,7 +9,9 @@ description: Tools and recommended rules for a stage hub — the one interactive
 
 Do these before anything else, in this order:
 
-1. `hub start --stage <S> --session "$CLAUDE_CODE_SESSION_ID"` — S is a short name for the goal (*Starting a stage*).
+1. `hub start --stage <S> --session "$CLAUDE_CODE_SESSION_ID"` — S is a short name for the goal (*Starting a stage*). If
+   `hub` answers with an error such as `invalid choice` or `not a git command`, another `hub` (GitHub CLI) is ahead of
+   the plugin's on PATH: run `${CLAUDE_PLUGIN_ROOT}/bin/hub start …` and tell the owner in one line.
 2. `ask search <words of the goal>` — decisions already on record are settled.
 3. One round of questions, each as "Q1 … → Recommendation: …", then a plan (*Planning a stage*). Write no code and
    start no agents before the owner approves the plan.
@@ -27,8 +29,10 @@ they share is a file:
 | `<stage>/questions.md` — owner questions and agents' own decisions | `ask` | `ask`, SessionStart hook, `hub` digest |
 | `board.md` — locks on shared resources (merges to main and whatever the project names) | `lock`, `hub takeover` | the `board_locks` hook |
 
-The tools are on PATH while the plugin is enabled (`${CLAUDE_PLUGIN_ROOT}/bin`); each has `--help` with the full
-syntax. Stage: `--stage`, else `$HUB_STAGE`, else `default`. The hub's tag is `hub-<N>` (N = shift number, derived).
+The tools are on PATH while the plugin is enabled (`${CLAUDE_PLUGIN_ROOT}/bin`, after the user's own entries: an older
+command of the same name — GitHub CLI `hub` from Homebrew, an old `jlog` — can answer instead; if `hub start` or the
+session start says so, call the tools as `${CLAUDE_PLUGIN_ROOT}/bin/<tool>` and tell the owner in one line); each has
+`--help` with the full syntax. Stage: `--stage`, else `$HUB_STAGE`, else `default`. The hub's tag is `hub-<N>` (N = shift number, derived).
 
 **Minimal mode.** One hub and a few agents need `hub start` once (it gives the hub its journal tag) and then three
 tools: `agent` (spawn, status, send, stop), `jlog` and `jwait`. `roles`, `ask`, `lock`, `hub takeover/handoff` and the
@@ -42,6 +46,8 @@ directory, registers you as `hub-1`, writes the start line and prints the first 
 `$CLAUDE_CODE_SESSION_ID` in a terminal session (`echo $CLAUDE_CODE_SESSION_ID`); in Claude Desktop, the `local_…` id of
 the session. Run it from the project's checkout so its `.agent-hub/` is found. If that checkout has no `.agent-hub/`
 yet, offer the `agent-hub:setup` skill: it asks which shared resources the project has and writes the lock rules.
+`hub start` prints an ATTENTION line when the Claude Code CLI is older than 2.1.285 (the model aliases then resolve to
+older models: tell the owner to update Claude Code) or when a same-named command shadows one of the plugin's tools.
 
 ## Taking over a shift
 
@@ -122,7 +128,17 @@ settle the open decisions with the owner, in this order:
 
 For an owner who is not technical, one question is mandatory: "How will you open the result, and where should it live?",
 with a recommendation. For something that runs in a browser, recommend a static site (GitHub Pages or an Artifact),
-not "run a server on your Mac": a server dies with the laptop and the owner cannot restart it.
+not "run a server on your Mac": a server dies with the laptop and the owner cannot restart it. Hand the result over so
+that the owner does not have to look for it: open it yourself (`open <path>` on macOS) or give a `file://` link, never
+a long path to find and double-click.
+
+Put every question in the owner's words, about the product and what they will see: no canvas, localStorage, branch,
+worktree, commit or push to an owner who is not technical. Purely technical choices (canvas or DOM, localStorage, branch
+names) are yours: decide, and record each with `ask decided`, so it stays contestable.
+
+Ask the owner nothing about process: agents or not, worktrees, commits. Pick the launch by the criteria of "Choosing how
+to launch work". If you decide to write a change yourself, say so in one line with the reason ("one file, nothing to
+wait on: I write it myself") and record it with `ask decided`.
 
 Skip the grilling for a task whose decisions are all on record or that the owner specified completely; say so in one
 line.
@@ -131,7 +147,9 @@ line.
 
 Decide from what is visible before the start — what the work does and who must reach it. The first "yes" decides
 (table, modes and the experiments behind them: `${CLAUDE_PLUGIN_ROOT}/docs/launch-modes.md`). Estimated duration is a
-hint, never the criterion: a hub cannot estimate task time reliably.
+hint, never the criterion: a hub cannot estimate task time reliably. The owner is not asked which launch to use. When
+no row applies — a small change with nothing to wait on and nobody else to reach it — the hub may write it itself: one
+line with the reason, and `ask decided` (*Planning a stage*).
 
 1. **A review** → `hub reviewer --for <class>`, then start what it prints (*Reviews*, below).
 2. **The owner should talk to it** → a Desktop session, or `claude --bg` for an owner who lives in a terminal.
@@ -171,11 +189,12 @@ code** before acting on it — a review is a colleague's opinion. Classes, the c
 
 - Work that commits, pushes or waits (a merge steward, a rehearsal, a CI wait — see "Choosing how to launch work") is
   a headless agent, not an in-session sub-agent:
-  `agent spawn --role R --cwd DIR --model opus|sonnet|haiku [--effort high] --brief FILE [--worktree [BRANCH]]`.
+  `agent spawn --role R --cwd DIR --model opus|sonnet|haiku|fable [--effort high] --brief FILE [--worktree [BRANCH]]`.
   It survives the hub's handoff and any hub can talk to it. The executor's tag is `hub-<N>-<role>` (a sub-tag
   `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it). A run that ends abnormally or
   without a status word leaves `EXIT <role>: …` in the journal under its tag.
-  `agent status [R]` — alive or not, age of the last event, turns, the last line it said, its worktree.
+  `agent status [R]` — alive or not, the model it runs on, age of the last event, turns (the last run's next to the total
+  after a resume), the last line it said, its worktree.
   `agent send R "…"` — alive: into its inbox and the journal; process gone: the session resumes with this message and
   replays the unread inbox. `agent stop R` — stop it and retire the role. An agent's question arrives as
   `@hub QUESTION …`; answer with `agent send`.
@@ -185,10 +204,14 @@ code** before acting on it — a review is a colleague's opinion. Classes, the c
 - **Worktrees.** Two agents writing in one checkout overwrite each other's files. Give every agent that writes code
   `--worktree [BRANCH]` (default branch `agent/<role>`): it runs in an existing worktree of that branch, or in
   `<repo>/.worktrees/<branch>` of the main repository — one place per repository, excluded in `.git/info/exclude`.
+  `agent spawn --worktree` refuses a repository with no commits: in a new, empty one the hub makes the first commit
+  itself and says so in one line.
   Nothing removes a worktree; at handoff list them (`git worktree list`) and remove the finished ones
   (`git worktree remove <path>`).
-- Model and effort: pass them per agent. Defaults are configurable (`AGENT_HUB_DEFAULT_EFFORT`, `AGENT_HUB_MODEL_MAP`,
-  `AGENT_HUB_PERMISSION_MODE`); headless runs default to `bypassPermissions` because nobody is there to approve a tool
+- Model and effort: pass them per agent. An alias (`opus`, `sonnet`, `haiku`, `fable`) is resolved by the CLI to its
+  latest model, so read the id in `agent spawn`'s journal line; if `agent spawn` or `hub start` warns that the CLI is
+  older than 2.1.285, tell the owner to update Claude Code (an old CLI runs older models). Defaults are configurable
+  (`AGENT_HUB_DEFAULT_EFFORT`, `AGENT_HUB_MODEL_MAP` — an opt-in pin, `AGENT_HUB_PERMISSION_MODE`); headless runs default to `bypassPermissions` because nobody is there to approve a tool
   call — give such an agent a brief that says what it must not touch.
 - A brief follows `${CLAUDE_PLUGIN_ROOT}/templates/brief-executor-template.md` (short); the advanced one,
   `brief-executor-advanced.md`, adds production permissions, size limits and evidence rules for teams that need them.

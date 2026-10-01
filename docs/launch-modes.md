@@ -101,6 +101,11 @@ a 19-minute sub-agent completed, E12; `AGENT_HUB_BG_WAIT_CEILING_MS` sets anothe
 both. The executor reports for its sub-agents — they do not write the journal, because the hub's `jwait` wakes on any
 `DONE` line.
 
+The ceiling covers background sub-agents, not background Bash tasks: in a `claude -p` run a background Bash command
+such as `jwait` is killed when the turn ends. A hub run as `claude -p` therefore learns about `DONE` only from its next
+message. The hub is an interactive session (Claude Desktop, or a terminal session), where its background `jwait` wakes
+it.
+
 ## Starting a headless agent from the hub
 
 Run `agent spawn` as a normal (foreground) Bash call: it returns within seconds, once the agent's run has started.

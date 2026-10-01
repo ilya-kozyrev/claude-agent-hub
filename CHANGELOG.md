@@ -3,8 +3,8 @@
 ## Unreleased
 
 A newcomer test showed that a smaller model given "Use the agent-hub hub skill. …" never loaded the `hub` skill and
-wrote the code itself, while a first message starting with `/agent-hub:hub` loaded it. Docs and skill text only; no
-code changed.
+wrote the code itself, while a first message starting with `/agent-hub:hub` loaded it. The first group of changes below
+is docs and skill text only.
 
 - **The first message starts with `/agent-hub:hub`** in `docs/getting-started.md` (step 1, the takeover line, the
   sample session) and the README Quickstart, with the reason: the slash command always loads the skill, a
@@ -24,6 +24,53 @@ code changed.
   ports left by the project (`lsof -iTCP -sTCP:LISTEN`).
 - **Writing into another stage's journal** takes your own tag, not `hub`: that stage's `jwait --tag hub` treats `hub`
   lines as its own and does not wake.
+
+A second newcomer test took a Sonnet 5.5 hub through the whole flow (grilling, `hub start`, an agent in a worktree, an
+Opus review, a fix round, a merge). It found agents running on old models, tools shadowed by same-named commands, and
+a hub that talked the owner out of using agents.
+
+- **Agents run on the latest models by default, through the CLI.** An alias (`opus`, `sonnet`, `haiku`, `fable`) is
+  resolved by the Claude Code CLI; the plugin pins no ids (they go stale with the next model release), and
+  `AGENT_HUB_MODEL_MAP` stays an opt-in pin. Claude Code 2.1.285 resolves them to `claude-sonnet-5-5`,
+  `claude-opus-5-5`, `claude-haiku-4-5-20251001` and `claude-fable-5-1`; 2.1.274 resolved `sonnet` to `claude-sonnet-5`.
+  - Without `CLAUDE_BIN`, `agent spawn` starts the newer of `claude` on `PATH` and the CLI bundled with Claude Desktop
+    (a tie or an unreadable version keeps `PATH`) and prints which one it took and why.
+  - The model id the run reports in its init event is recorded in the agent's meta (`resolved_model`) and shown by the
+    `started headless agent` journal line (`claude-sonnet-5-5/high, asked for sonnet`), `agent status`, and `agent-top`
+    (screen, `--once`, the widget, `--json` as `model_id`): `sonnet-5-5`, not `sonnet`.
+  - `agent spawn` and `hub start` warn once when the CLI is older than 2.1.285: update Claude Code, an older CLI
+    resolves the aliases to older models. The version is read from the `<version> (Claude Code)` line of
+    `claude --version` (a shim's other lines are ignored), with a 5 s limit, and remembered by path, size and
+    modification time in `<hub home>/.state/cli-version/`; `hub start --dry-run` writes nothing.
+  - `fable` is accepted wherever `opus`, `sonnet` and `haiku` are: `agent spawn --model`, `hub reviewer`
+    (`AGENT_HUB_REVIEW_MODEL`, a reviewer's `model`), the effort rules, the docs.
+- **Tool isolation.** An agent's brief footer names `jlog` as `"$HUB_BIN/jlog"`: a shell may put an old `jlog` ahead of
+  the plugin's, and its `DONE` would go to a journal the hub never reads. `HUB_BIN` is the plugin's `bin/`, exported in
+  the agent's environment and rebuilt at every spawn and resume, so a resumed agent follows a plugin update (a path
+  written into the brief would point into a version directory that is removed later). The agent already started with the
+  plugin's `bin/` first on its `PATH`; a test now holds that. `hub start` and a new SessionStart hook
+  (`hooks/path_shadow.py`) warn once when any command of the plugin (every executable in its `bin/`) resolves outside
+  it, naming the path and the fix. The hook does nothing until a hub home exists, then speaks every time inside the
+  hub's scope and once per distinct set of paths elsewhere. The usual cause is GitHub CLI `hub` from Homebrew (README).
+- **`agent send` signs its journal line with the caller's tag**: `HUB_TAG`, else the roles-registry entry of the calling
+  session (the hub keeps `hub-<N>`), else `cli`; it was `hub` for everyone, so a hub did not recognise a line written by
+  someone else and a newcomer was alarmed.
+- **Turns per run.** `agent status` and `agent-top` show the last run's turns next to the total once an agent was resumed
+  (`turns 31 (total 60)`; `31/60` in the agent-top list), and so does the `EXIT` line.
+- **`agent spawn --worktree` in a repository with no commits** fails with "the repository has no commits yet — make a
+  first commit" and leaves nothing behind (it used to fail inside `git worktree add`). The check applies only where a
+  new branch is made from `HEAD`: an existing branch works beside an unborn `HEAD`. The hub skill makes the first
+  commit itself and says so in one line.
+- **The `hub` skill, § Planning and § Choosing how to launch work:** the owner is asked nothing about process (agents or
+  not, worktrees, commits); the hub picks the launch by the section's criteria and, when it writes a small change itself,
+  says so in one line with the reason and records `ask decided`. Questions to the owner are in the owner's words; purely
+  technical choices (canvas, localStorage, branch names) are the hub's, recorded with `ask decided` so they stay
+  contestable. For a non-technical owner the hub opens the result (`open <path>`) or gives a `file://` link, never a
+  long hidden path. Getting started: "A small change the hub may make itself; say 'through agents' if you want
+  otherwise" and a short "A new, empty project" section that also holds the setup-skip sentence.
+- **Limitations.** In `claude -p` the hub's background Bash `jwait` is killed when the turn ends;
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` keeps background sub-agents alive, not background Bash tasks, so a headless hub
+  learns about `DONE` only from its next message (README, `docs/launch-modes.md`, getting started).
 
 ## 0.5.0 — 2026-10-01
 
