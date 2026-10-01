@@ -16,14 +16,14 @@ New here? Start with [Getting started](docs/getting-started.md) — from an idea
 
 A single chat session is a poor place to run a week of work:
 
-- **Context runs out.** Every tool result stays in the conversation. After a few hours of builds, logs and diffs the
-  session is slow, expensive, and forgets the plan it made in the morning.
-- **Nothing runs in parallel for long.** An in-session sub-agent blocks or dies with its parent; a two-hour test run or a
-  merge queue does not fit.
-- **Handoffs lose work.** A new session starts from a summary; who was doing what, what the owner already decided and
-  which resource is taken all live in the old transcript.
-
-agent-hub splits the roles:
+- **Long sessions get slower, worse and more expensive.** Claude Code sends the whole conversation with every request,
+  so each turn costs as much as the history behind it. In one project 16 % of a coordinator's turns were pipeline
+  polls, each re-reading 300–600k tokens of context.
+- **Subagents work within one session.** They are the right tool for a search or a log read, but they report only to
+  the session that spawned them, into its context. Work that runs for hours, must outlive the session or must
+  be reachable by others goes to a headless `claude -p` agent that reports one journal line per event.
+- **`/compact` is a summary you do not choose.** A handoff is a short file with a fixed structure, written before the
+  context is full and readable by a person and by the next session; decisions, questions and locks live in files.
 
 ```
  BEFORE: one session does everything              AFTER: the hub plans, agents work, files remember
@@ -38,13 +38,8 @@ agent-hub splits the roles:
                                                  a new hub reads the handoff and takes over; agents keep going
 ```
 
-- The **hub** keeps only decisions and synthesis in its context; heavy work happens in agents with their own context.
-- **Agents** are ordinary `claude -p` sessions started detached, with a fixed session id: they survive the hub, and
-  any later hub can message or resume them.
-- The **journal** is the one channel: agents write one line per event (`DONE`, `BLOCKED`, a question); the hub sleeps
-  in `jwait` until a line addressed to it appears.
-- The **question register** keeps what the owner was asked and what they answered, so no hub asks twice.
-- The **lock board** says who may merge main or use staging right now, and a hook enforces it.
+The full argument, with numbers and a comparison with Claude Code's own subagents and `/compact`:
+[Why a hub and headless agents](docs/why.md).
 
 ## How it works
 
