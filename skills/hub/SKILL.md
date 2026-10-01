@@ -1,9 +1,18 @@
 ---
 name: hub
-description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm.
+description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions agent-hub or "the hub skill", or asks you to plan work for agents or to run work through agents.
 ---
 
 # Stage hub: tools and recommended rules
+
+## First commands
+
+Do these before anything else, in this order:
+
+1. `hub start --stage <S> --session "$CLAUDE_CODE_SESSION_ID"` — S is a short name for the goal (*Starting a stage*).
+2. `ask search <words of the goal>` — decisions already on record are settled.
+3. One round of questions, each as "Q1 … → Recommendation: …", then a plan (*Planning a stage*). Write no code and
+   start no agents before the owner approves the plan.
 
 A **stage** is one stream of work (a release, a migration, a sprint) with its own directory under the hub home
 (`$AGENT_HUB_HOME`, default `~/.claude/agent-hub`). The **hub** is the one interactive session that plans the stage,
@@ -82,7 +91,9 @@ journal, no cron, no `sleep` loops.
 ## Talking
 
 - `jlog "text"` — a journal line with your tag (`--tag`, `$HUB_TAG` or the registry). The journal is append-only:
-  never rewrite or delete a line; correct it with a new line that says what it corrects.
+  never rewrite or delete a line; correct it with a new line that says what it corrects. When you write into another
+  stage's journal, use your own tag (`--tag`), not `hub`: that stage's `jwait --tag hub` treats `hub` lines as its own
+  and does not wake.
 - `roles list | get <role> | set <role> <id> | retire` — the stage's role registry with full session ids; `set` infers
   the kind from the id (`local_…` = Claude Desktop, a uuid = terminal). The address for SendMessage between
   interactive sessions is only ever `roles get <role>`. `roles broadcast --to r1,r2|--all "text"` — rows for
@@ -108,6 +119,10 @@ settle the open decisions with the owner, in this order:
    `ask close <id> --answer "<answer>"`. A matter the owner left to you is `ask decided`.
 4. Only then propose the plan and the briefs; their "Owner decisions — do not reopen" section comes from
    `ask search`, not from memory.
+
+For an owner who is not technical, one question is mandatory: "How will you open the result, and where should it live?",
+with a recommendation. For something that runs in a browser, recommend a static site (GitHub Pages or an Artifact),
+not "run a server on your Mac": a server dies with the laptop and the owner cannot restart it.
 
 Skip the grilling for a task whose decisions are all on record or that the owner specified completely; say so in one
 line.
@@ -164,6 +179,9 @@ code** before acting on it — a review is a colleague's opinion. Classes, the c
   `agent send R "…"` — alive: into its inbox and the journal; process gone: the session resumes with this message and
   replays the unread inbox. `agent stop R` — stop it and retire the role. An agent's question arrives as
   `@hub QUESTION …`; answer with `agent send`.
+- **Background processes.** An executor lists the processes it started in the background (servers, watchers) in its
+  report and stops them before `DONE`. At handoff the hub checks for listening ports left by the project
+  (`lsof -iTCP -sTCP:LISTEN`) and stops what the project started and nobody needs.
 - **Worktrees.** Two agents writing in one checkout overwrite each other's files. Give every agent that writes code
   `--worktree [BRANCH]` (default branch `agent/<role>`): it runs in an existing worktree of that branch, or in
   `<repo>/.worktrees/<branch>` of the main repository — one place per repository, excluded in `.git/info/exclude`.

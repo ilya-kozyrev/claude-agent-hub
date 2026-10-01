@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+A newcomer test showed that a smaller model given "Use the agent-hub hub skill. …" never loaded the `hub` skill and
+wrote the code itself, while a first message starting with `/agent-hub:hub` loaded it. Docs and skill text only; no
+code changed.
+
+- **The first message starts with `/agent-hub:hub`** in `docs/getting-started.md` (step 1, the takeover line, the
+  sample session) and the README Quickstart, with the reason: the slash command always loads the skill, a
+  plain-language mention may be ignored by a smaller model.
+- **Getting started says what you should see** after the first message: the stage start line (`hub-1`) and a round of
+  questions Q1, Q2 … each with a recommendation; if they are missing, the skill did not load.
+- **Setup may be skipped in a new, empty project** (getting-started and README say so; the hub offers
+  `agent-hub:setup` when it is needed). The README names the order: install, first message, setup per repository.
+- **The `hub` skill describes more triggers**: the user mentions agent-hub or "the hub skill", or asks to plan work for
+  agents or to run work through agents.
+- **The `hub` skill opens with "First commands"**: `hub start`, `ask search`, one round of questions with a
+  recommendation each, then a plan; no code and no agents before the owner approves it.
+- **Grilling a non-technical owner** now has a mandatory question, "How will you open the result, and where should it
+  live?", with a recommendation for a static site (GitHub Pages or an Artifact) over a server on the owner's machine.
+- **Background processes.** The hub skill (§ Executors) and the executor brief template tell an executor to list the
+  servers and watchers it started in its report and stop them before DONE; at handoff the hub checks for listening
+  ports left by the project (`lsof -iTCP -sTCP:LISTEN`).
+- **Writing into another stage's journal** takes your own tag, not `hub`: that stage's `jwait --tag hub` treats `hub`
+  lines as its own and does not wake.
+
 ## 0.5.0 — 2026-10-01
 
 Reviewers become a setting, the launch choice rests on what is visible before the start instead of an estimated

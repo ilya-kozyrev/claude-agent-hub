@@ -62,11 +62,12 @@ Platform: macOS or Linux (Windows is not supported; see the [README](../README.m
 Requirements and the permissions note are in the [README](../README.md#install). Read the permissions note before your
 first agent: headless agents run with `bypassPermissions` by default.
 
-Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill. It
-asks which branches are protected, whether the project has environments or other resources that two sessions must not
-change at once (staging, a deploy window, a migration chain), and which commands touch each; writes
-`.agent-hub/lock-rules.json` and `config.json`; and proves the rules with `lock rules check`. A project with no
-deployment ends with `main-merge` only, which is a complete setup. Commit `.agent-hub/`.
+Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill. A
+new, empty project may skip it for now: the hub offers it when it is needed. The skill asks which branches are
+protected, whether the project has environments or other resources that two sessions must not change at once (staging,
+a deploy window, a migration chain), and which commands touch each; writes `.agent-hub/lock-rules.json` and
+`config.json`; and proves the rules with `lock rules check`. A project with no deployment ends with `main-merge` only,
+which is a complete setup. Commit `.agent-hub/`.
 
 ### Start small
 
@@ -80,10 +81,12 @@ Claude Desktop and do not appear here.
 
 ### 1. Open a session in your repo and describe the idea
 
-Start Claude Code in the repository you want to change (this chat becomes the **hub**) and say what you want, plainly:
+Start Claude Code in the repository you want to change (this chat becomes the **hub**) and say what you want, plainly.
+Start the message with `/agent-hub:hub`: the slash command always loads the skill, while a plain-language mention of it
+may be ignored by a smaller model, which then plans and codes on its own.
 
 ```text
-Use the agent-hub hub skill. I want CSV export on the reports page of this web app: a button that downloads
+/agent-hub:hub I want CSV export on the reports page of this web app: a button that downloads
 the table as CSV, filtered the same way as the table. Plan it as one stage called csv-export. Don't start
 anything before I approve the plan.
 ```
@@ -92,7 +95,9 @@ anything before I approve the plan.
   `hub start --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`. That creates the stage directory, registers this
   session as `hub-1`, writes the start line to the journal and prints the first `jwait` command. (If you skipped the setup
   above and the repository has no `.agent-hub/`, the hub offers the `agent-hub:setup` skill first.)
-- **You see:** the hub restating the goal.
+- **You see:** the stage start line (hub tag `hub-1`, "started stage csv-export") and a first round of questions
+  Q1, Q2 …, each with a recommendation. If they are missing, the skill did not load: start the message with
+  `/agent-hub:hub`.
 - **Wait:** seconds.
 - **Next:** answer its questions.
 
@@ -236,7 +241,7 @@ Context is getting long. Write the handoff.
   question register filled in; the hub fills the rest (first steps, queue, risks, worktrees to clean up) and tells you
   the path. It releases no locks. Agents keep running.
 - **Next session:** open a fresh chat in the repo and say
-  `Use the hub skill and take over stage csv-export from <the handoff path>.` The new hub runs
+  `/agent-hub:hub take over stage csv-export from <the handoff path>.` The new hub runs
   `hub takeover --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`, which takes over the locks, registers itself as
   the next hub (`hub-2`: the number is derived from the registry; `--n` overrides it), and prints a digest of the
   handoff, the register and the live agents.
@@ -246,7 +251,7 @@ Context is getting long. Write the handoff.
 Synthetic. Lines starting with `#` are annotations, not part of the chat.
 
 ```text
-You:  Use the agent-hub hub skill. Add CSV export to the reports page. One stage, csv-export. Plan first, start nothing.
+You:  /agent-hub:hub Add CSV export to the reports page. One stage, csv-export. Plan first, start nothing.
 # the hub loads the skill and reads the repo
 Hub:  No earlier decisions on "csv export" in the register. Grilling, round 1:
       Q1 Which columns? → recommended: visible ones, table order.

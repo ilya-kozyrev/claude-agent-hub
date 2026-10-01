@@ -20,4 +20,5 @@ brief-executor-advanced.md. -->
 
 ## Stop
 <Where to stop: e.g. "push the branch and open a PR; do not merge". What not to touch.> At most <N> turns.
-Commit work in progress before long test runs.
+Commit work in progress before long test runs. List the processes you started in the background (servers, watchers)
+in your report and stop them before DONE.

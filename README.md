@@ -174,6 +174,9 @@ supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itse
 /plugin install agent-hub@claude-agent-hub
 ```
 
+The order: install, then your first message `/agent-hub:hub …` in the repository (see [Quickstart](#quickstart)), then
+[`agent-hub:setup`](#after-install-run-agent-hubsetup-in-each-repository) once per repository.
+
 > **Permissions.** Headless agents run with `--permission-mode bypassPermissions` by default: a `claude -p` run has
 > nobody to approve a prompt, and any other mode silently stalls on the first blocked tool. Treat every agent as a
 > process with your user's rights — say in its brief what it must not touch, run it in a worktree or sandbox, or set
@@ -201,12 +204,12 @@ supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itse
 
 ### After install: run `agent-hub:setup` in each repository
 
-Ask Claude to use the `agent-hub:setup` skill in the repository's checkout. It looks at the repository, then asks one
-round of numbered questions with a recommended answer for each: which branches are protected, which environments two
-sessions must not change at once, which commands touch each. It writes `.agent-hub/lock-rules.json` and
-`.agent-hub/config.json` and proves the rules with positive and negative checks (`lock rules check`). A project with no
-deployment ends with `main-merge` only, and that is a complete setup. Commit `.agent-hub/`: it is the team's shared
-convention (see [Team use](#team-use)).
+Ask Claude to use the `agent-hub:setup` skill in the repository's checkout. A new, empty project may skip it for now:
+the hub offers it when it is needed. It looks at the repository, then asks one round of numbered questions with a
+recommended answer for each: which branches are protected, which environments two sessions must not change at once,
+which commands touch each. It writes `.agent-hub/lock-rules.json` and `.agent-hub/config.json` and proves the rules
+with positive and negative checks (`lock rules check`). A project with no deployment ends with `main-merge` only, and
+that is a complete setup. Commit `.agent-hub/`: it is the team's shared convention (see [Team use](#team-use)).
 
 ### Recommended companion: grilling
 
@@ -231,7 +234,9 @@ optional modules for macOS with Claude Desktop.
 
 ## Quickstart
 
-Ask Claude in any session to load the `hub` skill, or run the commands yourself:
+Start the first message of a session with `/agent-hub:hub`, for example `/agent-hub:hub I want CSV export on the
+reports page …`. The slash command always loads the `hub` skill; a plain-language mention of it may be ignored by a
+smaller model, which then plans and codes on its own. Or run the commands yourself:
 
 ```bash
 export HUB_STAGE=stage-a                      # one directory per stream of work under the hub home
