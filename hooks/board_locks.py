@@ -8,20 +8,18 @@ Built-in actions (per shell segment; text inside quotes, heredocs and echo/print
   merge into main   gh pr merge …; glab mr merge|accept …;
                     gh api / glab api with -X PUT …/pulls/<n>/merge or …/merge_requests/<n>/merge;
                     git push <remote> … <ref> where the target branch is protected (main, master) -> main-merge
-Custom actions, for deploys and shared environments: <repo>/.agent-hub/lock-rules.json of the repository the
-command runs in (found from the cwd, `cd` and `git -C`), plus <hub home>/lock-rules.json (or $AGENT_HUB_LOCK_RULES);
-rules of both apply, the repository's first:
-  {"protected_branches": ["main", "master"],
-   "rules": [{"match": "\\bmake deploy-prod\\b", "kinds": ["deploy-window"], "action": "production deploy"},
-             {"match": "\\bhelm upgrade .* -n staging\\b", "kinds": ["stage"], "action": "staging rollout"}]}
+Project resources (deploy windows, shared environments, migration heads — any name the project chooses): the
+rules of <repo>/.agent-hub/lock-rules.json of the repository the command runs in (found from the cwd, `cd` and
+`git -C`), plus <hub home>/lock-rules.json (or $AGENT_HUB_LOCK_RULES); rules of both apply, the repository's first.
+Format and validation: bin/lockrules.py; `lock rules` shows, edits and checks them.
   `match` is a Python regex searched in the segment's words joined by single spaces.
-  (migration-head is informational; nothing is refused for it.)
+  A resource with no rule is informational; nothing is refused for it.
 
 Decision: an active lock of a relevant kind held by another session_id -> deny with holder, until,
 reason. Own lock, expired lock, no lock -> no decision. `# lock-ok: <reason>` anywhere in the
 command -> no decision. Fail-open: any own error (broken board, bad JSON, import failure) exits 0
 without a decision. A broken lock-rules.json (bad JSON, a rule without `match`, a bad regex, `kinds` that is not
-a non-empty list of known lock kinds) does NOT switch the guard off: that file is skipped, the built-in rules and
+a non-empty list of resource names or names an undeclared one) does NOT switch the guard off: that file is skipped, the built-in rules and
 the other file still apply, and a warning goes to stderr and to the user (`systemMessage`) on every Bash call
 until it is fixed. The same warning is given for a configured rules path that is a dangling symlink, and for
 $AGENT_HUB_LOCK_RULES naming a missing file.
@@ -46,7 +44,6 @@ _HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DOTALL | re.M
 _PRINTING = ("echo", "printf", "cat")
 _PREFIX_WORDS = ("command", "env", "sudo", "time", "nohup", "exec")
 _PUNCT = set(";&|()<>")
-DEFAULT_PROTECTED = ("main", "master")
 
 
 def plugin_bin() -> str:
@@ -167,101 +164,28 @@ def _repo_of(seg: list[str], cwd: str | None) -> str | None:
     return _git_repo_name(cwd) if cwd else None
 
 
-class RulesError(ValueError):
-    """A lock-rules.json that cannot be used."""
-
-
-def _lock_kinds() -> tuple:
+def _lockrules():
     sys.path.insert(0, plugin_bin())
-    import board  # noqa: E402
+    import lockrules  # noqa: E402
 
-    return tuple(board.KINDS)
-
-
-def _read_rules(path: str, required: bool = False) -> dict | None:
-    """One lock-rules.json; None when the file does not exist (a dangling symlink, or a missing file that was named
-    explicitly with `required`, raises RulesError: a guard that was configured must not vanish without a word)."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except FileNotFoundError:
-        if os.path.islink(path):
-            raise RulesError(f"{path} is a symlink to a missing file ({os.readlink(path)})") from None
-        if required:
-            raise RulesError(f"{path} (AGENT_HUB_LOCK_RULES) does not exist") from None
-        return None
-    except (OSError, ValueError) as e:
-        raise RulesError(f"{path}: {e}") from None
-    if not isinstance(data, dict):
-        raise RulesError(f"{path}: not a JSON object")
-    known = _lock_kinds()
-    rules = []
-    raw_rules = data.get("rules") or []
-    if not isinstance(raw_rules, list):
-        raise RulesError(f"{path}: \"rules\" must be a list")
-    for i, r in enumerate(raw_rules):
-        where = f"{path}: rule {i + 1}"
-        if not isinstance(r, dict) or not isinstance(r.get("match"), str) or not r["match"]:
-            raise RulesError(f"{where}: \"match\" must be a non-empty string")
-        kinds = r.get("kinds")
-        if not isinstance(kinds, list) or not kinds or not all(isinstance(k, str) for k in kinds):
-            raise RulesError(f"{where}: \"kinds\" must be a non-empty list of lock kinds ({', '.join(known)})")
-        unknown = [k for k in kinds if k not in known]
-        if unknown:
-            raise RulesError(f"{where}: unknown lock kind {', '.join(map(repr, unknown))} (known: {', '.join(known)})")
-        try:
-            rx = re.compile(r["match"])
-        except re.error as e:
-            raise RulesError(f"{where}: bad regex: {e}") from None
-        rules.append({"re": rx, "kinds": tuple(kinds), "action": r.get("action") or r["match"]})
-    protected = data.get("protected_branches")
-    if protected is not None and (not isinstance(protected, list) or not all(isinstance(b, str) for b in protected)):
-        raise RulesError(f"{path}: \"protected_branches\" must be a list of branch names")
-    return {"protected_branches": protected, "rules": rules}
+    return lockrules
 
 
-def rule_files(cwd: str | None) -> list[tuple[str, bool]]:
-    """The lock-rules.json files that apply to a command run in `cwd`, as (path, required): the repository's
-    <repo>/.agent-hub/lock-rules.json (if any), then the hub home's ($AGENT_HUB_LOCK_RULES overrides that one and
-    must exist)."""
-    sys.path.insert(0, plugin_bin())
-    import hubcore  # noqa: E402
-
-    out = []
-    proj = hubcore.project_dir(cwd) if cwd else None
-    if proj:
-        out.append((str(proj / hubcore.CONFIG_DIRNAME / "lock-rules.json"), False))
-    env = os.environ.get("AGENT_HUB_LOCK_RULES")
-    out.append((env, True) if env else (str(hubcore.root() / "lock-rules.json"), False))
-    return out
-
-
-_RULES_CACHE: dict = {}
 WARNINGS: list = []
 
 
+def rule_files(cwd: str | None) -> list[tuple[str, bool]]:
+    """The lock-rules.json files that apply to a command run in `cwd` (see bin/lockrules.py)."""
+    return _lockrules().files(cwd)
+
+
 def load_rules(cwd: str | None = None) -> dict:
-    """Rules of every applicable file together: the repository's first, then the hub home's. Protected branches:
-    the union of the files that name them, else main and master. No file = built-ins only. A file that cannot be
-    used is skipped with a warning (WARNINGS); the others and the built-ins still apply."""
-    files = tuple(rule_files(cwd))
-    if files in _RULES_CACHE:
-        return _RULES_CACHE[files]
-    rules, protected = [], []
-    for path, required in files:
-        try:
-            data = _read_rules(path, required)
-        except RulesError as e:
-            msg = f"lock rules skipped — {e}. Its commands are NOT guarded until the file is fixed."
-            if msg not in WARNINGS:
-                WARNINGS.append(msg)
-            continue
-        if data is None:
-            continue
-        rules += data["rules"]
-        protected += [b for b in data["protected_branches"] or [] if b not in protected]
-    out = {"protected_branches": protected or list(DEFAULT_PROTECTED), "rules": rules}
-    _RULES_CACHE[files] = out
+    """Rules of every applicable file together, the repository's first, then the hub home's (bin/lockrules.py). A
+    file that cannot be used is skipped with a warning (WARNINGS); the others and the built-ins still apply."""
+    out = _lockrules().load(cwd)
+    for msg in out["warnings"]:
+        if msg not in WARNINGS:
+            WARNINGS.append(msg)
     return out
 
 

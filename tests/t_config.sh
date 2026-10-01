@@ -55,6 +55,7 @@ unset HUB_TAG CLAUDE_BIN
 
 # ---- lock: default repo from the repository config
 printf '{"AGENT_HUB_DEFAULT_REPO": "webapp"}\n' > $REPO/.agent-hub/config.json
+printf '{"resources": {"stage": "staging", "deploy-window": "production rollout"}}\n' > $R/lock-rules.json
 (cd $REPO && $B/lock take stage --until +1h --why x --force) > /dev/null; check $? 0 "lock take in the repository"
 grep -q '"kind": "stage", "repo": "webapp"' $R/board.md; check $? 0 "…recorded for the configured repo"
 (cd $OUT && $B/lock take deploy-window --until +1h --why x --force) > /dev/null

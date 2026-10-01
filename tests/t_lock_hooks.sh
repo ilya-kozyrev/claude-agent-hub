@@ -5,6 +5,9 @@
 new_home; R=$AGENT_HUB_HOME
 ME=aaaaaaaa-0000-4000-8000-000000000001; OTHER=bbbbbbbb-0000-4000-8000-000000000002
 # ---- lock CLI
+CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --until +1h --why x > $R/unknown.out 2>&1; check $? 2 "negative: a resource no lock-rules.json names is refused"
+grep -q "unknown resource 'stage'.*Known: main-merge" $R/unknown.out; check $? 0 "…with the list of known resources"
+printf '{"resources": {"stage": "the shared staging environment", "deploy-window": "a production rollout"}}\n' > $R/lock-rules.json
 CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +2h --why "merging #700" --owner-name "merge steward" >/dev/null; check $? 0 "take main-merge"
 CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "mine" >/dev/null 2>&1; check $? 1 "negative: another session's active lock refused"
 CLAUDE_CODE_SESSION_ID=$ME $B/lock release main-merge >/dev/null 2>&1; check $? 1 "negative: release of another's lock refused"

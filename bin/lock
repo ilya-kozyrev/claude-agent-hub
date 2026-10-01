@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Agent lock board: lock list | take <kind> ... | release <kind>.
+"""Agent lock board: lock list | take <resource> ... | release <resource> | rules ....
 
   lock list [--all]
-  lock take <kind> --until <when> --why <reason> [--owner-name <name>] [--value <v>]
+  lock take <resource> --until <when> --why <reason> [--owner-name <name>] [--value <v>]
             [--repo <repo>] [--force]
-  lock release <kind> [--repo <repo>] [--force]
+  lock release <resource> [--repo <repo>] [--force]
+  lock rules [show] [--json]                     resources and the commands each one guards, here
+  lock rules init [--dir D] [--protected B ...]  start <repo>/.agent-hub/lock-rules.json (+ config.json defaults)
+  lock rules add <resource> --about <text> [--match <regex> --action <text>] [--dir D]
+  lock rules check "<command>" [--dir D] [--expect <resource> | --expect-none]
+                                                 run the real hook against a board where every resource is held
+                                                 by someone else: which lock would refuse the command
+
+A resource is `main-merge` (built in) or a name from lock-rules.json (bin/lockrules.py): `take` refuses a name
+that is not configured where you run it and lists the known ones; `release` accepts any name on the board.
 
 <when>: 2026-09-25T18:00 (hub time zone if no offset), 18:00 (today), 2026-10-31 (end of day), +2h, +90m.
 The holder is $CLAUDE_CODE_SESSION_ID; --owner-name defaults to this session's sidebar title.
@@ -20,11 +29,16 @@ import argparse
 import glob
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import board  # noqa: E402
 import hubcore as hc  # noqa: E402
+import lockrules  # noqa: E402
 
 DEFAULT_REPO = hc.setting("AGENT_HUB_DEFAULT_REPO") or board.DEFAULT_REPO
 
@@ -65,6 +79,19 @@ def cmd_list(args) -> int:
 
 
 def cmd_take(args) -> int:
+    known = lockrules.load(os.getcwd())
+    try:
+        on_board = {r["kind"] for r in board.load()}
+    except board.BoardError:
+        on_board = set()
+    # A resource already on the board stays takeable (a handover of a lock taken where it was configured).
+    if args.kind not in known["resources"] and args.kind not in on_board:
+        print(f"unknown resource {args.kind!r} here ({os.getcwd()}). Known: {', '.join(known['resources'])}.\n"
+              "Add it to the repository's .agent-hub/lock-rules.json (`lock rules add`, or the agent-hub:setup "
+              "skill), or to the hub home's lock-rules.json.", file=sys.stderr)
+        for w in known["warnings"]:
+            print(w, file=sys.stderr)
+        return 2
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if not sid and not args.force:
         print("CLAUDE_CODE_SESSION_ID is not set: the hook could not recognise you as the holder. "
@@ -138,13 +165,171 @@ def cmd_release(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- rules
+
+def repo_root(raw: str | None) -> Path:
+    """The working tree to configure: --dir, else the git top level of the working directory."""
+    d = Path(raw or os.getcwd()).expanduser().resolve()
+    res = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if res.returncode != 0:
+        raise SystemExit(f"{d} is not inside a git repository (pass --dir)")
+    return Path(res.stdout.strip())
+
+
+def repo_name(top: Path) -> str:
+    """Repository name as the hook sees it: a worktree resolves to its main repository."""
+    res = subprocess.run(["git", "-C", str(top), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                         capture_output=True, text=True)
+    common = Path(res.stdout.strip()) if res.returncode == 0 else top / ".git"
+    return common.parent.name if common.name == ".git" else top.name
+
+
+def rules_path(top: Path) -> Path:
+    return top / hc.CONFIG_DIRNAME / "lock-rules.json"
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    hc.atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def cmd_rules_show(args) -> int:
+    r = lockrules.load(os.getcwd())
+    by = {k: [x["action"] for x in r["rules"] if k in x["kinds"]] for k in r["resources"]}
+    if args.json:
+        print(json.dumps({"files": r["files"], "protected_branches": r["protected_branches"],
+                          "resources": [{"name": k, "about": v, "guards": by[k]} for k, v in r["resources"].items()],
+                          "warnings": r["warnings"]}, ensure_ascii=False, indent=2))
+        return 0
+    print("files: " + (", ".join(r["files"]) or "none (built-in rules only)"))
+    print("protected branches: " + ", ".join(r["protected_branches"]))
+    for k, about in r["resources"].items():
+        guards = "merge/push to the protected branches" if k == "main-merge" else ("; ".join(by[k]) or
+                                                                                  "nothing (informational)")
+        print(f"  {k:16} {about or '—'}\n  {'':16} guards: {guards}")
+    for w in r["warnings"]:
+        print(f"WARNING: {w}", file=sys.stderr)
+    return 0
+
+
+def cmd_rules_init(args) -> int:
+    top = repo_root(args.dir)
+    path = rules_path(top)
+    if path.exists() or path.is_symlink():
+        lockrules.read(str(path))  # raises on a broken file: say so rather than build on it
+        print(f"{path} exists — left as it is")
+    else:
+        write_json(path, {"protected_branches": args.protected or ["main"], "resources": {}, "rules": []})
+        print(f"wrote {path} (protected branches: {', '.join(args.protected or ['main'])}; no other resources yet)")
+    cfg = top / hc.CONFIG_DIRNAME / "config.json"
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
+    except ValueError as e:
+        print(f"{cfg}: {e} — fix it by hand", file=sys.stderr)
+        return 2
+    if "AGENT_HUB_DEFAULT_REPO" in data:
+        print(f"{cfg}: AGENT_HUB_DEFAULT_REPO={data['AGENT_HUB_DEFAULT_REPO']} — left as it is")
+    else:
+        data["AGENT_HUB_DEFAULT_REPO"] = repo_name(top)
+        write_json(cfg, data)
+        print(f"{cfg}: AGENT_HUB_DEFAULT_REPO={data['AGENT_HUB_DEFAULT_REPO']} (locks taken here guard this repo)")
+    return 0
+
+
+def cmd_rules_add(args) -> int:
+    if not lockrules.valid_name(args.resource):
+        print(f"bad resource name {args.resource!r}: lowercase letters, digits and hyphens", file=sys.stderr)
+        return 2
+    if args.resource in lockrules.BUILTIN:
+        print(f"{args.resource} is built in: its commands are the merges and pushes to protected_branches",
+              file=sys.stderr)
+        return 2
+    if args.action and len(args.action) != len(args.match):
+        print("give one --action per --match (or none)", file=sys.stderr)
+        return 2
+    top = repo_root(args.dir)
+    path = rules_path(top)
+    if path.exists():
+        lockrules.read(str(path))
+        data = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        data = {"protected_branches": ["main"], "resources": {}, "rules": []}
+    res = data.setdefault("resources", {})
+    if args.resource not in res and not args.about:
+        print(f"{args.resource} is new: say what it is with --about", file=sys.stderr)
+        return 2
+    if args.about:
+        res[args.resource] = args.about
+    rules = data.setdefault("rules", [])
+    for i, m in enumerate(args.match):
+        rule = {"match": m, "kinds": [args.resource], "action": args.action[i] if args.action else m}
+        if not any(r.get("match") == m and args.resource in r.get("kinds", []) for r in rules):
+            rules.append(rule)
+    tmp = path.with_name(".lock-rules.check.json")
+    write_json(tmp, data)
+    try:
+        lockrules.read(str(tmp))  # validate before replacing the real file
+    except lockrules.RulesError as e:
+        print(str(e).replace(str(tmp), str(path)), file=sys.stderr)
+        return 2
+    finally:
+        tmp.unlink(missing_ok=True)
+    write_json(path, data)
+    print(f"{path}: {args.resource} — {res[args.resource]}; rules: {len(args.match)} added")
+    return 0
+
+
+def cmd_rules_check(args) -> int:
+    """Run the plugin's own hook on `command` with a scratch board where every known resource is held by another
+    session: the deny names the resource that guards the command; no deny = nothing guards it."""
+    cwd = str(Path(args.dir).expanduser().resolve()) if args.dir else os.getcwd()
+    known = lockrules.load(cwd)
+    hook = Path(__file__).resolve().parent.parent / "hooks" / "board_locks.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        until = board.fmt(board.now() + board.dt.timedelta(hours=1))
+        recs = [{"kind": k, "repo": "*", "owner_name": "setup check", "session_id": "setup-check-holder",
+                 "until": until, "why": "lock rules check"} for k in known["resources"]]
+        env = dict(os.environ, AGENT_BOARD_FILE=os.path.join(tmp, "board.md"))
+        saved = board.BOARD
+        board.BOARD = Path(env["AGENT_BOARD_FILE"])
+        try:
+            board.write(recs)
+        finally:
+            board.BOARD = saved
+        event = {"tool_name": "Bash", "tool_input": {"command": args.command}, "cwd": cwd,
+                 "session_id": "setup-check-runner"}
+        res = subprocess.run([sys.executable, str(hook)], input=json.dumps(event), capture_output=True, text=True,
+                             env=env, cwd=cwd)
+    out = {}
+    if res.stdout.strip():
+        try:
+            out = json.loads(res.stdout)
+        except ValueError:
+            pass
+    deny = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason") or ""
+    m = re.search(r"another session's `([a-z0-9-]+)` lock", deny)
+    got = m.group(1) if m else None
+    action = deny.split("\n", 1)[0].removeprefix("Command refused by the board_locks hook: ").rstrip(".") if deny else ""
+    print(f"guarded by {got}: {action}" if got else "not guarded: no lock would refuse it")
+    if res.stderr.strip():
+        print(res.stderr.strip(), file=sys.stderr)
+    if args.expect:
+        if got != args.expect:
+            print(f"FAIL: expected {args.expect}, got {got or 'nothing'}", file=sys.stderr)
+            return 1
+    elif args.expect_none and got:
+        print(f"FAIL: expected nothing, got {got}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="lock", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     pl = sub.add_parser("list")
     pl.add_argument("--all", action="store_true", help="include expired locks")
     pt = sub.add_parser("take")
-    pt.add_argument("kind", choices=board.KINDS)
+    pt.add_argument("kind", metavar="resource")
     pt.add_argument("--until", required=True)
     pt.add_argument("--why", required=True)
     pt.add_argument("--owner-name")
@@ -152,13 +337,40 @@ def main(argv: list[str]) -> int:
     pt.add_argument("--repo", default=DEFAULT_REPO)
     pt.add_argument("--force", action="store_true")
     pr = sub.add_parser("release")
-    pr.add_argument("kind", choices=board.KINDS)
+    pr.add_argument("kind", metavar="resource")
     pr.add_argument("--repo", default=None, help="default: AGENT_HUB_DEFAULT_REPO, else *; when that finds nothing, "
                     "this session's only lock of the kind")
     pr.add_argument("--force", action="store_true")
+    pu = sub.add_parser("rules", help="the resources and rules that apply here; init, add, check")
+    rsub = pu.add_subparsers(dest="rcmd")
+    rs = rsub.add_parser("show")
+    rs.add_argument("--json", action="store_true")
+    ri = rsub.add_parser("init")
+    ri.add_argument("--dir", help="the repository (default: the one you are in)")
+    ri.add_argument("--protected", nargs="+", metavar="BRANCH", help="protected branches (default: main)")
+    ra = rsub.add_parser("add")
+    ra.add_argument("resource")
+    ra.add_argument("--about", help="what the resource is (required when it is new)")
+    ra.add_argument("--match", action="append", default=[], help="Python regex of a command that touches it")
+    ra.add_argument("--action", action="append", default=[], help="what that command does (one per --match)")
+    ra.add_argument("--dir")
+    rc = rsub.add_parser("check")
+    rc.add_argument("command")
+    rc.add_argument("--dir")
+    g = rc.add_mutually_exclusive_group()
+    g.add_argument("--expect", metavar="RESOURCE")
+    g.add_argument("--expect-none", action="store_true")
     args = p.parse_args(argv)
+    if args.cmd == "rules" and not args.rcmd:
+        args.rcmd, args.json = "show", False
     try:
+        if args.cmd == "rules":
+            return {"show": cmd_rules_show, "init": cmd_rules_init, "add": cmd_rules_add,
+                    "check": cmd_rules_check}[args.rcmd](args)
         return {"list": cmd_list, "take": cmd_take, "release": cmd_release}[args.cmd](args)
+    except lockrules.RulesError as e:
+        print(f"{e} — fix the file first", file=sys.stderr)
+        return 2
     except board.BoardError as e:
         print(f"board {board.BOARD} is broken ({e}); fix the ```locks block by hand", file=sys.stderr)
         return 3

@@ -671,7 +671,8 @@ def main(argv: list) -> int:
     t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid)")
     t.add_argument("--handoff", help="handoff file (default: the latest HANDOFF-hub-*.md)")
     t.add_argument("--name", help="title (default: \"Hub <stage> #<n>\")")
-    t.add_argument("--skip-lock", action="append", choices=("deploy-window", "main-merge", "stage", "migration-head"))
+    t.add_argument("--skip-lock", action="append", metavar="RESOURCE",
+                   help="leave this lock with the previous hub (repeatable)")
     t.add_argument("--main-merge-until", default="+30d", help="main-merge expiry when taken from nobody")
     t.add_argument("--take-main-merge", action="store_true",
                    help="also take main-merge when it is free or held by a third party")

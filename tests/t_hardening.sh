@@ -11,6 +11,8 @@ printf 'gitdir: %s/.git/worktrees/wt\n' $REPO > $WT/.git
 ME=aaaaaaaa-0000-4000-8000-000000000001; OTHER=bbbbbbbb-0000-4000-8000-000000000002
 hook(){ python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","session_id":sys.argv[2],"cwd":sys.argv[3],"tool_input":{"command":sys.argv[1]}}))' "$1" "$2" "$3" | python3 $HOOKS/board_locks.py; }
 deny(){ hook "$@" 2>/dev/null | grep -q '"permissionDecision": "deny"'; }
+GOOD_HOME='{"rules": [{"match": "^helm upgrade\\b", "kinds": ["deploy-window"], "action": "helm rollout"}]}'
+echo "$GOOD_HOME" > $R/lock-rules.json
 CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take deploy-window --until +2h --why "release" --owner-name "release hub" >/dev/null
 CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +2h --why "merge train" --owner-name "steward" >/dev/null
 GOOD_REPO='{"rules": [{"match": "^make release\\b", "kinds": ["deploy-window"], "action": "release"}]}'
@@ -120,6 +122,7 @@ unset HUB_TAG CLAUDE_BIN
 
 # ---- lock release from another directory finds this session's only lock of the kind
 printf '{"AGENT_HUB_DEFAULT_REPO": "webapp"}\n' > $REPO/.agent-hub/config.json
+printf '{"resources": {"stage": "staging"}}\n' > $REPO/.agent-hub/lock-rules.json
 (cd $REPO && CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --until +1h --why x) > /dev/null
 (cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock release stage) > $P/rel.out
 grep -q 'released: stage (webapp)' $P/rel.out && ! grep -q '"kind": "stage"' $R/board.md; check $? 0 "release from outside the repository finds the lock (webapp)"
