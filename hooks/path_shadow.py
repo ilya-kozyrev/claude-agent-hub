@@ -33,6 +33,7 @@ def main() -> int:
     sys.path.insert(0, str(bin_dir()))
     import hubcore as hc  # noqa: E402
 
+    hc.use_cwd(event.get("cwd"))
     if not hc.root().is_dir():
         return 0
     shadowed = hc.shadowed_tools()

@@ -16,7 +16,10 @@ brief.md (copy of the brief), inbox.md (messages while the agent runs).
 spawn: `claude -p` with a fixed --session-id, --output-format stream-json --verbose and a permission mode
 (default bypassPermissions: nobody is there to approve a tool call; $AGENT_HUB_PERMISSION_MODE or
 --permission-mode changes it), in its own session and process group (setsid), stdin from /dev/null: it
-survives the calling shell and the calling session. The agent gets HUB_TAG=<tag>, HUB_STAGE and this
+survives the calling shell and the calling session. The hub home is the caller's, pinned in the agent's
+$AGENT_HUB_HOME, and granted with `--add-dir <hub home>` when it is not under the agent's cwd (spawn and every
+resume): the agent writes its journal lines and report there without a prompt, also under the Bash sandbox.
+The agent gets HUB_TAG=<tag>, HUB_STAGE and this
 plugin's bin/ first on PATH and in $HUB_BIN (the brief footer names jlog as "$HUB_BIN/jlog", since a shell may put
 an old same-named tool ahead; every resume rebuilds the variable, so it follows a plugin update); it is recorded in `roles` (kind headless, pid).
 Model: an alias (opus, sonnet, haiku, fable) or a full id claude-…. An alias follows the CLI: a current Claude Code
@@ -299,6 +302,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
         argv += ["--effort", meta["effort"]]
     argv += ["--output-format", "stream-json", "--verbose",
              "--permission-mode", meta.get("permission_mode") or DEFAULT_PERMISSION_MODE]
+    argv += hc.add_dir_args(meta["cwd"])  # before -n / -p: --add-dir takes several values
     if not resume:
         argv += ["-n", meta["title"]]
     argv += ["-p", prompt]

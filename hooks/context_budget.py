@@ -229,6 +229,7 @@ def main() -> None:
     if event not in ("PreToolUse", "UserPromptSubmit", "PostToolUse"):
         return
     hc = hubcore()
+    hc.use_cwd(data.get("cwd"))  # the hub home of the session's directory, not of the hook process
     ap = autopilot()
     auto = bool(ap) and ap.enabled() and not data.get("agent_id")
     if auto and event == "UserPromptSubmit" and ap.owner_spoke(data.get("prompt")):
