@@ -1,0 +1,258 @@
+#!/bin/bash
+# Autopilot: `hub succeed` (command construction, link capture, every fallback, the chain and its limit), the chain
+# reset by a manual takeover and by an owner prompt, and the context budget hook's autopilot messages at warn and block.
+# The CLI is tests/fake_claude_bg.py: no real `claude --bg` is ever started.
+. "$(dirname "$0")/lib.sh"
+unset CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
+export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2
+HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
+HUB3=33333333-3333-4333-8333-333333333333
+
+# a fresh hub home with stage-a, hub #1 registered, a handoff file and a work directory for the successor
+setup(){
+  new_home; R=$AGENT_HUB_HOME; export FAKE_BG_LOG=$R/bg.log
+  $B/hub start --stage stage-a --session $HUB1 > $R/start.out 2>&1 || { echo "FAIL setup: hub start"; cat $R/start.out; fail=1; }
+  H=$R/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md
+  printf '# Handoff "Hub stage-a #1" → "Hub stage-a #2" — stage-a\n\n## 0. First steps\n1. take over\n' > $H
+  H=$(cd "$(dirname $H)" && pwd -P)/$(basename $H)  # as `hub succeed` resolves it
+  W=$R/work; mkdir -p $W
+}
+J(){ cat "$(journal stage-a)" 2>/dev/null; }
+chain(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("chain"))' $R/stage-a/auto-handoff.json 2>/dev/null || echo none; }
+pending(){ python3 -c 'import json,sys; p=json.load(open(sys.argv[1])).get("pending") or {}; print(p.get(sys.argv[2]))' $R/stage-a/auto-handoff.json "$1" 2>/dev/null || echo none; }
+# the n-th (1-based; -1 = last) call to the fake CLI whose first argument is $1 ("--bg", "logs", "stop", …): field $2
+call(){ python3 - "$FAKE_BG_LOG" "$1" "$2" "${3:--1}" <<'PY'
+import json, sys
+log, first, field, idx = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+try:
+    calls = [json.loads(l) for l in open(log) if l.strip()]
+except FileNotFoundError:
+    calls = []
+calls = [c for c in calls if c["argv"] and c["argv"][0] == first]
+if not calls:
+    print("none"); sys.exit()
+c = calls[idx if idx < 0 else idx - 1]
+if field == "count":
+    print(len(calls))
+elif field == "argv":
+    print(" ".join(a for a in c["argv"][:-1]))
+elif field == "prompt":
+    print(c["argv"][-1])
+elif field == "cwd":
+    print(c["cwd"])
+else:
+    print(c["env"].get(field))
+PY
+}
+succeed(){ $B/hub succeed --stage stage-a --handoff $H --cwd $W "$@"; }
+
+# ================================================================== the background successor
+setup
+CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli HUB_TAG=hub-1 succeed --model opus --permission-mode default > $R/s1.out 2>&1; rc=$?
+check $rc 0 "succeed: exit 0"
+call --bg argv | grep -q -- '^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --model opus --settings {'; check $? 0 "succeed: --bg command (name, title, model; no mode flag for default)"
+call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
+check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
+call --bg prompt | grep -qF "/agent-hub:hub take over stage stage-a from $H: run \`hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
+check "$(call --bg AGENT_HUB_HOME)" "$R" "succeed: the hub home reaches the successor through its environment"
+call --bg prompt | grep -qF "[agent-hub auto-handoff 1/10]"; check $? 0 "succeed: prompt carries the marker 1/10"
+check "$(call --bg CLAUDECODE):$(call --bg CLAUDE_CODE_ENTRYPOINT):$(call --bg HUB_TAG)" "None:None:None" "succeed: parent session identity and hub tag stripped from the child env"
+check "$(call auth count)" 1 "succeed: login checked first (claude auth status)"
+J | grep -q '\[hub-1\] auto-handoff 1/10: started "Hub stage-a #2" (opus, default) as background session bg-1234abcd — Remote Control https://claude.ai/code/session_01AbC-xyz; terminal: claude attach bg-1234abcd'; check $? 0 "succeed: journal line with bg id, Remote Control link (ANSI stripped) and attach command"
+check "$(chain):$(pending kind):$(pending id)" "1:bg:bg-1234abcd" "succeed: chain 1, pending bg successor recorded"
+grep -q "jwait --journal --stage stage-a --match '\\\\\[hub-2\\\\\] start:' --since [0-9:]* --settle 1 --for 2s" $R/s1.out; check $? 0 "succeed: prints the exact jwait command"
+grep -q "ALARM (exit 3) → hub succeed --stage stage-a --fallback" $R/s1.out; check $? 0 "succeed: says what to do on ALARM"
+succeed --model opus > $R/s1b.out 2>&1; check $? 1 "succeed: refused while the started successor has not taken over"
+check "$(call --bg count)" 1 "…no second background session"
+# the successor takes over: its jwait wakes, the chain is kept
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/take2.out 2>&1; check $? 0 "takeover by the successor (--session self)"
+check "$($B/roles --stage stage-a get hub)" $HUB2 "--session self registers \$CLAUDE_CODE_SESSION_ID"
+JW=$(sed -n 's/^  \(jwait .*\)$/\1/p' $R/s1.out)
+eval "$B/$JW" > $R/jw.out 2>&1; check $? 0 "the printed jwait delivers the successor's start line"
+grep -q '\[hub-2\] start:' $R/jw.out; check $? 0 "…and it is the start line"
+check "$(chain)" 1 "chain kept by the pending successor's takeover"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["pending"]["taken_over"]' $R/stage-a/auto-handoff.json; check $? 0 "…pending marked taken over"
+$B/hub takeover --stage stage-a --session $HUB2 --auto-handoff --handoff $H > /dev/null 2>&1; check "$(chain)" 1 "a re-run of that takeover keeps the chain"
+# only the registered hub hands over
+CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > $R/stale.out 2>&1; check "$?:$(grep -c 'is not the hub of stage stage-a' $R/stale.out)" 2:1 "succeed: a stale hub (session) is refused"
+HUB_TAG=hub-1 succeed --model opus > $R/stale.out 2>&1; check "$?:$(grep -c 'HUB_TAG hub-1 is not the hub of stage stage-a' $R/stale.out)" 2:1 "succeed: a stale hub (HUB_TAG) is refused"
+HUB_TAG=hub-1 $B/hub succeed --stage stage-a --fallback > $R/stale.out 2>&1; check "$?:$(grep -c 'is not the hub of stage stage-a' $R/stale.out)" 2:1 "fallback: a stale hub is refused"
+# hub #2 hands over in turn: the marker counts on
+CLAUDE_CODE_SESSION_ID=$HUB2 succeed --model opus > $R/s2.out 2>&1; check $? 0 "second succeed (by the registered hub's session)"
+call --bg argv | grep -q -- "--remote-control stage-a-hub-3 -n Hub stage-a #3"; check $? 0 "…successor #3"
+call --bg prompt | grep -qF "[agent-hub auto-handoff 2/10]"; check $? 0 "…marker 2/10"
+check "$(chain)" 2 "…chain 2"
+$B/hub takeover --stage stage-a --session self --dry-run > /dev/null 2>&1; check $? 2 "--session self without \$CLAUDE_CODE_SESSION_ID: usage error"
+# a takeover by hand resets the chain — even with the pending successor's own number (hub-3)
+$B/hub takeover --stage stage-a --session $HUB3 --handoff $H > /dev/null 2>&1
+check "$($B/roles --stage stage-a get hub | head -c 36)" $HUB3 "a takeover by hand gets the natural number"
+check "$(chain):$(pending n)" "0:None" "a takeover by hand resets the chain and drops the pending successor"
+J | grep -q "\[hub-3\] auto-handoff chain reset (2 → 0): a takeover by hand"; check $? 0 "…and journals it"
+# one successor per shift: a reservation by a running (or retried) `hub succeed` blocks; a stale one does not
+setup
+python3 -c 'import json,sys,datetime as d; json.dump({"chain":0,"pending":{"n":2,"kind":"starting","at":d.datetime.now().astimezone().isoformat(timespec="seconds")}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json
+succeed --model opus > $R/res.out 2>&1; check "$?:$(call --bg count)" "1:none" "reservation: a second hub succeed while one is starting is refused"
+$B/hub succeed --stage stage-a --fallback > $R/fbs.out 2>&1; check "$?:$(grep -c 'still being started' $R/fbs.out)" "1:1" "reservation: --fallback while starting waits"
+python3 -c 'import json,sys; json.dump({"chain":0,"pending":{"n":2,"kind":"starting","at":"2020-01-01T00:00:00+00:00"}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json
+succeed --model opus > /dev/null 2>&1; check "$?:$(call --bg count):$(chain)" "0:1:1" "reservation: a stale one (a dead hub succeed) does not block"
+python3 -c 'import json,sys; json.dump({"chain":0,"pending":{"n":5,"kind":"bg","id":"x","at":"2020-01-01T00:00:00+00:00"}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json
+$B/hub succeed --stage stage-a --fallback > $R/fbn.out 2>&1; check "$?:$(call stop count)" "1:none" "fallback: another shift's successor is not touched"
+# nothing starts at all: the reservation and its count are given back, the journal says BLOCKED
+setup
+FAKE_LOGIN=no FAKE_CLAUDE=die succeed --model opus > $R/none.out 2>&1; check $? 1 "no successor at all: exit 1"
+check "$(chain):$(pending n)" "0:None" "no successor at all: count given back, no pending record"
+J | grep -q "BLOCKED auto-handoff: no successor started (the headless successor did not start either"; check $? 0 "no successor at all: journal says BLOCKED and why"
+
+# ================================================================== chain limit
+setup; export AGENT_HUB_AUTO_HANDOFF_CHAIN=1
+succeed --model opus > /dev/null 2>&1
+$B/hub takeover --stage stage-a --session $HUB2 --auto-handoff --handoff $H > /dev/null 2>&1
+succeed --model opus > $R/lim.out 2>&1; rc=$?
+check $rc 3 "chain limit: exit 3"
+check "$(call --bg count)" 1 "chain limit: no successor started"
+J | grep -q '\[hub-2\] auto-handoff chain limit 1 reached — waiting for the owner'; check $? 0 "chain limit: journaled"
+grep -q "Tell the owner" $R/lim.out; check $? 0 "chain limit: tells the hub to stop and wait"
+AGENT_HUB_AUTO_HANDOFF_CHAIN=0 succeed --model opus > /dev/null 2>&1; check $? 3 "chain 0: never an automatic successor"
+unset AGENT_HUB_AUTO_HANDOFF_CHAIN
+
+# ================================================================== model and permission mode
+setup
+mkdir -p $HOME/.claude/projects/p
+echo '{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5}}}' > $HOME/.claude/projects/p/$HUB1.jsonl
+echo '{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":5}}}' >> $HOME/.claude/projects/p/$HUB1.jsonl
+CLAUDE_CODE_SESSION_ID=$HUB1 succeed > /dev/null 2>&1
+call --bg argv | grep -q -- "--model claude-fable-5-1 --settings"; check $? 0 "model: inherited from the hub's transcript (sidechain skipped)"
+setup
+echo '{"AGENT_HUB_SUCCESSOR_MODEL": "sonnet", "AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "acceptEdits"}' > $R/config.json
+CLAUDE_CODE_SESSION_ID=$HUB1 succeed > /dev/null 2>&1
+call --bg argv | grep -q -- "--model sonnet --permission-mode acceptEdits --settings"; check $? 0 "model and mode: hub home settings win over inheritance"
+rm $R/config.json
+setup
+mkdir -p $W/.agent-hub; echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "bypassPermissions"}' > $W/.agent-hub/config.json; mkdir -p $W/.git
+(cd $W && succeed --model opus) > $R/proj.out 2>&1
+check "$(call --bg count)" 1 "mode: started with a repository's config.json present"
+call --bg argv | grep -q -- "--permission-mode"; check $? 1 "mode: a repository's config.json cannot set the successor's mode"
+rm -rf $W/.agent-hub $W/.git
+setup
+succeed --model 'opus; rm -rf /' > $R/bad.out 2>&1; check "$?:$(grep -c "^error: --model 'opus; rm -rf /'" $R/bad.out)" 2:1 "model: a value with shell syntax is refused"
+succeed --model opus --permission-mode yolo > $R/bad.out 2>&1; check "$?:$(grep -c "^error: permission mode 'yolo'" $R/bad.out)" 2:1 "mode: an unknown mode is refused"
+check "$(call --bg count)" none "…neither started anything"
+succeed --model opus --permission-mode plan > /dev/null 2>&1
+check "$(call --bg count)" 1 "mode: plan — started"
+call --bg argv | grep -q -- "--permission-mode"; check $? 1 "mode: plan starts the successor in the default mode"
+J | grep -q "the hub was in plan mode; the successor starts in the default mode"; check $? 0 "…and the journal says so"
+setup
+succeed --model opus --dry-run > $R/dry.out 2>&1; check $? 0 "dry run: exit 0"
+grep -q "^\[plan\] auto-handoff 1/10: start \"Hub stage-a #2\"" $R/dry.out; check $? 0 "dry run: prints the plan"
+check "$(call --bg count):$(chain)" "none:none" "dry run: nothing started, no state"
+
+# ================================================================== fallbacks
+# bypass without the accepted disclaimer -> auto (acceptEdits for haiku)
+setup; export FAKE_BG=bypass
+succeed --model opus --permission-mode bypassPermissions > /dev/null 2>&1; check $? 0 "bypass: exit 0"
+check "$(call --bg count)" 2 "bypass: retried once"
+call --bg argv 1 | grep -q -- "--permission-mode bypassPermissions$"; check $? 0 "bypass: the first try has no allow list (moot in bypass)"
+call --bg argv | grep -q -- "--permission-mode auto --settings"; check $? 0 "bypass: retried in auto for opus"
+J | grep -q "(opus, auto) as background session.*bypassPermissions needs its disclaimer accepted once"; check $? 0 "bypass: journal names the mode used and why"
+setup
+succeed --model haiku --permission-mode bypassPermissions > /dev/null 2>&1
+call --bg argv | grep -q -- "--permission-mode acceptEdits --settings"; check $? 0 "bypass: acceptEdits for haiku"
+unset FAKE_BG
+# untrusted worktree -> the main checkout once
+setup; export FAKE_BG=untrusted
+mkrepo(){ M=$R/main; mkdir -p $M; git -C $M init -q; git -C $M -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C $M worktree add -q $R/wt -b wt 2>/dev/null; }
+mkrepo
+FAKE_TRUSTED=$M $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 0 "untrusted: exit 0"
+check "$(call --bg count):$(call --bg cwd)" "2:$(cd $M && pwd -P)" "untrusted: retried in the main checkout"
+J | grep -q "is not trusted by the claude CLI — started in the main checkout"; check $? 0 "untrusted: journaled"
+# still untrusted -> headless hub
+setup; mkrepo
+$B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/hl.out 2>&1; check $? 0 "untrusted twice: exit 0 (headless fallback)"
+check "$(pending kind):$(pending role)" "headless:hub-2" "untrusted twice: headless successor recorded"
+J | grep -q "background successor not started — \`claude --bg\` exited 1: Workspace not trusted.*falling back to a headless hub"; check $? 0 "untrusted twice: journal says which fallback and why"
+check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "untrusted twice: agent spawn registered hub-2"
+BR=$R/stage-a/coordinator/work/hub-2-takeover-brief.md
+grep -qF "hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[agent-hub auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"
+grep -q "agent send hub-2" $R/hl.out; check $? 0 "headless: tells how the owner reaches it"
+check "$(chain)" 1 "headless: counts in the chain"
+unset FAKE_BG
+# not logged in -> no --bg at all
+setup; FAKE_LOGIN=no succeed --model opus > /dev/null 2>&1; check $? 0 "not logged in: exit 0"
+check "$(call --bg count):$(pending kind)" "none:headless" "not logged in: falls back before any --bg"
+J | grep -q "the claude CLI is not logged in.*claude auth login"; check $? 0 "not logged in: journaled with the fix"
+# the session itself says "Not logged in" -> stopped, removed, headless
+setup; FAKE_LOGS=notloggedin succeed --model opus > /dev/null 2>&1
+check "$(call stop count):$(call rm count):$(pending kind)" "1:1:headless" "logs say not logged in: bg session stopped and removed, headless started"
+# no link in the logs by the deadline -> still the bg successor, the journal says where to look
+setup; FAKE_LOGS=none succeed --model opus > /dev/null 2>&1
+J | grep -q "Remote Control link not shown yet (\`claude logs bg-1234abcd\`)"; check $? 0 "no link: journal points at claude logs"
+check "$(pending kind)" bg "no link: still the background successor"
+# no id printed -> taken from `claude agents --json`
+setup; FAKE_BG=noid succeed --model opus > /dev/null 2>&1
+check "$(pending id)" bg-from-list "no id printed: id read from claude agents --json (the newest of that name)"
+# an AGENT_HUB_MODEL_MAP alias reaches claude --bg as the id it names
+setup; AGENT_HUB_MODEL_MAP=fast=claude-sonnet-9-9 succeed --model fast > /dev/null 2>&1
+call --bg argv | grep -q -- "--model claude-sonnet-9-9 "; check $? 0 "model map: claude --bg gets the mapped id"
+# --headless right away
+setup; succeed --model opus --headless > /dev/null 2>&1
+check "$(call --bg count):$(pending kind)" "none:headless" "--headless: agent spawn without trying --bg"
+# no takeover by the deadline -> --fallback: log tail journaled, bg stopped (kept), headless from the same handoff
+setup; succeed --model opus > /dev/null 2>&1
+$B/hub succeed --stage stage-a --fallback > $R/fb.out 2>&1; check $? 0 "fallback: exit 0"
+check "$(call stop count):$(call rm count)" "1:none" "fallback: bg session stopped, not removed"
+J | grep -q "auto-handoff: background session bg-1234abcd wrote no takeover line in 2 s; stopped it.*claude logs tail: /remote-control is active"; check $? 0 "fallback: journal has the reason and the log tail"
+check "$(pending kind):$(pending bg_id):$(chain)" "headless:bg-1234abcd:1" "fallback: headless successor, chain not counted twice"
+$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check $? 1 "fallback after the headless one: nothing further"
+J | grep -q "the headless successor did not take over either — waiting for the owner"; check $? 0 "…journaled"
+
+# ================================================================== the hook
+setup
+TR=$R/tr.jsonl
+usage(){ python3 -c 'import json,sys; print(json.dumps({"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":int(sys.argv[1])}}}))' "$1" >> $TR; }
+cbh(){ python3 -c 'import json,sys; d={"hook_event_name":sys.argv[1],"session_id":sys.argv[5],"transcript_path":sys.argv[2],"tool_name":sys.argv[3],"tool_input":json.loads(sys.argv[4]),"permission_mode":"acceptEdits","cwd":"/repo/x","prompt":sys.argv[6]}
+if sys.argv[7]: d["agent_id"]=sys.argv[7]
+print(json.dumps(d))' "$1" "$TR" "${2:-}" "${3:-null}" "${SID:-$HUB1}" "${PROMPT:-}" "${AGENT:-}" | python3 $HOOKS/context_budget.py; }
+usage 320000
+cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:handoff" $R/h0.out && ! grep -q Autopilot $R/h0.out; check $? 0 "hook, autopilot off: the warning stays as today"
+export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
+cbh UserPromptSubmit > $R/h1.out
+grep -qF 'Autopilot is on' $R/h1.out && grep -qF 'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, mode, cwd)"
+grep -qF 'hub handoff --stage stage-a' $R/h1.out && grep -qF 'hub succeed --stage stage-a --fallback' $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
+SID=$HUB2 cbh PostToolUse Bash > $R/h2.out; grep -q "agent-hub:handoff" $R/h2.out && ! grep -q Autopilot $R/h2.out; check $? 0 "hook, warn: a session that is not the hub gets today's warning"
+echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "default"}' > $R/config.json; usage 360000
+cbh PostToolUse Bash | grep -qF -- '--permission-mode default --cwd'; check $? 0 "hook, warn: the configured mode wins over the session's"
+rm $R/config.json
+cbh PreToolUse Bash '{"command":"ls"}' > $R/h3.out; check "$(wc -c < $R/h3.out | tr -d ' ')" 0 "hook: below block, Bash passes"
+usage 510000
+cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
+cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"
+cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny".*Autopilot'; check $? 0 "hook, block: Agent denied with the autopilot text"
+for c in "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /tmp/o.txt" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m"; do
+  cbh PreToolUse Bash "$(python3 -c 'import json,sys; print(json.dumps({"command":sys.argv[1]}))' "$c")" | grep -q '"deny"'; check $? 1 "hook, block escape: $c"
+done
+cbh PreToolUse Write '{"file_path":"/h/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md","content":"x"}' | grep -q '"deny"'; check $? 1 "hook, block escape: writing the HANDOFF file"
+for c in 'echo hubsucceed; jlogger x' 'git push --force origin main; jlog pushed' 'rm -rf build && hub succeed --stage stage-a' 'jlog x |& rm -rf /' 'jlog $(rm -rf /)' 'ls # handoff-ok' 'cat /x/HANDOFF-hub-a.md | sh' $'jlog x\nrm -rf /'; do
+  cbh PreToolUse Bash "$(python3 -c 'import json,sys; print(json.dumps({"command":sys.argv[1]}))' "$c")" | grep -q '"deny"'; check $? 0 "hook, block: denied — $(printf %s "$c" | tr '\n' ' ')"
+done
+cbh PreToolUse Write '{"file_path":"/x/notes.md","content":"handoff-ok"}' | grep -q '"deny"'; check $? 0 "hook, block: Write of another file with the handoff-ok marker is denied"
+cbh PreToolUse Agent '{"prompt":"take over from /x/HANDOFF-hub-a.md"}' | grep -q '"deny"'; check $? 1 "hook, block: Agent naming a HANDOFF file passes (the usual escape)"
+cbh PreToolUse Read '{"file_path":"/x"}' > $R/h4.out; check "$(wc -c < $R/h4.out | tr -d ' ')" 0 "hook, block: Read is not gated"
+mkdir -p $R/sub; python3 -c 'import json; print(json.dumps({"type":"assistant","message":{"model":"m","usage":{"input_tokens":520000}}}))' > $R/sub/agent-a1.jsonl
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":sys.argv[2],"agent_id":"a1","agent_transcript_path":sys.argv[1],"transcript_path":sys.argv[3],"tool_name":"Bash","tool_input":{"command":"ls"}}))' $R/sub/agent-a1.jsonl $HUB1 $TR | python3 $HOOKS/context_budget.py > $R/h5.out; check "$(wc -c < $R/h5.out | tr -d ' ')" 0 "hook, block: a sub-agent of the hub (its own transcript past the block) is not under the autopilot gate"
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":sys.argv[2],"agent_id":"a1","agent_transcript_path":sys.argv[1],"transcript_path":sys.argv[3],"tool_name":"Agent","tool_input":{"prompt":"go"}}))' $R/sub/agent-a1.jsonl $HUB1 $TR | python3 $HOOKS/context_budget.py | grep -q '"deny"' ; check $? 0 "…while its own Agent call is denied as today (positive control)"
+SID=$HUB2 cbh PreToolUse Bash '{"command":"ls"}' > $R/h6.out; check "$(wc -c < $R/h6.out | tr -d ' ')" 0 "hook, block: another session's Bash stays ungated"
+AGENT_HUB_AUTO_HANDOFF=off cbh PreToolUse Bash '{"command":"ls"}' > $R/h7.out; check "$(wc -c < $R/h7.out | tr -d ' ')" 0 "hook, block, autopilot off: Bash not gated (as today)"
+AGENT_HUB_AUTO_HANDOFF=off cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"' && ! (AGENT_HUB_AUTO_HANDOFF=off cbh PreToolUse Agent '{"prompt":"go"}' | grep -q Autopilot); check $? 0 "hook, block, autopilot off: Agent denied with today's text"
+# chain reset by an owner prompt
+echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
+PROMPT='<task-notification>jwait exited</task-notification>' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: a harness notice is not the owner"
+PROMPT='/agent-hub:hub take over stage stage-a from /x. [agent-hub auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: the successor's own prompt (marker) keeps the chain"
+PROMPT='how is it going?' SID=$HUB2 cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: a prompt in another session keeps the chain"
+PROMPT='how is it going?' AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: autopilot off, nothing changes"
+PROMPT='how is it going?' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "reset: the owner's prompt in the hub's session resets the chain"
+J | grep -q "auto-handoff chain reset (3 → 0): the owner spoke in the hub's session"; check $? 0 "reset: journaled"
+echo '{"AGENT_HUB_CONTEXT_BUDGET": "off"}' > $R/config.json; echo '{"chain": 2, "pending": null}' > $R/stage-a/auto-handoff.json
+PROMPT='hello' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "reset: works with the context budget switched off"
+rm $R/config.json
+exit $fail

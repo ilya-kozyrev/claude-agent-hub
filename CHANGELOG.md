@@ -72,6 +72,34 @@ a hub that talked the owner out of using agents.
   `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` keeps background sub-agents alive, not background Bash tasks, so a headless hub
   learns about `DONE` only from its next message (README, `docs/launch-modes.md`, getting started).
 
+### Autopilot: the hub hands its shift to a background successor
+
+- **`AGENT_HUB_AUTO_HANDOFF=on`** (hub home only, default off; `agent-hub:setup` asks). At the context budget's warn
+  threshold a stage hub is told to hand over at its next quiet point — `hub handoff`, fill the TODOs, `hub succeed`
+  with its model, permission mode and directory filled in by the hook. At the block threshold the hub is told to hand
+  over now: Bash, Write, Edit and NotebookEdit are denied too — Bash passes only when every command of the line is
+  `hub handoff`, `hub succeed`, `jlog` or `jwait`, a file tool only on a HANDOFF file. Without the setting nothing
+  changes.
+- **`hub succeed`** starts the successor as `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
+  `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, Remote Control link and
+  `claude attach <id>`, and prints the `jwait` that waits for the successor's start line
+  (`AGENT_HUB_SUCCESSOR_TIMEOUT`, 600 s). Fallbacks, each journaled with its reason: bypass mode without the accepted
+  disclaimer → `auto` (`acceptEdits` for Haiku); an untrusted worktree → the main checkout once; the CLI not logged in
+  or the directory still untrusted → a headless hub via `agent spawn`; no takeover by the deadline →
+  `hub succeed --fallback` (log tail journaled, the session stopped, a headless hub started).
+- **One successor per shift**: `hub succeed` reserves the shift under a lock before anything starts, so a retry or a
+  parallel call is refused; only the registered hub may run it; the successor's `hub takeover --auto-handoff` keeps
+  the chain.
+- **Chain limit** `AGENT_HUB_AUTO_HANDOFF_CHAIN` (10): at the limit the hub writes its handoff, starts no successor and
+  waits for the owner. The owner's own prompt in the hub's session, or a takeover started by hand, resets it.
+- **A successor not in bypass mode** starts with the hub's own commands and the hub home allowed (`--settings`), so
+  its takeover needs no prompt; everything else asks and the owner answers over Remote Control (smoke test: in the
+  default mode it stopped at the takeover's permission prompt before this).
+- **`hub takeover --session self`** reads `$CLAUDE_CODE_SESSION_ID` itself: a command with a shell expansion asks for
+  permission even under an allow rule.
+- Settings `AGENT_HUB_SUCCESSOR_MODEL` and `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` (default: the hub's own).
+  `docs/launch-modes.md` gains E20–E25 (`claude --bg --remote-control` and its failure modes).
+
 ## 0.5.0 — 2026-10-01
 
 Reviewers become a setting, the launch choice rests on what is visible before the start instead of an estimated
