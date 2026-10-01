@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-01
 
-Reviewers become a setting, and the launch choice rests on what is visible before the start instead of an estimated
-duration.
+Reviewers become a setting, the launch choice rests on what is visible before the start instead of an estimated
+duration, and the polling guard stops denying quoted text that no shell runs (`git commit -m "… sleep 5m …"`,
+`grep "sleep 5m"`) while catching more ways of feeding a loop to a shell.
 
 - **Configurable reviewers.** New setting `AGENT_HUB_REVIEWERS` (environment, a repository's `.agent-hub/config.json`
   or the hub home's): an ordered JSON list, the first available entry wins. An entry is an `agent` (an ordinary
