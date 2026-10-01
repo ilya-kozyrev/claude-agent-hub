@@ -12,56 +12,39 @@ named `api`, `ui` and `tests`. Everything below is synthetic.
 
 ```mermaid
 flowchart TB
-    subgraph you["You"]
-        y1(["1. Idea"])
-        y2["1. Open a Claude Code session in your repo<br/>and describe the idea"]
-        y3["2. Answer clarifying questions"]
-        y4{"3. Approve the plan and briefs?"}
-        y5["6. Answer agent questions in chat"]
-        y6["7. Glance at /agent-top"]
-        y7{"9. Review OK?"}
-        y8(["10. Merge"])
-    end
-    subgraph hub["Hub session (your interactive chat)"]
-        h1["Load the hub skill, check the<br/>question register for old decisions"]
-        h2["Ask clarifying questions"]
-        h3["Propose a plan: roles, briefs,<br/>stop conditions"]
-        h4["4. Spawn agents: agent spawn"]
-        h5["5. Wait in the background: jwait"]
-        h6["Relay the answer: ask close,<br/>agent send"]
-        h7["11. Write a handoff when the<br/>context fills up"]
-    end
-    subgraph agents["Agents (headless, detached)"]
-        a1["Work in their own checkout,<br/>write one journal line per event"]
-        a2["Ask a question: QUESTION, then BLOCKED"]
-        a3["8. Open pull requests and write a report"]
-        a4["Keep running when the chat is closed"]
-    end
-    y1 --> y2 --> h1 --> h2 --> y3 --> h3 --> y4
-    y4 -- "changes" --> h3
-    y4 -- "yes" --> h4 --> a1
-    h4 --> h5
-    a1 --> a2 --> h5
-    h5 --> h6
-    h6 --> y5
-    y5 --> h6
-    h6 --> a1
-    y6 -.-> a1
-    a1 --> a3 --> h5
-    h5 --> y7
-    y7 -- "fixes needed" --> h6
-    y7 -- "yes" --> y8
-    y8 --> h7
-    h7 -. "next session: hub takeover" .-> h1
-    a1 -.-> a4
+    s1(["1 · You: open a Claude Code session in your repo and describe the idea"])
+    s2["2 · Hub: asks clarifying questions — you answer"]
+    s3["3 · Hub: proposes a plan and one brief per agent"]
+    s3q{"You: approve?"}
+    s4["4 · Hub: starts the agents (agent spawn)"]
+    s5["5 · Agents: work in their own checkouts · Hub: waits in the background (jwait)"]
+    s6["6 · Agent asks a question → Hub brings it to you → you answer → Hub relays it"]
+    s7["7 · You: glance at progress any time (/agent-top)"]
+    s8["8 · Agents: open pull requests and write reports"]
+    s9{"9 · You: review OK?"}
+    s10(["10 · You: merge (the hub can run it under the main-merge lock)"])
+    s11["11 · Hub: writes a handoff when its context fills up — the next session takes over"]
 
-    style you fill:#e8f0fe,stroke:#4a6fa5
-    style hub fill:#fdf3e0,stroke:#b8860b
-    style agents fill:#e6f4ea,stroke:#3b7a57
+    s1 --> s2 --> s3 --> s3q
+    s3q -- "change it" --> s3
+    s3q -- "yes" --> s4 --> s5 --> s8 --> s9
+    s5 -. "sometimes" .-> s6 -.-> s5
+    s5 -. "any time" .-> s7
+    s9 -- "fixes" --> s5
+    s9 -- "yes" --> s10
+    s10 -.-> s11
+
+    classDef you fill:#dbeafe,stroke:#1d4ed8,color:#0b1f4d
+    classDef hub fill:#fef3c7,stroke:#b45309,color:#3b2005
+    classDef agents fill:#dcfce7,stroke:#15803d,color:#05300f
+    classDef mixed fill:#f3f4f6,stroke:#6b7280,color:#111827
+    class s1,s3q,s7,s9,s10 you
+    class s2,s3,s4,s11 hub
+    class s5,s8 agents
+    class s6 mixed
 ```
 
-Read it by colour: blue is your part, which is short; yellow is the hub, which plans, waits and relays; green is the
-agents, who do the long work. The numbers match the steps below.
+Read it top to bottom. Colour says who acts: **blue — you**, **yellow — the hub** (your chat session), **green — the agents** (headless, they keep running when you close the chat), grey — a round trip between all three. Dotted arrows are things that happen now and then. The numbers match the steps below.
 
 ## Install
 
@@ -241,16 +224,16 @@ You:  Visible columns only. A format=csv option on the existing endpoint.
 Hub:  Plan: api (endpoint option + streaming), ui (button, reuse ButtonLink), tests (API and UI tests, no
       fixture changes). Each opens one PR and stops; none merges. Briefs are in work/brief-{api,ui,tests}.md.
       Open question for you, not blocking: should large exports (> 50k rows) be refused or truncated?
-      Default if you do not answer by 18:00: refuse with a clear error. Registered as Q-C-001.
+      Default if you do not answer by 18:00: refuse with a clear error. Registered as Q-EXPORT-001.
 You:  Fine. Start.
 # the hub runs agent spawn three times; three "started headless agent" lines appear in the journal
 Hub:  Started api, ui, tests (tags hub-1-api, hub-1-ui, hub-1-tests). I am waiting in the background; I will
       only speak when something finishes or blocks.
 # 40 minutes pass; the hub is woken by a journal line
 Hub:  ui asks: the reports table has a "Select all" column; export it or skip it? I found no earlier decision.
-      Default if you do not answer: skip it. Asked as Q-C-002.
+      Default if you do not answer: skip it. Asked as Q-EXPORT-002.
 You:  Skip it.
-# the hub runs ask close Q-C-002, agent send ui "Q-C-002: skip the select-all column", ask done later
+# the hub runs ask close Q-EXPORT-002, agent send ui "Q-EXPORT-002: skip the select-all column", ask done later
 You:  /agent-top
 ```
 
@@ -265,13 +248,13 @@ And what `/agent-top` shows later that afternoon, as text (`agent-top --once`):
 
 Owner questions (ask summary)
   csv-export — open 1, overdue 0
-    Q-C-001 [csv-export] open — Refuse or truncate exports over 50k rows?
+    Q-EXPORT-001 [csv-export] open — Refuse or truncate exports over 50k rows?
     blocks: nothing; default by 2026-10-01T18:00: refuse with a clear error
 
 Journal (last 5 lines):
 14:48 [hub-1-api] DONE PR 41 open, report at work/hub-1-api-REPORT.md
 14:59 [hub-1-tests] DONE PR 43 open, report at work/hub-1-tests-REPORT.md
-15:08 [hub-1] @hub-1-ui Q-C-002: skip the select-all column
+15:08 [hub-1] @hub-1-ui Q-EXPORT-002: skip the select-all column
 15:12 [hub-1-ui] export button wired to the new endpoint; running UI tests
 15:18 [hub-1-ui] UI tests green; opening the PR
 ```
