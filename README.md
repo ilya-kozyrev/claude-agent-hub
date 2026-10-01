@@ -17,11 +17,11 @@ New here? Start with [Getting started](docs/getting-started.md) — from an idea
 A single chat session is a poor place to run a week of work:
 
 - **Long sessions get slower, worse and more expensive.** Claude Code sends the whole conversation with every request,
-  so each turn costs as much as the history behind it. In one project 16 % of a coordinator's turns were pipeline
-  polls, each re-reading 300–600k tokens of context.
-- **Subagents work within one session.** They are the right tool for a search or a log read, but they report only to
-  the session that spawned them, into its context. Work that runs for hours, must outlive the session or must
-  be reachable by others goes to a headless `claude -p` agent that reports one journal line per event.
+  so each turn costs as much as the history behind it. In one project 16 % of the turns of a coordinating session were
+  pipeline polls, each re-reading 300–600k tokens of context.
+- **Subagents work within one session.** They are the right tool for a search or a log read, but they report to the
+  session that spawned them, into its context. Work that runs for hours, must outlive the session or must be reachable
+  by others goes to a headless `claude -p` agent that reports one journal line per event.
 - **`/compact` is a summary you do not choose.** A handoff is a short file with a fixed structure, written before the
   context is full and readable by a person and by the next session; decisions, questions and locks live in files.
 
@@ -38,8 +38,42 @@ A single chat session is a poor place to run a week of work:
                                                  a new hub reads the handoff and takes over; agents keep going
 ```
 
-The full argument, with numbers and a comparison with Claude Code's own subagents and `/compact`:
+The full argument, with numbers, and the case against `/compact` for long work:
 [Why a hub and headless agents](docs/why.md).
+
+## How it compares with Claude Code's own facilities
+
+Claude Code can already run several things at once. What each one keeps for you differs; read the table, then pick the
+lightest tool that covers your case. Every Claude Code cell is checked against the official docs (numbers in brackets,
+links below); `—` means the docs do not say.
+
+| | Outlives the session that started it | Another session can message it | Fixed session id | State is shared through | Locks on shared resources | Platform, status |
+|---|---|---|---|---|---|---|
+| **Sub-agent in a session** (also in the background) | — Works "within a single session"; a finished one is resumed by resuming that session. What a running one does when the session exits is not documented [1] | Only the session that spawned it (`SendMessage` by name or ID); it reports to that conversation [1][2] | An agent ID and optional name, valid inside the parent session [1] | Its final message goes into the parent's context; transcript on disk; optional per-agent `memory` directory [1] | — (optional `isolation: worktree` separates files) [1][11] | Built in [1] |
+| **Background Bash task** (`run_in_background`) | No: cleaned up when Claude Code exits, detached children included (macOS, Linux); it keeps running only if you background the whole session [3] | No: a shell command, not an agent [2] | A task ID inside the session [3] | An output file Claude reads [3] | — | Built in; 30 min by default, 2 h at most per command [3][4] |
+| **`claude -p --resume` by hand** | Yes: your own process; the conversation is stored and `--resume <id>` continues it [5][6] | Yes through cross-session messaging (v2.1.224+): a `-p` worker takes messages unattended if its `--settings` set `crossSessionInbound: accept`; not in `--bare` mode. Otherwise resume it with a new prompt [6][7] | `--session-id <uuid>` [5] | What you build: stdout, stream-json, files [6] | — | Wherever Claude Code runs [10]; `--max-turns`, `--max-budget-usd` [5] |
+| **Background sessions** (`claude --bg`, agent view) | Yes: a supervisor process runs them after you close the terminal or start another session [8] | Yes: reply from agent view or `claude attach <id>`; reachable by cross-session messaging [7][8] | A short ID printed at start (`claude logs / attach / stop <id>`) [5][8] | Its own conversation; each session moves into its own worktree before editing; results go to you, not to another session [2][8] | — | Research preview [2][8] |
+| **Agent teams** | No: the team config is removed when the session ends; `/resume` does not restore in-process teammates; one team per session [9] | The lead, the teammates and you; a team is not shared across sessions [9] | Names chosen by the lead; session IDs sit in runtime team config you must not edit [9] | A shared task list (`~/.claude/tasks/<team>/`) and JSON mailboxes [9] | Task claiming uses file locking; nothing for external resources, and teammates must own different files [9] | Experimental, off by default; split panes need tmux or iTerm2 [9] |
+| **agent-hub headless agents** | Yes: detached `claude -p` in its own process group; survives the hub closing, compacting or handing over | Yes: `agent send` writes its inbox while it runs and resumes it after it exits | Yes: `--session-id`, kept in `meta.json` | Files: brief, inbox, journal, reports, question register | A lock board enforced by a hook: merges to protected branches and the commands you list | macOS and Linux; a third-party plugin, MIT |
+
+Sources, Claude Code documentation read on 2026-10-01:
+[1] [Subagents](https://code.claude.com/docs/en/sub-agents) ·
+[2] [Run agents in parallel](https://code.claude.com/docs/en/agents) ·
+[3] [Interactive mode: background Bash commands](https://code.claude.com/docs/en/interactive-mode#background-bash-commands) ·
+[4] [Tools reference: when a background command stops](https://code.claude.com/docs/en/tools-reference#when-a-background-command-stops) ·
+[5] [CLI reference](https://code.claude.com/docs/en/cli-reference) ·
+[6] [Run Claude Code programmatically](https://code.claude.com/docs/en/headless) ·
+[7] [Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) ·
+[8] [Agent view](https://code.claude.com/docs/en/agent-view) ·
+[9] [Agent teams](https://code.claude.com/docs/en/agent-teams) ·
+[10] [Advanced setup](https://code.claude.com/docs/en/setup) ·
+[11] [Worktrees](https://code.claude.com/docs/en/worktrees).
+
+What agent-hub adds is not a new way to start a second session. It is a worker that survives a session boundary and a
+handoff, an id fixed at spawn so any session can message or resume it by role, files as the protocol (a journal any
+session can wait on, an owner-question register) and a lock board that refuses a merge, or a command you listed, for
+everyone but the holder. If a sub-agent, a background session or `claude -p` covers your case, use it. The argument is in
+[docs/why.md](docs/why.md).
 
 ## How it works
 
@@ -73,7 +107,7 @@ flowchart LR
     hub <-->|"ask add / close / search"| questions
     hub <-->|"lock take / release"| board
     hub <-->|"roles set / get"| roles
-    board -.->|"board_locks hook refuses merges and deploys under another's lock"| agents
+    board -.->|"board_locks hook refuses merges to protected branches and the commands you list under another's lock"| agents
     log -->|"read-only"| top["agent-top<br/>console + /agent-top widget"]
     journal --> top
     questions --> top
@@ -87,9 +121,9 @@ flowchart LR
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
-| `lock` | The lock board: `deploy-window`, `main-merge`, `stage`, `migration-head`. |
-| `hub takeover / handoff` | Hand a hub shift over in one command each. |
-| `nightq` | A night queue with a permission matrix, for work that may continue while the owner sleeps. |
+| `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
+| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. |
+| `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
 | `agent-top` | Live console of all agents (curses), `--once` text, `--json`, `--widget` HTML. |
 
 More diagrams and the file formats: [docs/architecture.md](docs/architecture.md).
@@ -131,7 +165,9 @@ The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` pro
 
 ## Install
 
-Requirements: macOS or Linux, Python 3.10+ (standard library only), the `claude` CLI on `PATH`.
+**Platform.** macOS and Linux, Python 3.10+ (standard library only), the `claude` CLI on `PATH`. Windows is not
+supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself does run natively on Windows
+([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
 
 ```text
 /plugin marketplace add ilya-kozyrev/claude-agent-hub
@@ -143,13 +179,34 @@ Requirements: macOS or Linux, Python 3.10+ (standard library only), the `claude`
 > process with your user's rights — say in its brief what it must not touch, run it in a worktree or sandbox, or set
 > `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
 
-While the plugin is enabled its `bin/` is on the Bash tool's `PATH`, so Claude can call `agent`, `jlog`, `jwait` and the
-rest directly. To use them in your own terminal too, add the plugin's `bin/` to your `PATH` or symlink the tools.
+### What installing changes
 
-The plugin adds four skills — `hub` (the workflow), `handoff`, `agent-top` (invoked as `/agent-hub:agent-top`, or
-`/agent-top` when no other skill has that name) and `delegation` — and hooks: the lock-board guard, an owner-question
-line at session start, a size cap on `HANDOFF-*.md` files, and the [agent-discipline](#agent-discipline) hooks
-(context budget, polling guard, delegation dial and subagent rules), with four pinned-effort worker subagents.
+- **Tools on `PATH`.** While the plugin is enabled its `bin/` is on the Bash tool's `PATH`, so Claude can call `agent`,
+  `jlog`, `jwait` and the rest directly. To use them in your own terminal too, add `bin/` to your `PATH` or symlink the
+  tools. A Claude Code session's id is in `$CLAUDE_CODE_SESSION_ID` (`echo` it in the session). When it is empty, for
+  example in a plain shell outside Claude Code, `lock take` refuses unless you pass `--force`: the lock would have no
+  owner the hook could recognise.
+- **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
+  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name); four pinned-effort worker subagents.
+- **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
+  delegation dial and subagent rules — are described in their own section):
+  - `board_locks` (before every Bash call) runs in every Claude Code session on the machine, but acts only on merges
+    and pushes to protected branches and on commands your `lock-rules.json` names. Any error of its own lets the
+    command through.
+  - `handoff_size` (Write or Edit of `HANDOFF-*.md`) and `questions` (the owner-questions line at session start) act
+    only in the hub home, in repositories that have `.agent-hub/`, under the directories of the hub-wide setting
+    `AGENT_HUB_SCOPE_DIRS`, and, for `questions`, in agents started by `agent spawn`. A session in an unrelated
+    project hears nothing from them.
+- Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`.
+
+### After install: run `agent-hub:setup` in each repository
+
+Ask Claude to use the `agent-hub:setup` skill in the repository's checkout. It looks at the repository, then asks one
+round of numbered questions with a recommended answer for each: which branches are protected, which environments two
+sessions must not change at once, which commands touch each. It writes `.agent-hub/lock-rules.json` and
+`.agent-hub/config.json` and proves the rules with positive and negative checks (`lock rules check`). A project with no
+deployment ends with `main-merge` only, and that is a complete setup. Commit `.agent-hub/`: it is the team's shared
+convention (see [Team use](#team-use)).
 
 ### Recommended companion: grilling
 
@@ -164,6 +221,14 @@ answer, until nothing is left assumed. agent-hub does not bundle it; install it 
 
 Without it the `hub` skill grills by hand in the same format; the answers go to the question register either way.
 
+## Minimal mode
+
+You do not need all of it. One hub and a few agents need three tools: `agent` (spawn, status, send, stop), `jlog` and
+`jwait`, plus `hub start` once per stage, which registers your session as `hub-1` and so gives `jlog` its journal tag.
+`roles`, `ask`, `lock`, `hub takeover` and `hub handoff` matter once you have more than one interactive session, more
+than one shift, or a shared resource; leave them until then. The night queue, the night nudge and the send budget are
+optional modules for macOS with Claude Desktop.
+
 ## Quickstart
 
 Ask Claude in any session to load the `hub` skill, or run the commands yourself:
@@ -171,27 +236,49 @@ Ask Claude in any session to load the `hub` skill, or run the commands yourself:
 ```bash
 export HUB_STAGE=stage-a                      # one directory per stream of work under the hub home
 
-# 1. write a brief (template: templates/brief-executor-template.md) and start an agent
-agent spawn --role builder --cwd ~/code/webapp --model sonnet --brief ./brief-builder.md
+# 1. once per stage: register this session as hub 1 (creates the stage directory, prints the first jwait)
+hub start --stage stage-a --session "$CLAUDE_CODE_SESSION_ID"
 
-# 2. watch it
-agent status builder                          # alive?, last event, turns, last line
+# 2. write a brief (template: templates/brief-executor-template.md) and start an agent in its own worktree
+agent spawn --role builder --cwd ~/code/webapp --model sonnet --worktree --brief ./brief-builder.md
+
+# 3. watch it
+agent status builder                          # alive?, last event, turns, last line, worktree
 agent-top                                     # live console; agent-top --once for a text snapshot
 
-# 3. message it — alive: into its inbox; finished: the session resumes with the message
+# 4. message it — alive: into its inbox; finished: the session resumes with the message
 agent send builder "after the tests pass, open the PR"
 
-# 4. wait for its status line without polling (run in the background from Claude)
+# 5. wait for its status line without polling (run in the background from Claude)
 jwait --journal --tag hub --match '\b(DONE|BLOCKED|EXIT|QUESTION)\b' --for 2h
 
-# 5. stop it
+# 6. stop it
 agent stop builder
 ```
 
-The agent's brief gets a footer that tells it how to talk back: `jlog "DONE <report path>"` when finished,
-`jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
+`--worktree [BRANCH]` (default branch `agent/<role>`) runs the agent in an existing worktree of that branch, or in
+`<repo>/.worktrees/<branch>` of the main repository, which `agent spawn` adds to `.git/info/exclude`. Two agents writing
+in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
+branch is merged, `git worktree remove <path>`.
+
+The brief template is short: why, decisions already made, steps with a check for "done", verification, where to stop and
+a turn limit. `agent spawn` appends a footer that tells the agent how to talk back: `jlog "DONE <report path>"` when
+finished, `jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
+The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules.
 
 A full working day, step by step: [docs/a-day-with-agent-hub.md](docs/a-day-with-agent-hub.md).
+
+## Cost and turn limits
+
+- **Limits are shared.** Your plan's usage limits are spent by your interactive session and by every headless agent
+  together, and running several sessions at once multiplies token usage
+  ([Claude Code docs](https://code.claude.com/docs/en/agents)).
+- **Each turn re-reads the agent's whole context**, so cost grows faster than the number of turns, and a very long
+  agent is the most expensive shape there is. [docs/why.md](docs/why.md) lists measured examples from one project, such
+  as an executor that ran 1,100 turns because it was never cut into pieces.
+- **Give every brief a turn limit and a stop condition**, and cut day-long work into pieces: a fresh agent for each, with
+  a short report or handoff file between them. The turn limit is a line in the brief; agent-hub does not enforce it.
+- **`agent-top` shows a dollar figure only when the CLI reports one** (the cost of finished runs); a live run shows `—`.
 
 ## Agent lifecycle
 
@@ -241,7 +328,16 @@ flowchart LR
 
 Every open question carries the action that happens if nobody answers by its due time, so work is never silently
 stuck. A decision an agent takes on its own on a matter the owner normally decides is recorded with `ask decided` —
-visible, contestable. At session start a hook prints one line per stage: open, overdue, awaiting execution.
+visible, contestable. At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
+hub home, in repositories with `.agent-hub/` and for hub agents.
+
+## Team use
+
+- **One hub home belongs to one person on one machine.** The board, the journal and the registers are local files, so
+  two people cannot share a hub home, and a lock held by one person's hub is invisible to another's.
+- **`.agent-hub/` committed in a repository shares conventions, not agents or locks**: the lock resources and rules, the
+  brief footer, the hub rules, the team's notes, the config defaults. Everyone who installs the plugin and opens the
+  repository gets the same guard and the same briefs; each runs their own hub.
 
 ## File layout
 
@@ -249,13 +345,14 @@ visible, contestable. At session start a hook prints one line per stage: open, o
 $AGENT_HUB_HOME/                      default ~/.claude/agent-hub
 ├── board.md                          lock board (lock)
 ├── config.json                       optional: settings (see Configuration)
-├── lock-rules.json                   optional: extra commands the lock hook guards
+├── lock-rules.json                   optional: shared resources and the commands that touch them
+├── hub-rules.md, HUB-NOTES.md        optional: your rules and notes for every hub (see Configuration layers)
 ├── .jwait-state/<caller>.json        what each jwait caller has already seen
 ├── .state/                           context-budget warnings, delegation levels (agent discipline)
 └── <stage>/                          one directory per stream of work
     ├── roles.json                    role → full session id, kind, tag; send counts
     ├── questions.md                  owner-question register (ask)
-    ├── night-queue.md, night-log.md  optional night queue (nightq)
+    ├── night-queue.md, night-log.md  optional night queue (nightq; macOS + Claude Desktop)
     ├── handoff-facts.sh              optional: prints environment rows for hub handoff (also brief-footer.md, takeover.sh)
     ├── agents/<role>/                one headless agent
     │   ├── brief.md                  copy of the brief it was started with
@@ -268,6 +365,9 @@ $AGENT_HUB_HOME/                      default ~/.claude/agent-hub
         └── work/
             ├── journal-YYYY-MM-DD.md one line per event: - HH:MM [tag] text
             └── <tag>-REPORT.md       agents' reports
+
+<repo>/.agent-hub/                    committed: the team's conventions, same file names as above (Configuration layers)
+<repo>/.worktrees/<branch>/           agent worktrees from `agent spawn --worktree`, excluded in .git/info/exclude
 ```
 
 ## Configuration
@@ -283,26 +383,27 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_MODEL_MAP` | none | Pin aliases to model ids, e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). |
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
-| `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. |
+| `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. `lock rules init` writes it into `.agent-hub/config.json`. |
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub takeover` takes the hub repository's main-merge as if `--take-main-merge` were given. Without it, a free main-merge of a configured hub repository is reported in the digest. |
 | `CLAUDE_BIN` | `claude` on PATH | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
 | `AGENT_INIT_TIMEOUT` | `120` | Seconds to wait for a new run's init event before calling the spawn failed. |
 | `AGENT_HUB_BG_WAIT_CEILING_MS` | `0` | How long an agent's run, after its turn ends, waits for its background sub-agents before the CLI kills them (passed as `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; `0` = until they finish, the CLI's own default is 10 min). |
-| `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal. Hub-wide. |
-| `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for `nightq`. Hub-wide. |
+| `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal (Claude Desktop only). Hub-wide. |
+| `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`. Hub-wide. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
+| `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
-| `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only). |
+| `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
 
 ### Configuration layers
 
 A team keeps its conventions in its repository instead of forking the plugin. The tools read the same file names
-from three places, most specific first:
+from three places, most specific first (`agent-hub:setup` writes the first two files of the project layer for you):
 
 | Layer | Where | Found by |
 |---|---|---|
 | stage | `<hub home>/<stage>/` | the command's stage |
-| project | `<repo>/.agent-hub/` | the working directory, searched upwards to the git root (a worktree has its own checkout of it); for `agent spawn`, its `--cwd`; for the lock hook, the command's directory after `cd` / `git -C` |
+| project | `<repo>/.agent-hub/` | the working directory, searched upwards to the git root (a linked worktree without its own `.agent-hub/` uses the main checkout's); for `agent spawn`, its `--cwd`; for the lock hook, the command's directory after `cd` / `git -C` |
 | home | `<hub home>/` | always |
 
 | File | Layers | Combination | Used by |
@@ -312,7 +413,8 @@ from three places, most specific first:
 | `brief-footer.md` | stage, project, home | first found | `agent spawn`: appended after the standard footer; `{role}` `{tag}` `{stage}` `{report}` `{inbox}` are filled in |
 | `handoff-facts.sh` | stage, project, home | first found | `hub handoff`: prints rows `\| What \| State \| Where it shows \|` for § 1 |
 | `takeover.sh` | stage, project, home | first found | `hub takeover`: an extra verified step (below) |
-| `HUB-NOTES.md` | stage, project, home | first found | the hub: the project's own hub rules (what needs the owner, how to check data claims, …); the takeover digest points at it and the `hub` skill reads it before planning |
+| `hub-rules.md` | stage, project, home | all of them; a later layer wins on the same subject (home, then project, then stage) | the hub: overrides of the `hub` skill's recommended rules, each with its reason (example: [templates/hub-rules-example.md](templates/hub-rules-example.md)); the takeover digest points at it |
+| `HUB-NOTES.md` | stage, project, home | first found | the hub: what the team knows (what needs the owner, how to check data claims, …); the takeover digest points at it and the `hub` skill reads it before planning |
 
 `config.json` is a flat JSON object of the settings above; keys starting with `_` are comments. A key a layer may not
 set (a hub-wide key in a repository, a misspelling) and a broken file are reported on stderr and ignored, so a typo
@@ -325,24 +427,44 @@ never stops a tool:
  "AGENT_HUB_DEFAULT_REPO": "webapp"}
 ```
 
-`lock-rules.json` teaches the lock hook your own commands, for example:
+`lock-rules.json` names the shared resources of your project and the commands that touch them, for example:
 
 ```json
 {"protected_branches": ["main"],
+ "resources": {"deploy-window": "a production rollout is in progress",
+               "staging": "the shared staging environment"},
  "rules": [{"match": "\\bmake deploy-prod\\b", "kinds": ["deploy-window"], "action": "production deploy"},
-           {"match": "\\bhelm upgrade .* -n staging\\b", "kinds": ["stage"], "action": "staging rollout"}]}
+           {"match": "\\bhelm upgrade .* -n staging\\b", "kinds": ["staging"], "action": "staging rollout"}]}
 ```
 
+A lock is on a named resource. `main-merge` is the only one built in: `gh pr merge`, `glab mr merge`, merge calls
+through `gh api` / `glab api` and `git push` to a protected branch (`main` and `master` unless `protected_branches`
+says otherwise) need it. Every other resource — a deploy window, a staging environment, a migration head, a shared
+test database — exists because your file names it. A name is lowercase letters, digits and hyphens. `resources`
+(optional) declares the names with a description; when it is present, every rule's `kinds` must be declared there (or
+be `main-merge`), so a typo is an error, not a lock nobody takes. A resource with no rule, such as the expected head of
+a migration chain, is informational: people take and read the lock, no command is refused for it.
+
 `match` is a Python regex searched in the command's words joined by single spaces; the first matching rule wins.
-`kinds` is a non-empty list of `deploy-window`, `main-merge`, `stage`, `migration-head`. A file that cannot be used
-(bad JSON, a bad regex, bad `kinds`, a symlink to a missing file) is skipped with a warning on every command — on
-stderr and to the user — while the built-in rules and the other file keep guarding; fix it, the guard is incomplete
-until then. Rules in the hub home apply to commands run anywhere, so keep there the rules that must hold outside a
-checkout (a deploy job started with `-R group/repo` from your home directory), as a regular file rather than a
-symlink into a checkout whose branch can change.
-Built in: `gh pr merge`, `glab mr merge`, merge calls through `gh api` / `glab api`, and `git push` to a protected
-branch need `main-merge`. Add `# lock-ok: <reason>` to a command to pass it deliberately. A lock guards one repository
-(`--repo`, default `*`), so a rule known in every repository still only stops commands aimed at the locked one.
+`kinds` is a non-empty list of resource names. A file that cannot be used (bad JSON, a bad regex, bad or undeclared
+`kinds`, a symlink to a missing file) is skipped with a warning on every command — on stderr and to the user — while
+the built-in rules and the other file keep guarding; fix it, the guard is incomplete until then. Rules in the hub home
+apply to commands run anywhere, so keep there the rules that must hold outside a checkout (a deploy job started with
+`-R group/repo` from your home directory), as a regular file rather than a symlink into a checkout whose branch can
+change. Add `# lock-ok: <reason>` to a command to pass it deliberately. A lock guards one repository (`--repo`, default
+`*`), so a rule known in every repository still only stops commands aimed at the locked one.
+
+`lock take <resource>` refuses a name nobody configured where you run it and lists the known ones (a name already on the
+board stays takeable, for a handover); `lock release` accepts any name. The rules have their own commands:
+
+```bash
+lock rules                                         # resources and the commands each one guards, here
+lock rules init --protected main release           # writes .agent-hub/lock-rules.json + config.json
+lock rules add staging --about "the shared staging environment" \
+    --match '^helm upgrade\b.* -n staging\b' --action "staging rollout"
+lock rules check "helm upgrade app -n staging" --expect staging     # runs the real hook on a scratch board
+lock rules check "helm upgrade app -n preview" --expect-none
+```
 
 `takeover.sh` is run twice per takeover from the hub's working directory: `takeover.sh check` exits 0 when its target
 state is already there (or there is nothing to do) and 1 when it must act; then `takeover.sh apply`, after which
@@ -456,17 +578,25 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 
 ## Limitations
 
-- macOS and Linux only (`fcntl`, process groups, `ps`). Python 3.10+, standard library only.
+- macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
+  itself runs natively on Windows. Python 3.10+, standard library only.
 - The `claude` CLI must be on `PATH` (or set `CLAUDE_BIN`); on macOS the CLI bundled with Claude Desktop is a fallback.
 - Headless agents run with `bypassPermissions` by default. Give every agent a brief that says what it must not
   touch, or set `AGENT_HUB_PERMISSION_MODE`.
-- Roles of kind `desktop`, the send budget and `hub takeover --session local_…` read Claude Desktop's session metadata
-  (macOS). Terminal sessions work too, as kind `cli`, but cannot receive cross-session messages — they read the journal.
+- One machine, one person: the files are local and the locks are advisory `flock`s plus a hook, not a distributed lock
+  service. Two people cannot share a hub home (see [Team use](#team-use)).
+- Locks guard only what the hook recognises: merges and pushes to protected branches, and the commands your
+  `lock-rules.json` lists. A command run outside Claude Code, or one no rule matches, is not stopped.
+- The turn limit of a brief is an instruction to the agent, not something agent-hub enforces. Cost and plan limits are
+  Claude Code's, shared with your interactive session.
+- Optional modules need macOS and Claude Desktop: the night nudge (waking a silent hub at night needs Claude Desktop's
+  scheduled tasks; see [templates/night-nudge-task.md](templates/night-nudge-task.md)), the send budget, roles of kind
+  `desktop` and `hub takeover --session local_…` (they read Claude Desktop's session metadata). Terminal sessions work
+  as kind `cli`. Interactive terminal, `claude -p` and `claude --bg` sessions receive cross-session messages while
+  their process is alive, and nothing once it is gone; for a headless agent prefer `agent send` (it resumes a finished
+  session and leaves a journal line) — see [docs/launch-modes.md](docs/launch-modes.md).
 - `sendPrompt` buttons do not work in the Claude Code desktop tab, so the `/agent-top` widget has no buttons; it names
   the commands to type instead.
-- The night nudge (waking a silent coordinator at night) needs Claude Desktop's scheduled tasks; see
-  [templates/night-nudge-task.md](templates/night-nudge-task.md).
-- One machine: the files are local and the locks are advisory `flock`s plus a hook, not a distributed lock service.
 
 ## Tests
 

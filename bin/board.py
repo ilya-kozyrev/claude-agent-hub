@@ -5,13 +5,13 @@ tagged ``locks`` holding one JSON object per line. Everything outside that block
 is regenerated on every write; edit locks through ``lock``, not by hand.
 
 A lock record:
-  kind        deploy-window | main-merge | stage | migration-head
+  kind        the resource: main-merge (built in) or a name from lock-rules.json (bin/lockrules.py)
   repo        repository name the lock guards; "*" (the default) = every repo
   owner_name  human name of the session (its sidebar title)
   session_id  $CLAUDE_CODE_SESSION_ID of the holder; "" = nobody's session yet
   until       ISO 8601 with offset; a lock past it is void
   why         reason, free text
-  value       optional payload (e.g. the expected migration head for migration-head)
+  value       optional payload (e.g. the expected head of a migration chain)
   taken_at    ISO 8601
   took_over_from  owner_name of the previous holder when taken with --force
 
@@ -35,7 +35,6 @@ import hubcore as hc  # noqa: E402
 
 BOARD = Path(os.environ.get("AGENT_BOARD_FILE") or (hc.root() / "board.md"))
 TZ = hc.TZ
-KINDS = ("deploy-window", "main-merge", "stage", "migration-head")
 DEFAULT_REPO = "*"
 
 _BLOCK = re.compile(r"^```locks[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
@@ -47,19 +46,15 @@ command that touches a resource under **another session's active** lock; your ow
 lock or no lock passes. Escape hatch: `# lock-ok: <reason>` in the command itself (it stays in the
 transcript).
 
-Kinds:
-- `deploy-window` — a production rollout is in progress: the deploy commands named in `lock-rules.json`
-  wait (merges are guarded by `main-merge`, not by this kind).
-- `main-merge` — the standing role "who merges main". Merges into main are refused to everyone but
-  the holder. A successor takes the role with `lock take main-merge --force --until … --why …`.
-- `stage` — a booking of the shared staging environment.
-- `migration-head` — the expected head of the migration chain (`--value`); informational, the hook
-  does not enforce it.
-Which commands need which kind: the hook's built-in rules plus `lock-rules.json` next to this file and in the
-repository's `.agent-hub/`.
+Resources: `main-merge` is built in — the standing role "who merges main"; merges into, and pushes to,
+the protected branches are refused to everyone but the holder. A successor takes the role with
+`lock take main-merge --force --until … --why …`. Every other resource (a deploy window, a shared environment,
+a migration head, …) is named by the project in `lock-rules.json`, next to this file or in the repository's
+`.agent-hub/`; `lock rules` lists them with the commands each one guards. A resource with no rule is
+informational: the hook refuses nothing for it.
 
-Commands: `lock list`, `lock take <kind> --until 2026-09-25T18:00 --why "…" [--owner-name "…"]
-[--value …] [--repo NAME] [--force]`, `lock release <kind> [--force]`.
+Commands: `lock list`, `lock rules`, `lock take <resource> --until 2026-09-25T18:00 --why "…" [--owner-name "…"]
+[--value …] [--repo NAME] [--force]`, `lock release <resource> [--force]`.
 
 The machine part below (one JSON line per lock) is written by `lock`, atomically. Do not edit by hand.
 
@@ -120,7 +115,9 @@ def parse(text: Optional[str]) -> list:
             rec = json.loads(line)
         except ValueError as e:
             raise BoardError(f"line {n}: {e}") from None
-        if not isinstance(rec, dict) or rec.get("kind") not in KINDS or not isinstance(rec.get("until"), str):
+        # any resource name parses: the set of resources is the project's, and a record outlives a config change
+        if not isinstance(rec, dict) or not isinstance(rec.get("kind"), str) or not rec["kind"] \
+                or not isinstance(rec.get("until"), str):
             raise BoardError(f"line {n}: bad record")
         parse_time(rec["until"])  # raises ValueError on garbage
         locks.append(rec)

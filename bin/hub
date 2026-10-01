@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""Hub takeover and handoff, one command each.
+"""Hub start, takeover and handoff, one command each.
 
-  hub takeover --stage stage-a --n 17 --session <session id> [--handoff PATH] [--dry-run]
-               [--name "Hub stage-a #17"] [--skip-lock KIND ...] [--take-main-merge] [--main-merge-until +30d]
-  hub handoff  --stage stage-a --n 16 [--out PATH]
+  hub start    --stage stage-a --session <session id> [--name "Hub stage-a #1"] [--take-main-merge] [--dry-run]
+  hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
+               [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
+  hub handoff  --stage stage-a [--n 16] [--out PATH]
+
+start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
+below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
+takeover.
+
+The shift number is derived: takeover = the registered hub's number (roles `hub`, tag hub-N) + 1, or the
+successor named in the latest handoff ("… → \"Hub <stage> #N\""); handoff = the registered hub's number.
+--n overrides both (a re-run of a takeover finds itself registered and keeps its number).
 
 --session is the new hub's own session: a Claude Desktop id (local_…, looked up in the Desktop session
 metadata for its CLI id and title) or a Claude Code CLI session uuid ($CLAUDE_CODE_SESSION_ID).
@@ -18,7 +27,7 @@ target state is already there is skipped as "already done", so a re-run finishes
      party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
      reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
      The free lock is never added when a main-merge is already taken over or held (no second, wildcard
-     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock KIND leaves that lock where it
+     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock RESOURCE leaves that lock where it
      is (a sub-agent of the old hub still works under it).
   2. night-queue.md: `coordinator: <new session id>` (the night nudge addresses it) and `updated:`
      (single-line edits, atomic write). Skipped when the stage has no night queue.
@@ -93,6 +102,50 @@ def cut(text: str, limit: int, where: str = "") -> str:
 
 def hub_name(stage: str, n: int) -> str:
     return f"Hub {stage} #{n}"
+
+
+HUB_TAG_RE = re.compile(r"hub-(\d+)")
+HANDOFF_TITLE_RE = re.compile(r'^# Handoff "[^"\n]*#(\d+)" → "[^"\n]*#(\d+)"', re.MULTILINE)
+
+
+def registered_hub(stage: str):
+    """(number, record) of the hub in roles.json, or (None, record-or-None)."""
+    rec = hc.roles_load(stage)["roles"].get("hub")
+    m = HUB_TAG_RE.fullmatch((rec or {}).get("tag") or "")
+    return (int(m.group(1)) if m else None), rec
+
+
+def handoff_numbers(path):
+    """(outgoing, successor) from a handoff's title line, or (None, None)."""
+    try:
+        head = Path(path).read_text(encoding="utf-8")[:600]
+    except (OSError, TypeError):
+        return None, None
+    m = HANDOFF_TITLE_RE.search(head)
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def takeover_number(stage: str, session: str, cli: str, handoff, notes: list) -> int:
+    """The new hub's number: kept on a re-run, else registered + 1, else the handoff's successor, else 1."""
+    n, rec = registered_hub(stage)
+    if n and (rec.get("session") in (session, cli) or rec.get("cli_session_id") == cli):
+        return n
+    from_roles = n + 1 if n else None
+    _, from_handoff = handoff_numbers(handoff) if handoff else (None, None)
+    if from_roles and from_handoff and from_roles != from_handoff:
+        notes.append(f"roles say hub-{n} (next #{from_roles}), the handoff names #{from_handoff} — taking "
+                     f"#{max(from_roles, from_handoff)}; pass --n to choose")
+    return max(x for x in (from_roles, from_handoff, 1) if x)
+
+
+def handoff_number(stage: str) -> int:
+    n, _ = registered_hub(stage)
+    if n:
+        return n
+    _, succ = handoff_numbers(latest("HANDOFF-hub-*.md", stage))
+    if succ:
+        return succ
+    raise hc.UsageError(f"no hub registered in stage {stage} (roles `hub`) and no handoff to count from — pass --n")
 
 
 def coordinator_dir(stage: str) -> Path:
@@ -282,9 +335,17 @@ def jwait_command(stage: str, tag: str, since=None) -> str:
 
 
 def hub_notes_line(stage: str) -> str:
-    """Pointer to the project's hub notes (HUB-NOTES.md in the config layers), read before planning."""
+    """Pointers to the project's hub rules (hub-rules.md: overrides of the skill's recommended rules, every layer)
+    and hub notes (HUB-NOTES.md, the first layer's), read before planning."""
+    out = []
+    rules = [d / "hub-rules.md" for d in reversed(hc.config_dirs(stage)) if (d / "hub-rules.md").is_file()]
+    if rules:
+        out.append("Hub rules that override the skill's defaults — read before planning (later wins): "
+                   + ", ".join(map(str, rules)))
     notes = hc.config_file("HUB-NOTES.md", stage)
-    return f"Hub notes of this project — read before planning: {notes}" if notes else ""
+    if notes:
+        out.append(f"Hub notes of this project — read before planning: {notes}")
+    return "\n".join(out)
 
 
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = ()) -> str:
@@ -393,24 +454,44 @@ def new_hub_session(raw: str) -> tuple:
     return raw, raw, "cli", ""
 
 
+def cmd_start(a) -> int:
+    stage = hc.check_stage(a.stage)
+    n, rec = registered_hub(stage)
+    session, cli, _, _ = new_hub_session(a.session)
+    if rec and rec.get("session") not in (session, cli) and rec.get("cli_session_id") != cli:
+        raise hc.UsageError(f"stage {stage} already has a hub ({rec.get('title') or rec.get('session')}, tag "
+                            f"{rec.get('tag')}) — use `hub takeover --stage {stage} --session …`")
+    prev = latest("HANDOFF-hub-*.md", stage)
+    if prev is not None and not rec:
+        raise hc.UsageError(f"stage {stage} has a handoff ({prev.name}) — use `hub takeover --stage {stage} --session …`")
+    if not a.dry_run:
+        hc.work_dir(stage).mkdir(parents=True, exist_ok=True)
+    a.n = a.n or n or 1
+    a.handoff, a.skip_lock, a.start = None, None, True
+    return cmd_takeover(a)
+
+
 def cmd_takeover(a) -> int:
     stage = hc.check_stage(a.stage)
-    n, tag = a.n, f"hub-{a.n}"
-    if not (hc.root() / stage).is_dir():
-        raise hc.UsageError(f"no stage directory {hc.root() / stage}")
+    starting = getattr(a, "start", False)
+    if not (hc.root() / stage).is_dir() and not (starting and a.dry_run):
+        raise hc.UsageError(f"no stage directory {hc.root() / stage} — the first hub of a stage runs "
+                            f"`hub start --stage {stage} --session <your session id>`")
     session, cli, kind, title = new_hub_session(a.session)
-    name = a.name or hub_name(stage, n)
     env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if env_sid and env_sid != cli:
         print(f"ATTENTION: not run from session {session} (your sid {env_sid[:8]}, its sid {cli[:8]}); "
               "the locks are recorded on it", file=sys.stderr)
-    handoff = Path(a.handoff).expanduser() if a.handoff else latest("HANDOFF-hub-*.md", stage)
+    handoff = Path(a.handoff).expanduser() if a.handoff else (None if starting else latest("HANDOFF-hub-*.md", stage))
     if handoff is not None and not handoff.is_file():
         raise hc.UsageError(f"--handoff {handoff}: no such file")
+    notes = []
+    n = a.n or takeover_number(stage, session, cli, handoff, notes)
+    tag = f"hub-{n}"
+    name = a.name or hub_name(stage, n)
 
     # Predecessor: every source that does not already name the new hub. A re-run after a partial
     # takeover therefore still finds it, and a stale registry does not hide the real one's locks.
-    notes = []
     cands = hub_candidates(stage, exclude=(session, cli))
     prev = previous_hub(stage, exclude=(session, cli))
     owners = {c["cli"] for c in cands.values() if c.get("cli")}
@@ -421,7 +502,9 @@ def cmd_takeover(a) -> int:
     for src, c in cands.items():
         if c.get("cli") and len(c["cli"]) < 36:
             notes.append(f"{src}: no session found for the prefix {c['cli']} — its locks were not taken, check `lock list`")
-    prev_label = prev["name"] or (prev["local"] or prev["cli"][:8] or "unknown hub")
+    first = starting or (not cands and handoff is None)
+    prev_label = prev["name"] or (prev["local"] or prev["cli"][:8] or ("nobody (first hub of the stage)" if first
+                                                                       else "unknown hub"))
     t = hc.now()
     b = board_module()
     try:
@@ -474,7 +557,8 @@ def cmd_takeover(a) -> int:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 
     plan = Plan(a.dry_run)
-    print(f"{name}: {session} (sid {cli[:8]}, {kind}) takes over from \"{prev_label}\"; handoff {handoff or '—'}")
+    print(f"{name}: {session} (sid {cli[:8]}, {kind}) " + (f"starts stage {stage}" if first else
+          f"takes over from \"{prev_label}\"; handoff {handoff or '—'}"))
     for note in notes:
         print(f"ATTENTION: {note}")
     for r in mine:
@@ -539,8 +623,9 @@ def cmd_takeover(a) -> int:
               short="roles")
 
     lock_names = ", ".join(sorted({r["kind"] for r in to_take + mine})) or "none"
-    start_text = (f"start: \"{name}\" ({session}, sid {cli[:8]}) took over from \"{prev_label}\""
-                  + (f" by {handoff.name}" if handoff else "") + f"; locks: {lock_names}; night-queue, roles updated"
+    start_text = (f"start: \"{name}\" ({session}, sid {cli[:8]}) "
+                  + (f"started stage {stage}" if first else f"took over from \"{prev_label}\"")
+                  + (f" by {handoff.name}" if handoff else "") + f"; locks: {lock_names}; " + ("night-queue, " if nightq_read(stage) is not None else "") + "roles updated"
                   + ("; " + "; ".join(notes) if notes else ""))
     plan.step("journal: start line",
               lambda: hc.journal_append(stage, tag, start_text),
@@ -556,7 +641,8 @@ def cmd_takeover(a) -> int:
 
 def cmd_handoff(a) -> int:
     stage = hc.check_stage(a.stage)
-    n, tag = a.n, f"hub-{a.n}"
+    n = a.n or handoff_number(stage)
+    tag = f"hub-{n}"
     name, succ = hub_name(stage, n), hub_name(stage, n + 1)
     t = hc.now()
     out = Path(a.out).expanduser() if a.out else coordinator_dir(stage) / f"HANDOFF-hub-{stage}-{t:%Y-%m-%d-%H%M}.md"
@@ -617,7 +703,7 @@ Written by session "{name}" ({me_id}, TODO model).
 **Headline.** TODO: one or two sentences — what matters most right now and whose word is behind it (quote + id in `ask`).
 
 ## 0. First steps for the successor
-1. Name your session "{succ}"; `hub takeover --stage {stage} --n {n + 1} --session <your full session id> --handoff {out}` —
+1. Name your session "{succ}"; `hub takeover --stage {stage} --session <your full session id> --handoff {out}` —
    locks ({', '.join(r['kind'] for r in held) or 'none held'}), `coordinator:` in night-queue, `roles set hub`, a journal
    line; it prints a digest and the first `jwait` command. Tell "{name}" once that you took over (`roles budget`).
 2. The first `jwait` — from the takeover digest, Bash `run_in_background: true`; start no other waiters.
@@ -636,7 +722,7 @@ Written by session "{name}" ({me_id}, TODO model).
 1. TODO
 
 ## 3. Night queue
-`night-queue.md`: {f"open {q['open']}, next — {q['next'] or '—'}" if q else 'no file'}.
+{f"`night-queue.md`: open {q['open']}, next — {q['next'] or '—'}." if q else "Not used (an optional module; delete this section)."}
 
 ## 4. Owner questions
 `ask summary`: {summary or '—'}.
@@ -644,7 +730,8 @@ Written by session "{name}" ({me_id}, TODO model).
 TODO: questions asked in chat without a record — `ask add` first, then their ids here.
 
 ## 5. Risks and loose ends
-- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up.
+- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`git worktree list`;
+  finished ones: `git worktree remove <path>`).
 
 ## 6. Skills for the successor
 `hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.
@@ -665,23 +752,32 @@ TODO: questions asked in chat without a record — `ask add` first, then their i
 def main(argv: list) -> int:
     p = argparse.ArgumentParser(prog="hub", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
+    st = sub.add_parser("start", help="register the first hub of a new stage")
+    st.add_argument("--stage", required=True)
+    st.add_argument("--session", required=True, help="your full session id (local_… or a CLI uuid)")
+    st.add_argument("--n", type=int, help=argparse.SUPPRESS)
+    st.add_argument("--name", help="title (default: \"Hub <stage> #1\")")
+    st.add_argument("--main-merge-until", default="+30d", help="main-merge expiry with --take-main-merge")
+    st.add_argument("--take-main-merge", action="store_true", help="also take main-merge of this repository")
+    st.add_argument("--dry-run", action="store_true")
     t = sub.add_parser("takeover", help="take over the hub role")
     t.add_argument("--stage", required=True)
-    t.add_argument("--n", type=int, required=True, help="number of the new hub")
+    t.add_argument("--n", type=int, help="number of the new hub (default: derived from roles.json / the handoff)")
     t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid)")
     t.add_argument("--handoff", help="handoff file (default: the latest HANDOFF-hub-*.md)")
     t.add_argument("--name", help="title (default: \"Hub <stage> #<n>\")")
-    t.add_argument("--skip-lock", action="append", choices=("deploy-window", "main-merge", "stage", "migration-head"))
+    t.add_argument("--skip-lock", action="append", metavar="RESOURCE",
+                   help="leave this lock with the previous hub (repeatable)")
     t.add_argument("--main-merge-until", default="+30d", help="main-merge expiry when taken from nobody")
     t.add_argument("--take-main-merge", action="store_true",
                    help="also take main-merge when it is free or held by a third party")
     t.add_argument("--dry-run", action="store_true")
     h = sub.add_parser("handoff", help="write a handoff draft")
     h.add_argument("--stage", required=True)
-    h.add_argument("--n", type=int, required=True, help="number of the outgoing hub")
+    h.add_argument("--n", type=int, help="number of the outgoing hub (default: the registered hub's)")
     h.add_argument("--out")
     a = p.parse_args(argv)
-    return {"takeover": cmd_takeover, "handoff": cmd_handoff}[a.cmd](a)
+    return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff}[a.cmd](a)
 
 
 if __name__ == "__main__":

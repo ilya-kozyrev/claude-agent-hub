@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Role registry of a stage: <root>/<stage>/roles.json — who plays which role, by full session id.
 
-  roles set <role> <session-id> [--kind desktop|headless|cli] [--tag T] [--title T] [--note N] [--pid N]
+  roles set <role> <session-id> [--kind desktop|headless|cli (default: from the id)] [--tag T] [--title T] [--note N] [--pid N]
   roles get <role>                         prints the full session id only (local_… or a uuid)
   roles list [--all]                       live roles; --all adds retired ones
   roles retire <role> [--note N]
@@ -53,7 +53,19 @@ def validate_session(sid: str, kind: str) -> dict:
     return {"session": sid, "cli_session_id": sid, "desktop_title": ""}
 
 
-def set_role(stage: str, role: str, sid: str, kind: str, tag=None, title=None, note=None, **extra) -> dict:
+def infer_kind(sid: str) -> str:
+    """desktop for a local_… id or a bare uuid that names a Claude Desktop session; cli for any other uuid (a
+    terminal session, $CLAUDE_CODE_SESSION_ID). headless is never guessed: `agent spawn` registers its agents."""
+    sid = (sid or "").strip()
+    if sid.startswith("local_"):
+        return "desktop"
+    if UUID_RE.fullmatch(sid) and hc.desktop_session(hc.normalize_local_id(sid)) is not None:
+        return "desktop"
+    return "cli"
+
+
+def set_role(stage: str, role: str, sid: str, kind=None, tag=None, title=None, note=None, **extra) -> dict:
+    kind = kind or infer_kind(sid)
     facts = validate_session(sid, kind)
     t = hc.now()
     rec = {"session": facts["session"], "cli_session_id": facts["cli_session_id"], "kind": kind,
@@ -239,7 +251,8 @@ def main(argv: list) -> int:
     s = sub.add_parser("set")
     s.add_argument("role")
     s.add_argument("session")
-    s.add_argument("--kind", choices=("desktop", "headless", "cli"), default="desktop")
+    s.add_argument("--kind", choices=("desktop", "headless", "cli"), default=None,
+                   help="default: desktop for local_… (or a uuid Claude Desktop knows), cli for any other uuid")
     s.add_argument("--tag")
     s.add_argument("--title")
     s.add_argument("--note")

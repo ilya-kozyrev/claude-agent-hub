@@ -6,7 +6,7 @@ Long work (a merge steward, a release rehearsal, anything > 1 h) runs as a detac
 session instead of a hub sub-agent: it survives the hub's handoff, and any hub can talk to it.
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
-              [--stage S] [--tag T] [--title "…"] [--permission-mode MODE]
+              [--worktree [BRANCH]] [--stage S] [--tag T] [--title "…"] [--permission-mode MODE]
   agent status [R] [--stage S] [--all]
   agent send R "msg" [--stage S]
   agent stop R [--stage S]
@@ -27,6 +27,11 @@ CLI's ceiling (10 min, then they are killed); an agent's run waits until they fi
 These settings (and CLAUDE_BIN, AGENT_INIT_TIMEOUT, AGENT_HUB_BG_WAIT_CEILING_MS) may also come from config.json
 of the agent's repository (<repo>/.agent-hub/) or of the hub home; a brief-footer.md there is appended to the
 footer of every brief.
+--worktree: the agent works in a git worktree of BRANCH (default agent/<R>; created from the checked-out commit of
+--cwd when it does not exist): an existing worktree of that branch is reused wherever it is, so a re-spawn continues
+the work; otherwise <repo>/.worktrees/<BRANCH> of the main repository, with /.worktrees/ added to .git/info/exclude
+(never untracked noise). status and stop name it; nothing removes it — `git worktree remove` once the branch is
+merged. Two agents in one checkout overwrite each other's files: give each writer its own worktree.
 status: alive or not, age of the last log event, model turns, the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
 the session is resumed detached with `claude --resume <id> -p "msg"` in the same cwd, the unread
@@ -111,6 +116,77 @@ def footer(stage: str, cwd: Path, **fields) -> str:
             add = add.replace("{" + k + "}", str(v))
         text += add + "\n"
     return text
+
+
+def git(*argv, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True, env=hc.git_env())
+
+
+WORKTREES_DIR = ".worktrees"
+
+
+def _worktrees(top: Path) -> dict:
+    """{branch: path} of every worktree of the repository (the main checkout included)."""
+    res = git("worktree", "list", "--porcelain", cwd=top)
+    out, path = {}, None
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[len("worktree "):])
+        elif line.startswith("branch refs/heads/") and path is not None:
+            out[line[len("branch refs/heads/"):]] = path
+    return out
+
+
+def make_worktree(repo: Path, role: str, branch: str | None) -> tuple[Path, str, bool]:
+    """(path, branch, created) of the agent's worktree: an existing worktree of the branch is reused wherever it is;
+    otherwise <main repository>/.worktrees/<branch>, with .worktrees/ in .git/info/exclude so it never shows as
+    untracked. A branch checked out in the main checkout is refused: that is not isolation."""
+    res = git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=repo)
+    if res.returncode != 0:
+        raise hc.UsageError(f"--worktree: {repo} is not inside a git repository")
+    common = Path(res.stdout.strip())
+    top = common.parent if common.name == ".git" else Path(git("rev-parse", "--show-toplevel", cwd=repo).stdout.strip())
+    branch = branch or f"agent/{role}"
+    if git("check-ref-format", "--branch", branch, cwd=top).returncode != 0:
+        raise hc.UsageError(f"--worktree: {branch!r} is not a valid branch name")
+    existing = _worktrees(top).get(branch)
+    if existing is not None and not existing.is_dir():
+        # a worktree directory deleted without `git worktree remove`: drop the stale entry, then create it afresh
+        git("worktree", "prune", cwd=top)
+        existing = _worktrees(top).get(branch)
+        if existing is not None and not existing.is_dir():  # prune keeps a locked entry
+            raise hc.Failure(f"--worktree: {branch} is registered at {existing}, which is gone, and the entry is "
+                             f"locked — `git worktree unlock {existing}` (then `git worktree prune`), or pick another "
+                             "branch")
+    if existing is not None:
+        if existing.resolve() == top.resolve():
+            raise hc.UsageError(f"--worktree: {branch} is checked out in the main checkout {top} — pick another branch")
+        return existing, branch, False
+    path = top / WORKTREES_DIR / branch
+    if path.exists():
+        raise hc.Failure(f"--worktree: {path} exists and is not a worktree of {branch} — remove it or pick another branch")
+    exclude = common / "info" / "exclude"
+    try:
+        lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        if f"/{WORKTREES_DIR}/" not in lines:
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            with open(exclude, "a", encoding="utf-8") as fh:
+                fh.write(("" if not lines or lines[-1] == "" else "\n") + f"/{WORKTREES_DIR}/\n")
+    except OSError as e:
+        print(f"note: could not add /{WORKTREES_DIR}/ to {exclude}: {e}", file=sys.stderr)
+    exists = git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", cwd=top).returncode == 0
+    argv = ["worktree", "add", str(path), branch] if exists else ["worktree", "add", "-b", branch, str(path)]
+    res = git(*argv, cwd=repo)
+    if res.returncode != 0:
+        raise hc.Failure(f"git worktree add: {res.stderr.strip() or res.stdout.strip()}")
+    return path, branch, True
+
+
+def worktree_note(meta: dict) -> str:
+    wt = meta.get("worktree")
+    if not wt:
+        return ""
+    return f"worktree {wt['path']} ({wt['branch']}) — `git worktree remove {wt['path']}` once the branch is merged"
 
 
 def agent_dir(stage: str, role: str) -> Path:
@@ -299,6 +375,13 @@ def cmd_spawn(a) -> int:
         old = load_meta(stage, a.role)
         if alive(old):
             raise hc.Failure(f"agent {a.role} is already running (pid {old['pid']}); agent stop {a.role} or pick another name")
+    wt = None
+    if a.worktree is not None:
+        path, branch, created = make_worktree(cwd, a.role, a.worktree or None)
+        wt = {"path": str(path), "branch": branch}
+        print(f"worktree {path} on {branch} ({'created' if created else 'reused'})")
+        cwd = path
+    if (d / "meta.json").exists():
         # a finished agent of the same name: keep its files, start a clean directory
         d.rename(d.with_name(f"{a.role}.{time.strftime('%Y%m%d-%H%M%S')}"))
     d.mkdir(parents=True)
@@ -310,6 +393,8 @@ def cmd_spawn(a) -> int:
             "effort": effort, "permission_mode": pmode, "cwd": str(cwd), "dir": str(d), "brief": str(brief),
             "title": a.title or f"agent {a.role} ({stage})", "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
+    if wt:
+        meta["worktree"] = wt
     prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, role=a.role, tag=tag, report=report,
                                                        inbox=d / "inbox.md")
     save_meta(stage, a.role, meta)
@@ -324,7 +409,8 @@ def cmd_spawn(a) -> int:
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
                        note=f"agent-spawn {a.model}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
     line = journal(stage, tag, f"started headless agent {a.role} ({a.model}{'/' + effort if effort else ''}), "
-                               f"session {meta['session_id']}, pid {pid}, brief {brief}")
+                               f"session {meta['session_id']}, pid {pid}, brief {brief}"
+                               + (f", worktree {wt['path']} ({wt['branch']})" if wt else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
     return 0
 
@@ -418,8 +504,9 @@ def status_line(stage: str, role: str) -> str:
         state += (f"; unread inbox messages {len(unread)} since {unread[0]['at'][11:16]} — "
                   f"agent send {role} [text] resumes with them")
     text = info["last_text"][:220] + ("…" if len(info["last_text"]) > 220 else "")
+    wt = meta.get("worktree")
     return (f"{role} [{meta['tag']}] {meta['model']}: {state}; last event {hc.age(mtime)} ago; "
-            f"turns {info['turns']}; last: {text or '—'}")
+            f"turns {info['turns']}; last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
 
 
 def cmd_status(a) -> int:
@@ -516,6 +603,8 @@ def cmd_stop(a) -> int:
     if a.role in hc.roles_load(stage)["roles"]:
         roles_cli.retire_role(stage, a.role, "agent-stop")
     print(f"{a.role}: stopped ({how}), role retired")
+    if worktree_note(meta):
+        print(worktree_note(meta))
     return 0
 
 
@@ -575,6 +664,8 @@ def main(argv: list) -> int:
     s.add_argument("--effort", choices=EFFORTS, help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
+    s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
+                   help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH>")
     s.add_argument("--tag")
     s.add_argument("--title")
     st = sub.add_parser("status", help="alive or not, last event age, turns")

@@ -33,7 +33,7 @@ JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
-                 "AGENT_HUB_JWAIT_MATCH")
+                 "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
@@ -88,9 +88,64 @@ def project_dir(start=None) -> Optional[Path]:
     for d in [p] + list(p.parents):
         if (d / CONFIG_DIRNAME).is_dir():
             return d
+        if (d / ".git").is_file():
+            # a linked worktree without its own .agent-hub/ (not committed, or not yet) uses the main checkout's:
+            # a guard configured there must not vanish in an agent's worktree
+            main = main_checkout(d)
+            return main if main is not None and (main / CONFIG_DIRNAME).is_dir() else None
         if (d / ".git").exists():
             return None
     return None
+
+
+def main_checkout(worktree: Path) -> Optional[Path]:
+    """The main working tree of a linked worktree (its `.git` file names a gitdir with a `commondir`); None for
+    anything else, a submodule included."""
+    try:
+        m = re.match(r"gitdir:\s*(.+)", (worktree / ".git").read_text(encoding="utf-8").strip())
+        if not m:
+            return None
+        gitdir = Path(m.group(1).strip())
+        gitdir = gitdir if gitdir.is_absolute() else (worktree / gitdir)
+        common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+    except (OSError, ValueError):
+        return None
+    return common.parent if common.name == ".git" else None
+
+
+def in_scope(path) -> bool:
+    """Whether the plugin's session-wide hooks (handoff size, the owner-questions line) apply at `path`: inside the
+    hub home, inside a repository with `.agent-hub/`, or under a directory of AGENT_HUB_SCOPE_DIRS (paths separated
+    by ':', `~` expanded). Elsewhere a session on the same machine is left alone."""
+    try:
+        p = Path(path).expanduser().resolve()
+    except (OSError, ValueError, TypeError):
+        return False
+    dirs = [root()]
+    for d in (setting("AGENT_HUB_SCOPE_DIRS") or "").split(":"):
+        if d.strip():
+            try:
+                full = Path(d.strip()).expanduser()  # ~unknownuser raises RuntimeError
+            except RuntimeError as e:
+                _warn(f"AGENT_HUB_SCOPE_DIRS: {d.strip()!r}: {e}; ignored")
+                continue
+            if not full.is_absolute():
+                _warn(f"AGENT_HUB_SCOPE_DIRS: {d.strip()!r} is not an absolute path (or ~/…); ignored")
+                continue
+            dirs.append(full)
+    for d in dirs:
+        try:
+            if p == d.resolve() or d.resolve() in p.parents:
+                return True
+        except OSError:
+            continue
+    return project_dir(p if p.is_dir() else p.parent) is not None
+
+
+def git_env() -> dict:
+    """The environment for the tools' own git calls: without GIT_DIR / GIT_WORK_TREE (a dotfiles setup exports them),
+    so git answers about the directory it is pointed at — the way project_dir and the hook walk the filesystem."""
+    return {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
 
 
 def config_dirs(stage: Optional[str] = None, cwd=None) -> list:
