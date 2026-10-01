@@ -20,10 +20,12 @@ import glob
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 BIN = Path(os.path.dirname(os.path.realpath(__file__)))
 DEFAULT_STAGE = "default"
@@ -32,7 +34,12 @@ STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
-MODEL_ALIASES = ("opus", "sonnet", "haiku")
+MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
+# The first Claude Code CLI whose aliases resolve to the latest models (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1);
+# an older CLI resolves the same aliases to older models. The plugin pins no ids: the alias follows the CLI.
+MIN_CLI_VERSION = (2, 1, 285)
+# The plugin's own commands: what a same-named command earlier on PATH shadows.
+TOOLS = ("hub", "jlog", "jwait", "agent", "ask", "roles", "lock", "agent-top")
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -313,7 +320,7 @@ def model_map(cwd=None) -> dict:
 
 
 def model_problem(model, cwd=None) -> Optional[str]:
-    """None when `agent spawn --model` takes `model`: an alias (opus, sonnet, haiku), an alias of
+    """None when `agent spawn --model` takes `model`: an alias (opus, sonnet, haiku, fable), an alias of
     AGENT_HUB_MODEL_MAP, or a full id claude-… — and in each case only the characters above; else the reason."""
     if not isinstance(model, str) or not model:
         return "not a model name"
@@ -382,6 +389,111 @@ def child_env(extra: Optional[dict] = None) -> dict:
     if extra:
         env.update(extra)
     return env
+
+
+# ---------------------------------------------------------------- the CLI and the PATH
+
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_VERSION_CACHE: dict = {}
+
+
+def parse_version(text) -> Optional[tuple]:
+    m = _VERSION_RE.search(str(text or ""))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def fmt_version(v) -> str:
+    return ".".join(str(x) for x in v)
+
+
+def cli_version(path: str, cwd=None) -> Optional[tuple]:
+    """`<path> --version` parsed as (major, minor, patch); None when the CLI does not run or prints no version.
+    Cached per process: one call however many times the tools ask."""
+    if path not in _VERSION_CACHE:
+        try:
+            res = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=20,
+                                 stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None)
+            _VERSION_CACHE[path] = parse_version(res.stdout) if res.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            _VERSION_CACHE[path] = None
+    return _VERSION_CACHE[path]
+
+
+def desktop_cli() -> Optional[tuple]:
+    """(version, path) of the newest CLI bundled with Claude Desktop on macOS (the directory name is the version);
+    None when there is none."""
+    base = Path.home() / "Library/Application Support/Claude/claude-code"
+    found = []
+    for d in base.glob("*/claude.app/Contents/MacOS/claude"):
+        v = parse_version(d.parents[3].name)
+        if v:
+            found.append((v, str(d)))
+    return max(found) if found else None
+
+
+class Cli(NamedTuple):
+    path: str
+    version: Optional[tuple]
+    how: str  # why this one
+
+    def describe(self) -> str:
+        return f"{self.path} ({fmt_version(self.version) if self.version else 'version unknown'}; {self.how})"
+
+
+def find_claude(cwd=None) -> Optional[Cli]:
+    """The CLI the tools start. $CLAUDE_BIN (a path or a name on PATH; `desktop` = the newest CLI bundled with Claude
+    Desktop, which survives Desktop updates) wins. Otherwise the newer of `claude` on PATH and the newest bundled with
+    Claude Desktop: an old `claude` on PATH must not hold the agents back on old models (PATH keeps a tie and a
+    version it cannot read). None when there is no CLI at all."""
+    b = setting("CLAUDE_BIN", cwd=cwd)
+    if b and b.strip().lower() == "desktop":
+        app = desktop_cli()
+        if not app:
+            raise Failure("CLAUDE_BIN=desktop, but no CLI bundled with Claude Desktop was found under "
+                          f"{Path.home() / 'Library/Application Support/Claude/claude-code'}")
+        return Cli(app[1], app[0], "CLAUDE_BIN=desktop")
+    if b:
+        return Cli(b, cli_version(b, cwd), "CLAUDE_BIN")
+    on_path, app = shutil.which("claude"), desktop_cli()
+    if on_path:
+        pv = cli_version(on_path, cwd)
+        if app and pv is not None and app[0] > pv:
+            return Cli(app[1], app[0], f"the newest bundled with Claude Desktop; `claude` on PATH is older: "
+                                       f"{on_path} {fmt_version(pv)}")
+        return Cli(on_path, pv, "claude on PATH" + (f"; the Claude Desktop bundle is {fmt_version(app[0])}"
+                                                    if app and app[0] != pv else ""))
+    return Cli(app[1], app[0], "bundled with Claude Desktop; no claude on PATH") if app else None
+
+
+def cli_warning(cli: Optional[Cli]) -> Optional[str]:
+    """One line when the chosen CLI is older than MIN_CLI_VERSION, else None."""
+    if cli is None or cli.version is None or cli.version >= MIN_CLI_VERSION:
+        return None
+    return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}: update "
+            "Claude Code; with an older CLI the aliases (opus, sonnet, haiku, fable) resolve to older models "
+            "(pin ids with AGENT_HUB_MODEL_MAP if you must stay on it)")
+
+
+def shadowed_tools(path=None) -> list:
+    """[(tool, path found)] for each of the plugin's commands that PATH resolves to a file outside this bin/
+    (`command -v`: the first match on PATH; a symlink into this bin/ counts as ours)."""
+    path = os.environ.get("PATH", "") if path is None else path
+    out = []
+    for name in TOOLS:
+        found = shutil.which(name, path=path)
+        if found and os.path.dirname(os.path.realpath(found)) != str(BIN):
+            out.append((name, found))
+    return out
+
+
+def shadow_warning(shadowed: list) -> Optional[str]:
+    """One line naming every shadowing path and the fix, or None."""
+    if not shadowed:
+        return None
+    names = ", ".join(f"`{n}` is {p}" for n, p in shadowed)
+    return (f"{names} — not the plugin's own tool in {BIN}. A same-named command earlier on PATH answers instead "
+            "(GitHub CLI `hub` from Homebrew is the usual one): put the plugin's bin/ first on PATH, or remove the old "
+            f"tool; until then call the plugin's tools by absolute path ({BIN}/<tool>)")
 
 
 def sessions_dir() -> Path:

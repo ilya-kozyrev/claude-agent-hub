@@ -17,9 +17,13 @@ spawn: `claude -p` with a fixed --session-id, --output-format stream-json --verb
 (default bypassPermissions: nobody is there to approve a tool call; $AGENT_HUB_PERMISSION_MODE or
 --permission-mode changes it), in its own session and process group (setsid), stdin from /dev/null: it
 survives the calling shell and the calling session. The agent gets HUB_TAG=<tag>, HUB_STAGE and this
-plugin's bin/ on PATH so `jlog` works; it is recorded in `roles` (kind headless, pid).
-Model: an alias (opus, sonnet, haiku) or a full id claude-…; $AGENT_HUB_MODEL_MAP pins aliases to ids
-("sonnet=claude-sonnet-x-y,opus=…") when the installed CLI resolves an alias to an older model.
+plugin's bin/ first on PATH (the brief footer names jlog by its absolute path, since a shell may put an old
+same-named tool ahead); it is recorded in `roles` (kind headless, pid).
+Model: an alias (opus, sonnet, haiku, fable) or a full id claude-…. An alias follows the CLI: a current Claude Code
+resolves it to the latest model of that family, an older one (before 2.1.285) to an older model, and spawn warns about
+it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
+and agent-top. $AGENT_HUB_MODEL_MAP pins aliases to ids ("sonnet=claude-sonnet-x-y,opus=…") — an opt-in, since a pin
+goes stale with the next model release.
 Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effort flag.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
@@ -32,14 +36,16 @@ footer of every brief.
 the work; otherwise <repo>/.worktrees/<BRANCH> of the main repository, with /.worktrees/ added to .git/info/exclude
 (never untracked noise). status and stop name it; nothing removes it — `git worktree remove` once the branch is
 merged. Two agents in one checkout overwrite each other's files: give each writer its own worktree.
-status: alive or not, age of the last log event, model turns, the last assistant text line.
+status: alive or not, the model, age of the last log event, model turns (of the last run, with the total once the
+agent was resumed), the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
 the session is resumed detached with `claude --resume <id> -p "msg"` in the same cwd, the unread
 messages replayed first (an agent that ended its turn before reading its inbox loses nothing;
 agent status flags them). spawn and resume succeed only once the run writes its init event
 (120 s, $AGENT_INIT_TIMEOUT); a CLI that rejects its flags is killed and reported, and no role is recorded.
 stop: SIGTERM to the process group (SIGKILL after 10 s), role retired.
-CLI binary: $CLAUDE_BIN, else `claude` on PATH, else the newest CLI bundled with Claude Desktop (macOS).
+CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
+spawn prints which one it took.
 Exit: 0 ok, 1 failure / unknown agent, 2 usage.
 """
 from __future__ import annotations
@@ -48,6 +54,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -82,10 +89,10 @@ FOOTER = """
 ---
 You are "{role}" (journal tag `{tag}`), stage `{stage}`, a headless `claude -p` session with nobody on the
 other end: questions asked in chat are read by no one. The brief above is your contract.
-- Talk to the hub only through the journal: `jlog "…"` (your tag is already in $HUB_TAG). Write only on
-  events: MERGED / STOP / DONE / BLOCKED / a question. One line = status word, path, one sentence. The full
-  report goes to `{report}`.
-- A question to the hub: `jlog "@hub QUESTION …"`, then end your turn with the word BLOCKED and the report
+- Talk to the hub only through the journal: `{jlog} "…"` (your tag is already in $HUB_TAG; run it by this path:
+  another `jlog` earlier on PATH writes to a journal the hub does not read). Write only on events: MERGED / STOP /
+  DONE / BLOCKED / a question. One line = status word, path, one sentence. The full report goes to `{report}`.
+- A question to the hub: `{jlog} "@hub QUESTION …"`, then end your turn with the word BLOCKED and the report
   path. The answer arrives as a new message in this same session (the hub runs `agent send {role} "…"`,
   which resumes the session).
 - Messages that arrive while you work: `{inbox}` — read it after every major step and before finishing.
@@ -97,8 +104,9 @@ other end: questions asked in chat are read by no one. The brief above is your c
 
 def footer(stage: str, cwd: Path, **fields) -> str:
     """The standard footer plus the first brief-footer.md of the config layers (stage, the agent's repository,
-    hub home), with {role} {tag} {stage} {report} {inbox} filled in."""
+    hub home), with {role} {tag} {stage} {report} {inbox} {jlog} filled in."""
     fields["stage"] = stage
+    fields["jlog"] = shlex.quote(str(hc.BIN / "jlog"))
     text = FOOTER.format(**fields)
     extra = hc.config_file("brief-footer.md", stage, cwd)
     if extra:
@@ -153,6 +161,9 @@ def make_worktree(repo: Path, role: str, branch: str | None) -> tuple[Path, str,
         if existing.resolve() == top.resolve():
             raise hc.UsageError(f"--worktree: {branch} is checked out in the main checkout {top} — pick another branch")
         return existing, branch, False
+    if git("rev-parse", "--verify", "--quiet", "HEAD", cwd=top).returncode != 0:
+        raise hc.Failure(f"--worktree: the repository {top} has no commits yet — make a first commit "
+                         "(`git commit --allow-empty -m \"first commit\"`); a worktree needs a commit to start from")
     path = top / WORKTREES_DIR / branch
     if path.exists():
         raise hc.Failure(f"--worktree: {path} exists and is not a worktree of {branch} — remove it or pick another branch")
@@ -186,32 +197,12 @@ def agent_dir(stage: str, role: str) -> Path:
     return hc.root() / hc.check_stage(stage) / "agents" / role
 
 
-def _app_claude() -> str | None:
-    """Newest CLI bundled with Claude Desktop on macOS (a fallback when `claude` is not on PATH)."""
-    base = Path.home() / "Library/Application Support/Claude/claude-code"
-    found = []
-    for d in base.glob("*/claude.app/Contents/MacOS/claude"):
-        try:
-            found.append((tuple(int(x) for x in d.parents[3].name.split(".")), d))
-        except ValueError:
-            continue
-    return str(max(found)[1]) if found else None
-
-
 def claude_bin(cwd=None) -> str:
-    """$CLAUDE_BIN (a path or a name on PATH; the value `desktop` = the newest CLI bundled with Claude Desktop,
-    which survives Desktop updates), else `claude` on PATH, else the Desktop bundle."""
-    b = hc.setting("CLAUDE_BIN", cwd=cwd)
-    if b and b.strip().lower() == "desktop":
-        b = _app_claude()
-        if not b:
-            raise hc.Failure("CLAUDE_BIN=desktop, but no CLI bundled with Claude Desktop was found under "
-                             f"{Path.home() / 'Library/Application Support/Claude/claude-code'}")
-        return b
-    b = b or shutil.which("claude") or _app_claude()
-    if not b:
+    """The CLI to start (hubcore.find_claude: $CLAUDE_BIN, else the newer of `claude` on PATH and Claude Desktop's)."""
+    cli = hc.find_claude(cwd)
+    if not cli:
         raise hc.Failure("claude not found on PATH (set $CLAUDE_BIN)")
-    return b
+    return cli.path
 
 
 def load_meta(stage: str, role: str) -> dict:
@@ -268,8 +259,8 @@ def init_timeout(cwd=None) -> int:
         raise hc.UsageError("AGENT_INIT_TIMEOUT must be a whole number of seconds") from None
 
 
-def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120) -> None:
-    """Block until the run writes its init event for this session; kill it and fail otherwise."""
+def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120) -> dict:
+    """Block until the run writes its init event for this session and return it; kill the run and fail otherwise."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -281,7 +272,7 @@ def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, t
                     except ValueError:
                         continue
                     if ev.get("type") == "system" and ev.get("subtype") == "init" and ev.get("session_id") == session_id:
-                        return
+                        return ev
         except FileNotFoundError:
             pass
         if proc.poll() is not None:
@@ -324,11 +315,28 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
         proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                 env=env, start_new_session=True, close_fds=True)
-    wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]))
+    init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]))
+    # the id the CLI resolved the alias to: an alias follows the installed CLI, so this is what actually runs
+    model = init.get("model")
+    if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
+        meta["resolved_model"] = model
     return proc.pid
 
 
+def model_name(meta: dict) -> str:
+    """The model of an agent: the id its run reported, else the one requested (`sonnet`, or a pinned id)."""
+    return meta.get("resolved_model") or meta["model"]
+
+
+def model_text(meta: dict) -> str:
+    """model_name, plus what was asked for when the CLI resolved it to something else (an alias)."""
+    got = meta.get("resolved_model")
+    return f"{got} (asked for {meta['model']})" if got and got != meta["model"] else meta["model"]
+
+
 def journal(stage: str, fallback_tag: str, text: str) -> str:
+    """One journal line under the caller's tag (HUB_TAG, else the registry entry of the calling session), else
+    `fallback_tag`."""
     return hc.journal_append(stage, hc.caller_tag(stage) or fallback_tag, text)
 
 
@@ -357,6 +365,13 @@ def cmd_spawn(a) -> int:
     bg_wait_ceiling(cwd)  # a bad value fails here, before any directory or process exists
     if not brief.is_file():
         raise hc.UsageError(f"--brief {brief}: no such file")
+    cli = hc.find_claude(cwd)
+    if cli is None:
+        raise hc.Failure("claude not found on PATH, and no CLI is bundled with Claude Desktop (set $CLAUDE_BIN)")
+    print(f"CLI {cli.describe()}")
+    old_cli = hc.cli_warning(cli)
+    if old_cli:
+        hc.warn(old_cli)
     own = hc.caller_tag(stage)
     if own and hc.tag_is(a.tag or a.role, own):
         # jwait drops the caller's own tag and its sub-tags: the agent's DONE would never wake the hub
@@ -400,7 +415,9 @@ def cmd_spawn(a) -> int:
     save_meta(stage, a.role, meta)
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
                        note=f"agent-spawn {a.model}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
-    line = journal(stage, tag, f"started headless agent {a.role} ({a.model}{'/' + effort if effort else ''}), "
+    got = meta.get("resolved_model")
+    line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
+                               f"{', asked for ' + a.model if got and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
@@ -408,12 +425,14 @@ def cmd_spawn(a) -> int:
 
 
 def read_log(path: Path) -> dict:
-    turns, last_text, results, last_type = set(), "", [], ""
+    """What the log of every run of the agent says: model turns (all runs, and the last run's), the last assistant
+    text, the last result, whether a run started after it."""
+    turns, run_turns, last_text, results, last_type = set(), set(), "", [], ""
     started_after_result = False
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return {"turns": 0, "last_text": "", "result": None, "events": 0, "running_after_result": False}
+        return {"turns": 0, "run_turns": 0, "last_text": "", "result": None, "events": 0, "running_after_result": False}
     n = 0
     with fh:
         for raw in fh:
@@ -426,17 +445,27 @@ def read_log(path: Path) -> dict:
             last_type = t
             if t == "system" and ev.get("subtype") == "init":
                 started_after_result = True
+                run_turns = set()  # a resumed session logs one init per run: count the last run's turns apart
             elif t == "assistant":
                 msg = ev.get("message") or {}
                 turns.add(msg.get("id") or n)
+                run_turns.add(msg.get("id") or n)
                 for block in msg.get("content") or []:
                     if block.get("type") == "text" and block.get("text", "").strip():
                         last_text = [ln for ln in block["text"].splitlines() if ln.strip()][-1].strip()
             elif t == "result":
                 results.append(ev)
                 started_after_result = False
-    return {"turns": len(turns), "last_text": last_text, "result": results[-1] if results else None,
-            "events": n, "running_after_result": started_after_result, "last_type": last_type}
+    return {"turns": len(turns), "run_turns": len(run_turns), "last_text": last_text,
+            "result": results[-1] if results else None, "events": n, "running_after_result": started_after_result,
+            "last_type": last_type}
+
+
+def turns_text(info: dict) -> str:
+    """"31" for an agent with one run, "31 (total 60)" once a resumed run's turns differ from the total."""
+    if info["run_turns"] != info["turns"]:
+        return f"{info['run_turns']} (total {info['turns']})"
+    return str(info["turns"])
 
 
 def pending_unread(meta: dict) -> list:
@@ -497,8 +526,8 @@ def status_line(stage: str, role: str) -> str:
                   f"agent send {role} [text] resumes with them")
     text = info["last_text"][:220] + ("…" if len(info["last_text"]) > 220 else "")
     wt = meta.get("worktree")
-    return (f"{role} [{meta['tag']}] {meta['model']}: {state}; last event {hc.age(mtime)} ago; "
-            f"turns {info['turns']}; last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
+    return (f"{role} [{meta['tag']}] {model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
+            f"turns {turns_text(info)}; last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
 
 
 def cmd_status(a) -> int:
@@ -537,7 +566,7 @@ def cmd_send(a) -> int:
         meta.setdefault("inbox_unread", []).append({"at": t.isoformat(timespec="seconds"), "msg": msg,
                                                     "log_offset": log.stat().st_size if log.exists() else 0})
         save_meta(stage, a.role, meta)
-        line = journal(stage, "hub", f"@{meta['tag']} {msg}")
+        line = journal(stage, "cli", f"@{meta['tag']} {msg}")
         print(f"agent alive (pid {meta['pid']}): queued in its inbox, read after its current step; if it ends its turn "
               f"unread, agent status shows it and the next agent send replays it\n{line}")
         return 0
@@ -561,7 +590,7 @@ def cmd_send(a) -> int:
         data = hc.roles_load(stage)
         data["roles"][a.role]["pid"] = pid
         hc.roles_save(stage, data)
-    line = journal(stage, "hub", f"@{meta['tag']} (session resumed, pid {pid}"
+    line = journal(stage, "cli", f"@{meta['tag']} (session resumed, pid {pid}"
                                  + (f", unread replayed: {len(unread)}" if unread else "") + f") {msg}".rstrip())
     print(f"no process was running — session {meta['session_id']} resumed: pid {pid}\n{line}")
     return 0
@@ -635,7 +664,7 @@ def cmd_exit_note(a) -> int:
     why = "no status word in the journal" if clean else (f"{r.get('subtype')}, error" if r.get("is_error") else
                                                           (r.get("subtype") or "no result — died or killed"))
     last = (info["last_text"] or "").strip().splitlines()
-    print(hc.journal_append(stage, meta["tag"], f"EXIT {a.role}: {why}; code {a.code}, turns {info['turns']}"
+    print(hc.journal_append(stage, meta["tag"], f"EXIT {a.role}: {why}; code {a.code}, turns {turns_text(info)}"
                             f"{'; last: ' + last[-1][:160] if last else ''} — agent status {a.role}"))
     return 0
 
@@ -651,8 +680,8 @@ def main(argv: list) -> int:
     s.add_argument("--stage")
     s.add_argument("--role", required=True)
     s.add_argument("--cwd", required=True)
-    s.add_argument("--model", required=True, help="opus | sonnet | haiku (pinned to ids by $AGENT_HUB_MODEL_MAP, "
-                   "else passed to the CLI as is) or a full id claude-…")
+    s.add_argument("--model", required=True, help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
+                   "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
     s.add_argument("--effort", choices=EFFORTS, help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
@@ -660,7 +689,7 @@ def main(argv: list) -> int:
                    help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH>")
     s.add_argument("--tag")
     s.add_argument("--title")
-    st = sub.add_parser("status", help="alive or not, last event age, turns")
+    st = sub.add_parser("status", help="alive or not, model, last event age, turns")
     st.add_argument("role", nargs="?")
     st.add_argument("--stage")
     st.add_argument("--all", action="store_true")
