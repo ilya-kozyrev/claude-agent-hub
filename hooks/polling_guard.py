@@ -24,7 +24,8 @@ Quoted text is data until a shell executes it. The guard looks inside a quoted s
 shell, or the text of `echo` / `printf` / `cat` piped to a shell; and inside `$(…)` in double quotes. Every other
 quoted argument is data — `git commit -m "… sleep 5m …"`, `grep "sleep 5m"`, `rg "until .*; do"`, the body of a
 `gh api` call — and a `;` or `|` inside it does not split the command. The guard is regex based, not a shell parser:
-process substitution (`bash <(echo '…')`) and `eval "$(…)"` are not looked into.
+process substitution (`bash <(echo '…')`), `eval "$(…)"`, a script written and run in one command and the `-c` / `-e`
+strings of interpreters (`python3 -c "os.system('sleep 300')"`, `perl -e`, `node -e`) are not looked into.
 
 Settings (environment, the repository's .agent-hub/config.json, or the hub home's config.json):
   AGENT_HUB_POLL_GUARD              on | off (default on)
@@ -70,13 +71,27 @@ _LOOP = re.compile(_START + r"(?:until|while|for)\s")
 _UNTIL_WHILE = re.compile(_START + r"(?:until|while)\s")
 _UNIT = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # A consumer that runs its stdin (or its argument) as commands: text fed to it is not "only printed". `xargs` counts
-# only with `sh -c` (`xargs rm` gets the text as arguments); a wrapper's flag takes a value only for `-u` / `-g`
-# (otherwise `env -i grep bash` would read `grep` as the flag's value).
+# only with `sh -c` (`xargs rm` gets the text as arguments); a wrapper's flag takes a value only for `-u` / `-g` /
+# `-n` / `-c` (otherwise `env -i grep bash` would read `grep` as the flag's value; `sudo -n bash` still parses: the
+# value reading is dropped when no shell follows).
 _SHELL = r"(?:\S*/)?(?:bash|sh|zsh|dash|ksh)"
 # A flag's value never starts with `-`: `-[ug]\s+\S+` and `-\S+` overlap, and `-u -u -u …` backtracked exponentially.
-_WRAPPER = r"(?:\S*/)?(?:sudo|env|nohup|exec|time)(?:\s+(?:-[ug]\s+(?!-)\S+|-\S+))*"
-_SHELL_CONSUMER = re.compile(rf"^\s*(?:(?:\w+=\S+|{_WRAPPER}|timeout\s+\S+)\s+)*"
-                             rf"(?:{_SHELL}|eval|source|xargs\b.*?\s{_SHELL}\s+-\w*c)\b")
+_WRAPPER = (r"(?:(?:\S*/)?(?:sudo|env|nohup|exec|time|setsid|nice|ionice|stdbuf|doas)"
+            r"(?:\s+(?:-[ugnc]\s+(?!-)\S+|-\S+))*|command(?:\s+--)?)")  # `command -v bash` only looks bash up
+_TIMEOUT = r"timeout(?:\s+(?:-[ks]\s+(?!-)\S+|-\S+))*\s+\S+"  # `timeout -k 5 600 bash`: flags, then the duration
+# What may stand before the command word: a group opener (`( bash …`, `{ bash …`), `VAR=x`, wrappers.
+_CMD_PREFIX = r"^\s*[({]?\s*(?:(?:\w+=\S+|" + _WRAPPER + r"|" + _TIMEOUT + r")\s+)*"
+_SHELL_CONSUMER = re.compile(
+    _CMD_PREFIX
+    + rf"(?:{_SHELL}\b|eval\b|source\b|\.\s+/dev/stdin\b|xargs\b.*?\s{_SHELL}\s+-\w*c\b"
+    # `ssh host` and `ssh host bash` read their stdin as commands (`ssh host 'cat > f'` does not); so do `su`,
+    # `su - user` and `sudo -i` / `sudo -s` (a login shell).
+    rf"|ssh\b(?:\s+-\w+(?:\s+(?!-)\S+)?)*\s+[^\s-]\S*(?:\s+{_SHELL}\b|\s*$)"
+    r"|su(?:\s+-(?!\w*c)\w*)?(?:\s+\w+)?\s*$"  # not `su -c cmd`: that runs a command, it does not read stdin
+    r"|sudo(?=(?:\s+-\w+)*\s+-[is]\b)(?:\s+-\w+)*\s*$)"
+)
+# The command word of a segment is `gh` or `glab`: its quoted arguments carry the API path the CI rules read.
+_CI_COMMAND = re.compile(_CMD_PREFIX + r"(?:\S*/)?(?:gh|glab)\b")
 # A quoted string whole, backslash escapes included; `\x` outside quotes is swallowed so `\"` does not open a string.
 _QUOTED = re.compile(r"""'[^']*'|"(?:\\.|[^"\\])*"|\\.""", re.DOTALL)
 _TOKEN = re.compile(r"\x00(\d+)\x00")
@@ -86,7 +101,6 @@ _TOKEN = re.compile(r"\x00(\d+)\x00")
 _EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+(?:-\w*[oO]\s+\w+|-\S+))*?\s+-\w*c(?:\s+--)?"
                        r"|eval)\s*$")
 _SSH = re.compile(r"(?:^|[\s;&|(/])ssh\s")
-_HERE_STRING = re.compile(r"<<<\s*$")
 _LOOKBEHIND = 300  # characters before a string read to decide "executed or data" (a whole-prefix search is quadratic)
 _SEQ = re.compile(r"seq\s+(?:-?\w+\s+)?(\d+)\s+(\d+)")
 _BRACE_RANGE = re.compile(r"\{(\d+)\.\.(\d+)\}")
@@ -97,8 +111,9 @@ _HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DO
 # Segments that print rather than run: `echo 'until …; do sleep 20; done'` (also in a subshell: `(echo '…') | bash`).
 _PRINTING = re.compile(r"^\s*[({]?\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
 _SEGMENT_SEP = re.compile(r"(?:\|\||&&|[;|\n])")
-# The same, separators kept in the result; a `|` at the end of a line (`echo '…' |⏎ bash`) is a pipe too.
-_SEGMENT_SPLIT = re.compile(r"(\|\||&&|\|[ \t]*\n|[;|\n])")
+# The same, separators kept in the result; a `|` at the end of a line (`echo '…' |⏎ bash`) is a pipe too, and
+# bash takes any number of blank lines after it.
+_SEGMENT_SPLIT = re.compile(r"(\|\||&&|\|\s*\n|[;|\n])")
 _PIPE = re.compile(r"(?<!\|)\|(?!\|)")  # a single `|`, not `||`
 
 INSTEAD = """Instead:
@@ -182,10 +197,11 @@ def _protect(cmd: str):
 
 
 def _word_start(seg: str, end: int) -> int:
-    """Where the shell word that ends at `end` starts: `'a'"$B"'c'` is one word made of three strings."""
+    """Where the shell word that ends at `end` starts: `'a'"$B"'c'` is one word made of three strings. A `<` ends the
+    word before it too: in `bash <<<'…'` the string is the here-string's operand, and `<<<` is what stands before it."""
     low = max(0, end - _LOOKBEHIND)
     window = seg[low:end]
-    gap = max(window.rfind(" "), window.rfind("\t"))
+    gap = max(window.rfind(" "), window.rfind("\t"), window.rfind("<"))
     return low + gap + 1 if gap != -1 else low
 
 
@@ -229,26 +245,38 @@ def _substitutions(quoted: str) -> list:
     return bodies
 
 
-def _wait_segment(seg: str, strings: list, runs_all: bool) -> str:
-    """A segment for the wait search: strings a shell runs are unwrapped into commands, the rest become `""`."""
-    out = []
+def _segment_views(seg: str, strings: list, runs_all: bool):
+    """(wait text, CI text) of a segment. Strings a shell runs are unwrapped into commands (recursively); any other
+    string is data: `""` for the wait search, and for the CI rules too unless the segment's command word is `gh` /
+    `glab` — their quoted arguments carry the API path. `$(…)` in a data string still runs."""
+    wait, ci = [], []
     pos = 0
     shell_segment = "<<<" in seg and bool(_SHELL_CONSUMER.match(seg))
+    keep_strings = bool(_CI_COMMAND.match(seg))
     for m in _TOKEN.finditer(seg):
-        out.append(seg[pos:m.start()])
+        wait.append(seg[pos:m.start()])
+        ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
         if runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment):
-            out.append(f";{views(_unquote(quoted))[0]};")
+            inner = views(_unquote(quoted))
+            wait.append(f";{inner[0]};")
+            ci.append(f";{inner[2]};")
         else:
-            out.append('""')
-            out.extend(f";{views(body)[0]};" for body in _substitutions(quoted))
+            wait.append('""')
+            ci.append(quoted if keep_strings else '""')
+            for body in _substitutions(quoted):
+                inner = views(body)
+                wait.append(f";{inner[0]};")
+                ci.append(f";{inner[2]};")
         pos = m.end()
-    out.append(seg[pos:])
-    return "".join(out)
+    wait.append(seg[pos:])
+    ci.append(seg[pos:])
+    return "".join(wait), "".join(ci)
 
 
 def views(cmd: str):
-    """Two projections of a command: (where to look for a wait, what the CI-status rules read).
+    """Three projections of a command: (where to look for a wait, what the `pgrep -f` check reads, what the CI-status
+    rules read).
 
     Quoted text is data until a shell executes it: `git commit -m "… sleep 5m …"` and `grep "sleep 5m"` are not waits,
     `bash -c "until …"` and `echo '…' | bash` are. So quoted strings are first hidden in tokens (a `;` or `|` inside
@@ -257,12 +285,14 @@ def views(cmd: str):
 
     * a printing segment (`echo` / `printf` / `cat`) whose output reaches a shell through a pipe — its strings run;
       one whose output does not is dropped whole (it writes a file, it does not run anything), as is a heredoc body
-      that no shell reads; only `$(…)` inside its double quotes still counts;
+      that no shell reads; only `$(…)` inside its double quotes still counts. A group (`( … )`, `{ …; }`) piped to a
+      shell feeds every segment inside it;
     * any other segment — a string that is the argument of `-c`, `eval`, `ssh` or a here-string to a shell is unwrapped
       into commands (recursively); every other string becomes `""`.
 
-    The CI projection keeps the quotes as they are: the path of `glab api "…/pipelines/1"` lives in a string, and so
-    does a `pgrep -f` pattern."""
+    The `pgrep` projection keeps every string as it is (the pattern lives in one). The CI projection keeps a data
+    string only in a `gh` / `glab` segment: the path of `glab api "…/pipelines/1"` lives in a string, a commit message
+    that mentions `gh run view` does not."""
     # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
     cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
     protected, strings = _protect(cmd)
@@ -274,7 +304,18 @@ def views(cmd: str):
         next_is_shell = bool(_SHELL_CONSUMER.match(segs[i + 1]))
         reaches_shell = seps[i].startswith("|") and seps[i] != "||" and (reaches_shell or next_is_shell)
         fed[i] = reaches_shell
-    wait, raw = [], []
+    # A group `( a; b ) | bash` is split at its `;`: the segment that closes it carries the pipe, the others inside it
+    # are fed through it too.
+    openers = []
+    for i, seg in enumerate(segs):
+        net = seg.count("(") - seg.count(")") + seg.count("{") - seg.count("}")
+        openers.extend([i] * net)
+        for _ in range(-net):
+            if openers:
+                opened = openers.pop()
+                if fed[i]:
+                    fed[opened:i] = [True] * (i - opened)
+    wait, quoted, ci = [], [], []
     for i, seg in enumerate(segs):
         printing = bool(_PRINTING.match(seg))
         if printing and not fed[i]:
@@ -282,12 +323,16 @@ def views(cmd: str):
             # the CI rules alike: `echo "$(gh run view 1)"`.
             for num in _TOKEN.findall(seg):
                 for body in _substitutions(strings[int(num)]):
-                    wait.append(f";{views(body)[0]};")
-                    raw.append(body)
+                    inner = views(body)
+                    wait.append(f";{inner[0]};")
+                    quoted.append(body)
+                    ci.append(f";{inner[2]};")
             continue
-        wait.append(_wait_segment(seg, strings, runs_all=printing and fed[i]))
-        raw.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))
-    return ";".join(wait), ";".join(raw)
+        wait_text, ci_text = _segment_views(seg, strings, runs_all=printing and fed[i])
+        wait.append(wait_text)
+        ci.append(ci_text)
+        quoted.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))
+    return ";".join(wait), ";".join(quoted), ";".join(ci)
 
 
 def bounded_iterations(cmd: str):
@@ -355,12 +400,12 @@ def check(command: str, background: bool, cfg: Config):
     """(kind, reason) of a denial, or None. kind: wait | ci."""
     if background or not cfg.enabled or cfg.escape.search(command):
         return None
-    wait_cmd, raw = views(command)
-    r = wait_reason(wait_cmd, cfg, raw)
+    wait_cmd, quoted, ci_cmd = views(command)
+    r = wait_reason(wait_cmd, cfg, quoted)
     if r:
         return "wait", r
     try:
-        r = ci_reason(raw, cfg)
+        r = ci_reason(ci_cmd, cfg)
     except Exception:  # noqa: BLE001 — fail-open
         r = None
     return ("ci", r) if r else None

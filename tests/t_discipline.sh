@@ -132,6 +132,18 @@ DATA=(
   'echo "sleep 5m" > /tmp/waiter.sh'
   $'cat <<\'EOF\' | tee /tmp/waiter.sh\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
   $'git commit -m "$(cat <<\'EOF\'\nfix: bash -c "until x; do sleep 30; done", sleep 5m\nEOF\n)"'
+  # the CI rules read a quoted string only where it carries an API path: a message that mentions `gh run view` is data
+  "git commit -m 'ci: wrap gh run view in a script'"
+  "grep 'gh run view' scripts/"
+  "python3 -c \"print('gh run view 123')\""
+  "bash -c \"git commit -m 'gh run view 123'\""
+  # a group that goes nowhere near a shell, and stdin consumers that are not shells
+  "(echo 'sleep 300'; echo ls) | cat"
+  "echo 'sleep 300' | ssh host 'cat > /tmp/waiter.sh'"
+  "echo 'sleep 300' | su -c cat"
+  "echo 'sleep 300' | sudo -n tee /tmp/waiter.sh"
+  "echo 'sleep 300' | command -v bash"
+  "echo 'sleep 300' | timeout -k 5 600 cat"
 )
 i=0; for c in "${DATA[@]}"; do i=$((i+1)); denied "$c"; check $? 1 "poll: quoted data $i passes"; done
 # …and a string a shell executes is checked: -c (with wrappers), eval, ssh, here-string, text piped to a shell, $(…)
@@ -161,15 +173,49 @@ RUN=(
   "bash -eo pipefail -c 'until [ -f /tmp/done ]; do sleep 20; done'"
   "bash -o pipefail -c 'until [ -f /tmp/done ]; do sleep 20; done'"
   "bash -c -- 'until [ -f /tmp/done ]; do sleep 20; done'"
+  # a here-string glued to `<<<`
+  "bash <<<'sleep 300'"
+  'bash <<<"sleep 300"'
+  "sh<<<'until [ -f /tmp/done ]; do sleep 20; done'"
+  # printing grouped in ( … ) or { …; } and piped to a shell; a group around the consumer
+  "(echo 'sleep 300'; echo ls) | bash"
+  "{ echo 'until [ -f /tmp/done ]; do sleep 20; done'; } | bash"
+  "(bash <<< 'sleep 300')"
+  "{ bash <<< 'sleep 300'; }"
+  "echo 'sleep 300' | (bash)"
+  # blank lines after the pipe
+  $'echo \'sleep 300\' |\n\n bash'
+  $'echo \'sleep 300\' |\n \n\n  bash'
+  # other wrappers, `timeout` with flags, and stdin shells behind ssh / su / sudo -i / `. /dev/stdin`
+  "echo 'sleep 300' | setsid bash"
+  "echo 'sleep 300' | command bash"
+  "echo 'sleep 300' | nice -n 10 bash"
+  "echo 'sleep 300' | ionice -c 3 bash"
+  "echo 'sleep 300' | stdbuf -o0 bash"
+  "echo 'sleep 300' | doas bash"
+  "echo 'sleep 300' | timeout -k 5 600 bash"
+  "echo 'sleep 300' | sudo -n bash"
+  "echo 'sleep 300' | sudo -i"
+  "echo 'sleep 300' | su -"
+  "echo 'sleep 300' | ssh host"
+  "echo 'sleep 300' | ssh -p 22 host bash"
+  "echo 'sleep 300' | . /dev/stdin"
 )
 i=0; for c in "${RUN[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: executed string $i denied"; denied "$c" 1; check $? 1 "poll: executed string $i in the background passes"; done
 denied 'echo "$(gh run view 123456)"'; check $? 0 "poll: a CI status read in \$(…) under echo is denied"
+denied 'git commit -m "$(gh run view 123456)"'; check $? 0 "poll: a CI status read in \$(…) in a commit message is denied"
+denied 'bash -c "gh run view 123456"'; check $? 0 "poll: a CI status read inside bash -c is denied"
+denied "echo 'gh run view 123456' | bash"; check $? 0 "poll: a CI status read piped to a shell is denied"
+denied "gh run view 123456"; check $? 0 "poll: a plain CI status read is still denied"
 pg "zsh -c 'until ! pgrep -f \"pytest -n 4\"; do sleep 20; done'" | grep -q 'matches the waiting shell'; check $? 0 "poll: a pgrep -f self-match inside bash -c is named"
 pg "bash -c 'until ! pgrep -f \"[p]ytest -n 4\"; do sleep 20; done'" | grep -q 'matches the waiting shell'; check $? 1 "poll: …and the bracket trick inside bash -c is not"
 python3 - "$HOOKS/polling_guard.py" <<'PY'; check $? 0 "poll: long and adversarial commands (quotes, strings, here-strings, flags) are judged within 5 s"
 import json, subprocess, sys, time
+# `<<< a` repeated: 0.4.0 read each as a heredoc opener and scanned to the end for its terminator, quadratically
+# (about 10 s at 30000 repeats)
 for cmd in ('bash -c ' + '"' * 40000, 'git commit -m "x" ' * 20000, 'xargs ' + '<<< "$a" ' * 10000,
-            "echo 'x' | sudo -u " + "-u " * 36 + "x"):
+            'xargs ' + '<<< a ' * 30000, "echo 'x' | sudo -u " + "-u " * 36 + "x",
+            "echo x | ssh " + "-o a " * 5000 + "host", "(" * 3000 + "echo 'x'" + ")" * 3000 + " | bash"):
     event = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/", "tool_input": {"command": cmd}})
     t = time.time()
     subprocess.run([sys.executable, sys.argv[1]], input=event, capture_output=True, text=True, timeout=60)
