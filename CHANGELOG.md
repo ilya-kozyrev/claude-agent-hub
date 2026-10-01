@@ -18,8 +18,11 @@ duration.
   the built-in default, one `agent` reviewer. The hub skill and `docs/launch-modes.md` no longer route reviews to a
   cloud session: a review is `hub reviewer`, and a cloud service is a reviewer skill if the user has one.
 - **`agent spawn --model` is validated more strictly**, by the rule `hub reviewer` shares with it: `opus`, `sonnet`,
-  `haiku`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` made of letters, digits and `. _ : [ ] -`
-  (it used to take anything starting with `claude-`).
+  `haiku`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` made of letters, digits and `. _ : @ [ ] -` (a
+  Vertex id `claude-sonnet-4-5@20250929` is fine) (it used to take anything starting with `claude-`). A mapped value
+  of `AGENT_HUB_MODEL_MAP` must be a model id of the same characters plus `/` (a Bedrock id or an ARN is fine); a pair
+  outside that is reported and left out. `--json` no longer repeats a `check` that was not run, and echoed keys and
+  values are cut to 30 characters.
 - **`hub reviewer [--for CLASS] [--json] [--all]`** walks the list and prints the chosen reviewer and exactly how to
   start it (the full `agent spawn` line with `<REPO>` / `<BRIEF>` placeholders and no `--worktree`, or "load skill …");
   `--all` lists every entry with why it was skipped; exit 1 when none is available.

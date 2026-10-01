@@ -841,14 +841,14 @@ def cmd_reviewer(a) -> int:
               "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
     start = reviewers.start_line(chosen.entry) if chosen else None
     if a.json:
-        print(json.dumps({"class": a.for_class, "source": loaded.origin,
+        print(json.dumps({"class": a.for_class[:reviewers.SHOWN] if a.for_class else None, "source": loaded.origin,
                           "chosen": chosen.entry.name if chosen else None, "start": start,
                           "entries": [reviewers.entry_json(v) | ({"check_output": v.output} if a.all and v.output else {})
                                       for v in verdicts],
                           "invalid": loaded.problems}, ensure_ascii=False, indent=1))
         return 0 if chosen else 1
     if a.all or not chosen:
-        print(f"reviewers from {source}" + (f", change class {a.for_class!r}" if a.for_class else "") + ":")
+        print(f"reviewers from {source}" + (f", change class {reviewers.show(a.for_class)}" if a.for_class else "") + ":")
         for v in verdicts:
             e = v.entry
             mark = "→" if chosen and v is chosen else " "
@@ -859,7 +859,7 @@ def cmd_reviewer(a) -> int:
             for problem in loaded.problems:
                 print(f"   invalid: {problem}")
     if not chosen:
-        print("no reviewer is available" + (f" for class {a.for_class!r}" if a.for_class else ""), file=sys.stderr)
+        print("no reviewer is available" + (f" for class {reviewers.show(a.for_class)}" if a.for_class else ""), file=sys.stderr)
         return 1
     e = chosen.entry
     print(f"reviewer: {e.name} ({reviewers.describe(e)})")

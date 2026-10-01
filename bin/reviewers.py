@@ -40,12 +40,19 @@ import hubcore as hc
 SETTING = "AGENT_HUB_REVIEWERS"
 KINDS = ("agent", "skill")
 FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for")
-NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")                            # name, change class
-SKILL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?")  # skill or plugin:skill
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")                       # name, change class: 64 at most
+SKILL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?")  # skill, plugin:skill
+SHOWN = 30  # characters of a rejected key or value that are echoed back: enough to find it, too few to carry text
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DEFAULT_MODEL, DEFAULT_EFFORT = "opus", "high"
 CHECK_TIMEOUT_S = 10.0  # $AGENT_HUB_REVIEW_CHECK_TIMEOUT (seconds) overrides it; the tests use that
 OUTPUT_CHARS = 300
+
+
+def show(value, limit: int = SHOWN) -> str:
+    """A value of a config file as it may be echoed: escaped (repr) and cut."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return repr(text[:limit]) + ("…" if len(text) > limit else "")
 
 
 class Entry:
@@ -72,8 +79,11 @@ class Entry:
 
 
 class Verdict:
-    def __init__(self, entry: Entry, available: bool, why: str, output: str = ""):
-        self.entry, self.available, self.why, self.output = entry, available, why, output
+    """ran: the entry's `check` command was run. Only then is its text reported (--json): a command that was never
+    run — a repository's, or one an `until` / class mismatch passed over — is not the hub's to repeat."""
+
+    def __init__(self, entry: Entry, available: bool, why: str, output: str = "", ran: bool = False):
+        self.entry, self.available, self.why, self.output, self.ran = entry, available, why, output, ran
 
 
 class Loaded:
@@ -91,10 +101,10 @@ def _review_defaults(cwd=None) -> tuple:
     effort = (hc.setting("AGENT_HUB_REVIEW_EFFORT", cwd=cwd) or DEFAULT_EFFORT).strip()
     problem = hc.model_problem(model, cwd)
     if problem:
-        hc.warn(f"AGENT_HUB_REVIEW_MODEL={model!r}: {problem}; using {DEFAULT_MODEL}")
+        hc.warn(f"AGENT_HUB_REVIEW_MODEL={show(model)}: {problem}; using {DEFAULT_MODEL}")
         model = DEFAULT_MODEL
     if effort not in hc.EFFORTS:
-        hc.warn(f"AGENT_HUB_REVIEW_EFFORT={effort!r}: one of {', '.join(hc.EFFORTS)}; using {DEFAULT_EFFORT}")
+        hc.warn(f"AGENT_HUB_REVIEW_EFFORT={show(effort)}: one of {', '.join(hc.EFFORTS)}; using {DEFAULT_EFFORT}")
         effort = DEFAULT_EFFORT
     return model, effort
 
@@ -106,12 +116,13 @@ def _validate(item, seen: set, cwd=None) -> dict:
     item = {k: v for k, v in item.items() if not str(k).startswith("_")}  # "_comment" and the like
     unknown = sorted(set(item) - set(FIELDS))
     if unknown:
-        raise ValueError(f"unknown field {', '.join(map(repr, unknown))} (known: {', '.join(FIELDS)})")
+        raise ValueError(f"unknown field {', '.join(show(u) for u in unknown[:5])}"
+                         f"{' …' if len(unknown) > 5 else ''} (known: {', '.join(FIELDS)})")
     name = item.get("name")
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         raise ValueError("`name` is required: letters, digits, '.', '_' and '-' only")
     if name in seen:
-        raise ValueError(f"duplicate name {name!r}")
+        raise ValueError(f"duplicate name {show(name)}")
     kind = item.get("kind")
     if kind not in KINDS:
         raise ValueError(f"`kind` is required: one of {', '.join(KINDS)}")
@@ -140,7 +151,7 @@ def _validate(item, seen: set, cwd=None) -> dict:
                 raise ValueError
             dt.date.fromisoformat(until)
         except ValueError:
-            raise ValueError(f"`until` must be a date YYYY-MM-DD, got {until!r}") from None
+            raise ValueError(f"`until` must be a date YYYY-MM-DD, got {show(until)}") from None
     if "for" in item:
         classes = item["for"]
         if (not isinstance(classes, list) or not classes
@@ -169,7 +180,7 @@ def load(cwd=None) -> Loaded:
         for i, item in enumerate(data, 1):
             label = item.get("name") if isinstance(item, dict) and isinstance(item.get("name"), str) else None
             if label is not None and not NAME_RE.fullmatch(label):
-                label = repr(label[:30])  # not a valid name: shown escaped and cut, never raw
+                label = show(label)  # not a valid name: shown escaped and cut, never raw
             try:
                 clean = _validate(item, seen, cwd)
             except ValueError as e:
@@ -190,10 +201,15 @@ def load(cwd=None) -> Loaded:
 
 # ---------------------------------------------------------------- availability
 
+_TIMEOUT_WARNED: set = set()
+
+
 def _check_timeout() -> float:
     """CHECK_TIMEOUT_S, or $AGENT_HUB_REVIEW_CHECK_TIMEOUT when it is a finite number of seconds above 0."""
     raw = os.environ.get("AGENT_HUB_REVIEW_CHECK_TIMEOUT")
     if not raw:
+        return CHECK_TIMEOUT_S
+    if raw in _TIMEOUT_WARNED:
         return CHECK_TIMEOUT_S
     try:
         value = float(raw)
@@ -201,7 +217,8 @@ def _check_timeout() -> float:
             raise ValueError
         return value
     except ValueError:
-        hc.warn(f"AGENT_HUB_REVIEW_CHECK_TIMEOUT={raw!r} is not a finite number of seconds above 0; "
+        _TIMEOUT_WARNED.add(raw)  # once per process, not once per checked entry
+        hc.warn(f"AGENT_HUB_REVIEW_CHECK_TIMEOUT={show(raw)} is not a finite number of seconds above 0; "
                 f"using {CHECK_TIMEOUT_S:g}")
         return CHECK_TIMEOUT_S
 
@@ -245,7 +262,7 @@ def judge(entry: Entry, change_class: Optional[str], origin: str) -> Verdict:
     if entry.until and hc.now().date() > dt.date.fromisoformat(entry.until):
         return Verdict(entry, False, f"until {entry.until} has passed")
     if change_class and entry.classes and change_class.strip().lower() not in {c.strip().lower() for c in entry.classes}:
-        return Verdict(entry, False, f"not for class {change_class!r} (it serves {', '.join(entry.classes)})")
+        return Verdict(entry, False, f"not for class {show(change_class)} (it serves {', '.join(entry.classes)})")
     if entry.check:
         if origin == "project":
             hc.warn(f"{SETTING} entry {entry.index} ({entry.name}): `check` in a repository's config is never run "
@@ -258,10 +275,10 @@ def judge(entry: Entry, change_class: Optional[str], origin: str) -> Verdict:
         except OSError as e:
             return Verdict(entry, False, f"check could not run: {e}")
         if code is None:
-            return Verdict(entry, False, f"check did not finish in {timeout:g} s", _short(out))
+            return Verdict(entry, False, f"check did not finish in {timeout:g} s", _short(out), ran=True)
         if code != 0:
-            return Verdict(entry, False, f"check exited {code}", _short(out))
-        return Verdict(entry, True, "check exited 0", _short(out))
+            return Verdict(entry, False, f"check exited {code}", _short(out), ran=True)
+        return Verdict(entry, True, "check exited 0", _short(out), ran=True)
     return Verdict(entry, True, "no check")
 
 
@@ -297,5 +314,7 @@ def describe(entry: Entry) -> str:
 
 def entry_json(v: Verdict) -> dict:
     out = v.entry.as_dict()
+    if not v.ran:
+        out.pop("check", None)
     out.update({"available": v.available, "why": v.why})
     return out

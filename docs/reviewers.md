@@ -22,13 +22,13 @@ it comes from the environment, a repository's `.agent-hub/config.json` or the hu
 
 | Field | | Meaning |
 |---|---|---|
-| `name` | required | Unique. An `agent` reviewer's role is `review-<name>`. Letters, digits, `.`, `_`, `-`. |
+| `name` | required | Unique. An `agent` reviewer's role is `review-<name>`. Letters, digits, `.`, `_`, `-`; 64 characters at most. |
 | `kind` | required | `agent` — a headless agent started with `agent spawn`; `skill` — a reviewer skill (contract below). |
-| `skill` | kind `skill`, required | The skill's name, as the Skill tool knows it: letters, digits, `.`, `_`, `-`, and one `:` for `plugin:skill`. |
-| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). `model` is what `agent spawn --model` takes: `opus`, `sonnet`, `haiku`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` (letters, digits and `. _ : [ ] -` only); `effort` one of `low`, `medium`, `high`, `xhigh`, `max`. A haiku reviewer gets no effort. |
+| `skill` | kind `skill`, required | The skill's name, as the Skill tool knows it: letters, digits, `.`, `_`, `-` (64 characters at most), and one `:` for `plugin:skill`. |
+| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). `model` is what `agent spawn --model` takes: `opus`, `sonnet`, `haiku`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` (letters, digits and `. _ : @ [ ] -` only, 100 at most — a Vertex id `claude-sonnet-4-5@20250929` is fine); `effort` one of `low`, `medium`, `high`, `xhigh`, `max`. A haiku reviewer gets no effort. |
 | `check` | optional | A shell command; exit 0 means "available now" — a quota probe, a login check. The verdict is the shell's own exit: a background child that keeps the output open does not hold it up. It runs in the hub home — not in the repository you are working in, whose `make`, `./script` or `npm` it would otherwise run — with a 10 s timeout (`AGENT_HUB_REVIEW_CHECK_TIMEOUT`, in seconds, finite and above 0, overrides it); on expiry its whole process group is killed. Its output is shown only by `--all`. |
 | `until` | optional | `YYYY-MM-DD`: available through that day (hub time zone), not after — for a quota or a credit that expires. |
-| `for` | optional | The change classes the entry serves (next section), each made of letters, digits, `.`, `_`, `-`. Absent: every class. |
+| `for` | optional | The change classes the entry serves (next section), each made of letters, digits, `.`, `_`, `-` (64 characters at most). Absent: every class. |
 
 Rules the tool enforces:
 - **A `check` from a repository's config is never run.** A cloned repository must not run commands through the hub:
@@ -39,7 +39,7 @@ Rules the tool enforces:
   hub cannot tell that from you setting it. Trust a folder only if you would run its commands.
 - **Nothing a repository writes reaches the line the hub runs, or the text it reads, unchecked.** `name`, `skill`,
   `model`, `effort` and the change classes must match the patterns above whichever layer they come from; an entry that
-  does not is reported and skipped. The `agent spawn` line the hub is told to run has every value shell-quoted.
+  does not is reported and skipped, and a rejected key or value is echoed back cut to 30 characters. The `agent spawn` line the hub is told to run has every value shell-quoted. `--json` repeats the text of a `check` only for an entry whose check was run. An alias of `AGENT_HUB_MODEL_MAP` must stand for a model id too (letters, digits and `. _ : @ [ ] / -`, so a Bedrock id or an inference-profile ARN is fine); a pair outside that is reported and left out.
 - **A broken entry is reported and skipped, never a crash.** Not an object, a missing or duplicate `name`, an unknown
   `kind`, a `skill` entry without a valid `skill`, a field that belongs to the other kind, a bad `model`, `effort`,
   `until` or class, an unknown field (a misspelt `for` must not quietly widen an entry to every class). A list with no valid entry — or

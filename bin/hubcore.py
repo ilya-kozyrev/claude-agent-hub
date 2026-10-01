@@ -33,10 +33,14 @@ JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
 MODEL_ALIASES = ("opus", "sonnet", "haiku")
-# A full model id, `claude-` plus letters, digits and . _ : [ ] - ("claude-opus-4-7[1m]" is one): nothing a shell treats
-# as syntax, so an id from a repository's config cannot carry a command into a line the hub runs.
-MODEL_ID_RE = re.compile(r"claude-[A-Za-z0-9._:\[\]-]+")
-MODEL_ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
+# "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
+# command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
+MODEL_ID_RE = re.compile(r"claude-[A-Za-z0-9._:@\[\]-]{1,100}")
+MODEL_ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# What an alias of AGENT_HUB_MODEL_MAP may stand for: any provider's model id (a Bedrock "us.anthropic.claude-…:0" or
+# an inference-profile ARN, a Vertex "…@2025…", a `claude-…` id) — the same characters plus "/", no `claude-` prefix.
+MODEL_VALUE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@\[\]/-]{0,199}")
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
                  "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
@@ -283,15 +287,28 @@ TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
 DEFAULT_MESSAGE_CAP = 10
 
 
+_MAP_WARNED: set = set()
+
+
 def model_map(cwd=None) -> dict:
     """Alias -> full id from AGENT_HUB_MODEL_MAP ("sonnet=claude-…,opus=claude-…"; env, else the agent's repo
-    .agent-hub/config.json, else the hub home's config.json); empty = pass aliases through."""
+    .agent-hub/config.json, else the hub home's config.json); empty = pass aliases through. A pair whose alias or
+    id has characters outside MODEL_ALIAS_RE / MODEL_VALUE_RE is reported once and left out: what a repository's
+    config maps an alias to goes into the agent's command line and its journal."""
     out = {}
     for part in (setting("AGENT_HUB_MODEL_MAP", cwd=cwd) or "").split(","):
         if "=" in part:
             k, v = part.split("=", 1)
-            if k.strip() and v.strip():
-                out[k.strip()] = v.strip()
+            k, v = k.strip(), v.strip()
+            if not (k and v):
+                continue
+            if not (MODEL_ALIAS_RE.fullmatch(k) and MODEL_VALUE_RE.fullmatch(v)):
+                if (k, v) not in _MAP_WARNED:
+                    _MAP_WARNED.add((k, v))
+                    _warn(f"AGENT_HUB_MODEL_MAP: {k[:30]!r}={v[:30]!r}{'…' if len(v) > 30 else ''} is not an alias "
+                          "and a model id (letters, digits and . _ : @ [ ] / - only); left out")
+                continue
+            out[k] = v
     return out
 
 
@@ -307,7 +324,7 @@ def model_problem(model, cwd=None) -> Optional[str]:
     if MODEL_ID_RE.fullmatch(model):
         return None
     return (f"one of {', '.join(MODEL_ALIASES)}, an alias from AGENT_HUB_MODEL_MAP, or a full id claude-… "
-            "(letters, digits and . _ : [ ] - only)")
+            "(letters, digits and . _ : @ [ ] - only)")
 
 
 def int_setting(name: str, default: int, minimum: int = 1) -> int:

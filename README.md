@@ -386,7 +386,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `HUB_STAGE` | `default` | Stage when `--stage` is not given (environment only). |
 | `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically; environment only). |
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. Hub-wide. |
-| `AGENT_HUB_MODEL_MAP` | none | Pin aliases to model ids, e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). |
+| `AGENT_HUB_MODEL_MAP` | none | Pin aliases to model ids, e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). A model id may use letters, digits and `. _ : @ [ ] / -` only (a Bedrock id or an ARN is fine); a pair outside that is reported and left out. |
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. `lock rules init` writes it into `.agent-hub/config.json`. |
