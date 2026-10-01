@@ -1,14 +1,21 @@
 # A day with agent-hub
 
-A synthetic example: stage `stage-a` ships a payments release. The hub is an interactive Claude Code session; every
-command below is what the hub (Claude, with the `hub` skill loaded) runs in Bash.
+A synthetic example: stage `stage-a` — a stream of work, here a payments release — on the day of its third hub shift.
+The hub is an interactive Claude Code session; every command below is what the hub (Claude, with the `hub` skill
+loaded) runs in Bash.
+
+Set-up behind the example: the repository ran `agent-hub:setup` once, so `.agent-hub/lock-rules.json` names the
+project's shared resources, and the first hub of the stage began with
+`hub start --stage stage-a --session "$CLAUDE_CODE_SESSION_ID"`. A day that needs less can drop `ask`, `lock` and the
+handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](../README.md#minimal-mode)).
 
 1. **Morning: take over the shift.** Yesterday's hub left a handoff.
    ```bash
-   hub takeover --stage stage-a --n 3 --session "$CLAUDE_CODE_SESSION_ID"
+   hub takeover --stage stage-a --session "$CLAUDE_CODE_SESSION_ID"
    ```
-   The previous hub's locks move to you, `roles.json` names you `hub` with tag `hub-3`, the journal gets a start
-   line, and a ≤ 3 KB digest prints § 0 of the handoff, the owner-question register, locks, roles and the first `jwait`.
+   The shift number is derived (the registered hub's plus one, here 3; `--n` overrides it). The previous hub's locks move
+   to you, `roles.json` names you `hub` with tag `hub-3`, the journal gets a start line, and a ≤ 3 KB digest prints § 0
+   of the handoff, the owner-question register, locks, roles and the first `jwait`.
 
 2. **Check what the owner already decided** before planning anything that touches it.
    ```bash
@@ -16,11 +23,13 @@ command below is what the hub (Claude, with the `hub` skill loaded) runs in Bash
    ask list --stage stage-a --pending      # answers given but not yet executed
    ```
 
-3. **Start the long work as headless agents**, one brief each (`templates/brief-executor-template.md`).
+3. **Start the long work as headless agents**, one brief each (`templates/brief-executor-template.md`). An agent that
+   writes code gets its own worktree; a reviewer that only reads can share the checkout.
    ```bash
-   agent spawn --role builder  --tag hub-3-builder  --cwd ~/code/webapp --model opus   --brief work/brief-builder.md
+   agent spawn --role builder  --tag hub-3-builder  --cwd ~/code/webapp --model opus   --worktree --brief work/brief-builder.md
    agent spawn --role reviewer --tag hub-3-reviewer --cwd ~/code/webapp --model sonnet --brief work/brief-review-41.md
    ```
+   The builder runs in `~/code/webapp/.worktrees/agent/builder` on the branch `agent/builder`.
 
 4. **Wait without polling.** One background waiter; the harness wakes the hub when it exits.
    ```bash
@@ -37,7 +46,8 @@ command below is what the hub (Claude, with the `hub` skill loaded) runs in Bash
    ```
    `agent send` resumes the finished session with the message; the reviewer continues where it stopped.
 
-6. **Merge under a lock.** Only the holder of `main-merge` may merge; the hook refuses anyone else.
+6. **Merge under a lock.** Only the holder of `main-merge` may merge; the hook refuses anyone else. A resource the
+   project named in `lock-rules.json` works the same way, for example `staging` before a rollout there.
    ```bash
    lock take main-merge --repo webapp --until +4h --why "merging the payments release"
    gh pr merge 41 --squash
@@ -55,14 +65,16 @@ command below is what the hub (Claude, with the `hub` skill loaded) runs in Bash
    ask done Q-A-001 --evidence "flag flipped in PR 43"
    ```
 
-9. **Evening: leave work for the night** in `stage-a/night-queue.md` (`templates/night-queue-template.md`), each line
-   with a stop condition and a permission class, then check it:
+9. **Evening, optional (macOS + Claude Desktop): leave work for the night** in `stage-a/night-queue.md`
+   (`templates/night-queue-template.md`), each line with a stop condition and a permission class, then check it:
    ```bash
    nightq check --stage stage-a
    ```
+   Skip this step unless you run the hub overnight on a Mac with Claude Desktop.
 
 10. **Hand over.** The context is getting long; write the handoff and stop.
     ```bash
-    hub handoff --stage stage-a --n 3        # fill the TODOs, then tell the owner the path
+    hub handoff --stage stage-a              # fill the TODOs, then tell the owner the path
     ```
-    The agents keep running. Tomorrow's hub starts at step 1 with `--n 4`.
+    The agents keep running. Finished worktrees are removed by hand (`git worktree list`, `git worktree remove <path>`).
+    Tomorrow's hub starts at step 1 and becomes `hub-4` without being told.

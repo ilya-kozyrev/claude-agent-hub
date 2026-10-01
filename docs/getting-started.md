@@ -8,6 +8,10 @@ the **hub** does on its own, and what the **agents** do. It is not a command ref
 The running example, used in every step: *"add CSV export to the reports page of my web app"*, with three agents
 named `api`, `ui` and `tests`. Everything below is synthetic.
 
+Three words used throughout. The **hub** is your interactive Claude Code session: it plans and coordinates but does not
+do the long work. **Agents** are headless `claude -p` sessions that do it, one per task. A **stage** is one stream of work
+(here, this feature) with its own directory of files under the hub home (`~/.claude/agent-hub/<stage>/`).
+
 ## The flow in one picture
 
 ```mermaid
@@ -46,7 +50,9 @@ flowchart TB
 
 Read it top to bottom. Colour says who acts: **blue — you**, **yellow — the hub** (your chat session), **green — the agents** (headless, they keep running when you close the chat), grey — a round trip between all three. Dotted arrows are things that happen now and then. The numbers match the steps below.
 
-## Install
+## Install and set up, once
+
+Platform: macOS or Linux (Windows is not supported; see the [README](../README.md#install)).
 
 ```text
 /plugin marketplace add ilya-kozyrev/claude-agent-hub
@@ -55,6 +61,20 @@ Read it top to bottom. Colour says who acts: **blue — you**, **yellow — the 
 
 Requirements and the permissions note are in the [README](../README.md#install). Read the permissions note before your
 first agent: headless agents run with `bypassPermissions` by default.
+
+Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill. It
+asks which branches are protected, whether the project has environments or other resources that two sessions must not
+change at once (staging, a deploy window, a migration chain), and which commands touch each; writes
+`.agent-hub/lock-rules.json` and `config.json`; and proves the rules with `lock rules check`. A project with no
+deployment ends with `main-merge` only, which is a complete setup. Commit `.agent-hub/`.
+
+### Start small
+
+You do not need every tool on day one. One hub and a few agents need three: **`agent`** (spawn, status, send, stop),
+**`jlog`** and **`jwait`**. `roles`, `ask`, `lock`, `hub takeover` and `hub handoff` start to matter when you have more
+than one interactive session, more than one shift, or a shared resource. The walkthrough below uses them in the order
+they come up; skip what you do not need yet. The night queue and the night nudge are optional modules for macOS with
+Claude Desktop and do not appear here.
 
 ## Step by step
 
@@ -68,8 +88,10 @@ the table as CSV, filtered the same way as the table. Plan it as one stage calle
 anything before I approve the plan.
 ```
 
-- **Hub:** loads the `hub` skill (the workflow and the tool list). The stage name `csv-export` is just a directory
-  name under the hub home (`~/.claude/agent-hub/csv-export/`); the first `agent spawn` creates it.
+- **Hub:** loads the `hub` skill (the workflow and the tool list) and starts the stage:
+  `hub start --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`. That creates the stage directory, registers this
+  session as `hub-1`, writes the start line to the journal and prints the first `jwait` command. (If you skipped the setup
+  above and the repository has no `.agent-hub/`, the hub offers the `agent-hub:setup` skill first.)
 - **You see:** the hub restating the goal.
 - **Wait:** seconds.
 - **Next:** answer its questions.
@@ -100,9 +122,9 @@ You: 1 yes. 2 yes.
 The hub proposes the split before it starts anything: which agents (`api`, `ui`, `tests`), what each one owns, which
 paths each must not touch, how each one proves it is done, and its stop condition ("open a PR and stop; do not merge").
 
-- **Hub:** drafts one **brief** per agent from `templates/brief-executor-template.md`: why, owner decisions that must
-  not be reopened (filled from the register), steps with a checkable "done", verification, and "answer and stop" with a
-  turn limit. It shows you the plan, and the brief files are on disk to read.
+- **Hub:** drafts one **brief** per agent from the short `templates/brief-executor-template.md`: why, decisions already
+  made (filled from the register), steps with a checkable "done", verification, and where to stop, with a turn limit.
+  It shows you the plan, and the brief files are on disk to read.
 - **You see:** a plan of a screen or two.
 - **Wait:** minutes.
 - **Next:** approve, or say what to change. The plugin has no approval button; you approve by saying so in chat, and
@@ -116,10 +138,10 @@ Go.
 ### 4. The hub starts the agents
 
 - **Hub:** runs one `agent spawn` per brief, for example
-  `agent spawn --role api --tag hub-1-api --cwd <api checkout> --model sonnet --brief <brief file>`. Each agent is a
-  detached `claude -p` session with its own process and session id.
-  The plugin does not create git worktrees: give each agent its own checkout or worktree as `--cwd` (the hub can create
-  them) so two agents do not edit the same files.
+  `agent spawn --role api --tag hub-1-api --cwd <repo> --worktree --model sonnet --brief <brief file>`. Each agent is a
+  detached `claude -p` session with its own process and session id. `--worktree` gives it its own git worktree (branch
+  `agent/api`, directory `<repo>/.worktrees/agent/api`, kept out of git status), so two agents never edit the same
+  files. Nothing removes a worktree afterwards; once the branch is merged, `git worktree remove <path>`.
 - **Files that appear:** `agents/<role>/{brief.md, inbox.md, log.jsonl, meta.json}` and the first lines in today's
   journal, `coordinator/work/journal-YYYY-MM-DD.md`.
 - **You see:** one "started" line per agent.
@@ -187,8 +209,9 @@ Have a reviewer agent check PR 41 and 42 against the brief. Report only real pro
 
 ### 10. Merge
 
-Merging to main is the one step the plugin guards. A lock, `main-merge`, says who may merge right now, and a hook
-refuses `gh pr merge`, `glab mr merge` and a `git push` to a protected branch while *another* session holds the lock.
+Merging to main is the one step the plugin guards on its own. A lock, `main-merge`, says who may merge right now, and a
+hook refuses `gh pr merge`, `glab mr merge` and a `git push` to a protected branch while *another* session holds the
+lock. Any other resource you named in `agent-hub:setup` works the same way.
 
 ```text
 Merge 41, then 42. Take the main-merge lock first so nobody else merges meanwhile.
@@ -197,7 +220,7 @@ Merge 41, then 42. Take the main-merge lock first so nobody else merges meanwhil
 - **Hub:** `lock take main-merge --repo webapp --until +2h --why "csv-export"`, merges, `lock release`.
 - **You see:** the merge result and the lock released.
 - **Note:** merging is not shipping. Deploying is whatever your project does after a merge; the plugin has no deploy
-  step (it can guard one if you list your deploy command in `lock-rules.json`).
+  step (it can guard one if you name the resource and list your deploy command in `lock-rules.json`).
 
 ### 11. Hand over when the context fills up
 
@@ -207,13 +230,14 @@ A long stage outlives one chat. When the hub's context is long, or at the end of
 Context is getting long. Write the handoff.
 ```
 
-- **Hub:** `hub handoff --stage csv-export --n 1` writes `HANDOFF-hub-csv-export-<date>.md` with locks, agents, the
-  question register and the night queue filled in; the hub fills the rest (first steps, queue, risks) and tells you the
-  path. It releases no locks. Agents keep running.
+- **Hub:** `hub handoff --stage csv-export` writes `HANDOFF-hub-csv-export-<date>.md` with locks, agents and the
+  question register filled in; the hub fills the rest (first steps, queue, risks, worktrees to clean up) and tells you
+  the path. It releases no locks. Agents keep running.
 - **Next session:** open a fresh chat in the repo and say
   `Use the hub skill and take over stage csv-export from <the handoff path>.` The new hub runs
-  `hub takeover --stage csv-export --n 2 --session "$CLAUDE_CODE_SESSION_ID"`, which takes over the locks, registers
-  itself as the hub, and prints a digest of the handoff, the register and the live agents.
+  `hub takeover --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`, which takes over the locks, registers itself as
+  the next hub (`hub-2`: the number is derived from the registry; `--n` overrides it), and prints a digest of the
+  handoff, the register and the live agents.
 
 ## A sketch of a real session
 
@@ -233,8 +257,8 @@ Hub:  Plan: api (endpoint option + streaming), ui (button, reuse ButtonLink), te
       Default if you do not answer by 18:00: refuse with a clear error. Registered as Q-EXPORT-001.
 You:  Fine. Start.
 # the hub runs agent spawn three times; three "started headless agent" lines appear in the journal
-Hub:  Started api, ui, tests (tags hub-1-api, hub-1-ui, hub-1-tests). I am waiting in the background; I will
-      only speak when something finishes or blocks.
+Hub:  Started api, ui, tests, each in its own worktree (tags hub-1-api, hub-1-ui, hub-1-tests). I am waiting in
+      the background; I will only speak when something finishes or blocks.
 # 40 minutes pass; the hub is woken by a journal line
 Hub:  ui asks: the reports table has a "Select all" column; export it or skip it? I found no earlier decision.
       Default if you do not answer: skip it. Asked as Q-EXPORT-002.
@@ -290,7 +314,9 @@ Two agents are done, one is finishing its tests, and you are asked for nothing e
 
 - **Agents with a loose brief.** A headless agent has nobody to ask in chat and no end unless the brief gives one. Every
   brief needs a "done" you can check, a stop condition ("open a PR and stop"), a turn limit and a list of what not to
-  touch. The template exists for this.
+  touch. The template exists for this. The limit matters for cost too: every turn re-reads the agent's whole context, so
+  a long agent costs more than its turn count suggests and draws on the same plan limits as your own chat
+  ([cost and turn limits](../README.md#cost-and-turn-limits)).
 - **Ignoring the permissions mode.** `bypassPermissions` is the default because any other mode silently stalls on the
   first blocked tool. Run agents in their own worktree, say what they must not touch, or set
   `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
@@ -299,8 +325,7 @@ Two agents are done, one is finishing its tests, and you are asked for nothing e
   a long command is run in the foreground with a raised timeout, not left in the background.
 - **Expecting buttons in the widget.** In the Claude Code desktop tab the `/agent-top` widget cannot send prompts. Type
   the command it names, such as `agent send api "…"`.
-- **Two agents in one checkout.** The plugin does not make worktrees. Give each agent its own, or they will overwrite
-  each other.
+- **Two agents in one checkout.** They overwrite each other. Start every agent that writes code with `--worktree`.
 - **Letting the hub run until it forgets.** Write the handoff while context is left, not after the chat has slowed
   down. Agents keep running meanwhile, and the next hub picks up from the file.
 
@@ -308,4 +333,5 @@ Two agents are done, one is finishing its tests, and you are asked for nothing e
 
 - [a-day-with-agent-hub.md](a-day-with-agent-hub.md): the same flow at command level, with a night queue.
 - [architecture.md](architecture.md): roles, who writes which file, and the file formats.
-- [README](../README.md): configuration variables and limitations.
+- [README](../README.md): how the hub compares with Claude Code's own sub-agents and background sessions, team use,
+  configuration variables and limitations.

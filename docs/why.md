@@ -31,7 +31,7 @@ What that looked like in practice:
 | Waits on `pgrep -f` that matched their own shell and never ended | 68 calls |
 | One-off "is the pipeline done yet?" calls in a later multi-week stage, after loops were banned | 573 calls, 808 turns (16 % of all turns) |
 | Context each of those polling turns re-read | 300–600k tokens, roughly 0.24–0.48 billion tokens to learn "not yet" |
-| One coordinator session kept alive for a stage | 1,859 messages on the top model; that model's weekly cap stood at 39 % against 30 % overall |
+| One hub session kept alive for a stage | 1,859 messages on the top model; that model's weekly cap stood at 39 % against 30 % overall |
 | One executor that was not cut into stages | 1,100 turns; the overnight run stretched to nine hours |
 
 None of this came from a hard task. It came from one session doing planning, waiting, log reading and coordination in
@@ -65,15 +65,15 @@ failing line, a fact check, a review of one file. The hub does this itself — a
 is the pattern this plugin exists to avoid.
 
 Use a **headless agent** when the work runs longer than about half an hour, must outlive the session that started it,
-or other sessions must be able to reach it: a stage executor, a merge steward, a release rehearsal, a night queue.
-The full decision table, background sub-agents included, with the measurements behind it:
-[launch-modes.md](launch-modes.md).
+or other sessions must be able to reach it: a stage executor, an agent that merges approved PRs one at a time, a
+release rehearsal, a night queue. The full decision table, background sub-agents included, with the measurements
+behind it: [launch-modes.md](launch-modes.md).
 
 Claude Code also has agent view (background sessions you dispatch and watch from one screen, research preview), agent
 teams (a lead and teammates that message each other, experimental) and cross-session messaging [4][5]. If one of them
 covers your case, use it. agent-hub sits on plain `claude -p` and adds what those do not keep for you as files: a
 journal any session can wait on, an owner-question register, a lock board with a hook, and a handoff that lets the
-coordinator itself be replaced every few hours.
+hub itself be replaced every few hours.
 
 ## Why a handoff when there is `/compact`
 
@@ -83,13 +83,13 @@ when the conversation nears the auto-compact window — on Sonnet 5.5, about 967
 intermediate reasoning are gone, and Claude "won't have the exact content" of the rest [2]. For a session that will
 finish soon this is fine: it frees room and you carry on.
 
-For a coordinator that runs for days it has four problems:
+For a hub that runs for days it has four problems:
 
 - **You do not choose what survives.** The summary is the model's paraphrase. An owner decision with its exact wording,
   a session id, a lock you hold, an item marked "do not reopen" can be shortened or dropped, and nothing tells you
   which. `/compact <instructions>` steers it, but it is still a paraphrase [1].
-- **It compounds.** The next compaction summarises a summary. In the project above, questions asked in one coordinator
-  shift quietly became "we no longer ask this" a few shifts later; coordinators rotated every 6–12 hours.
+- **It compounds.** The next compaction summarises a summary. In the project above, questions asked in one hub
+  shift quietly became "we no longer ask this" a few shifts later; hubs rotated every 6–12 hours.
 - **Nobody else can read it.** The summary lives in one transcript. A person cannot review it, another session cannot
   pick it up, and a mistake in it stays invisible until it causes one.
 - **It comes late and costs a full read.** Auto-compact fires near the limit, when the context is least sharp, and
