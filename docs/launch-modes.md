@@ -13,12 +13,23 @@ numbers, and the experiments behind them (Claude Code CLI 2.1.274, macOS, 2026-1
 | Ends with | its turn | its turn; killed when the hub's process exits (E5) | its turn; survives the hub's exit and handoff | `claude stop`; survives the terminal | its task | the owner |
 | Who can talk to it | nobody while it runs | only the parent session: `SendMessage` to its id (E8) | any session: `agent send` (inbox while alive, resume after) | any local session by name (E14); the owner with `claude attach` | nobody | the owner |
 | What reaches the hub | its whole result | a ~1 KB launch note, a ~0.7 KB completion notice and its result (E4) | one journal status line; the report is a file | nothing unless it writes the journal | a fetched report | nothing |
-| Visible in | the hub's UI | `agent-top` (rows `<parent role>/<id>`), `/tasks` | `agent-top`, `agent status`, the journal | `claude agents` | the cloud UI | Desktop |
+| Visible in | the hub's UI, `agent-top` | `agent-top` (rows `<parent role>/<id>`), `/tasks` | `agent-top`, `agent status`, the journal | `claude agents` | the cloud UI | Desktop |
 | Starting context | ~16k tokens (E13) | ~16k tokens | ~27k tokens + the brief footer | as a new session | — | — |
 
 Cloud sessions are for review today: a bundle made from a GitLab checkout cannot push back. A `claude --bg` session
 works (E14) but is not wired into the hub's tools: it has no stream-json log for `agent-top`, no `EXIT` line when it
 dies, and `--dangerously-skip-permissions` needs a one-time interactive acceptance.
+
+Claude Code's other parallel mechanisms, and where they sit here:
+- **Agent view** (`claude agents`, research preview) is the screen over `claude --bg` sessions: dispatch, watch,
+  attach. Same lifetime and limits as the `claude --bg` column.
+- **Agent teams** (experimental, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`): a lead session and teammates with their
+  own context windows that message each other. Not measured here; the docs warn that token use grows with the number
+  of teammates. Use it when the workers must talk to each other, not to the hub.
+- **Cross-session messaging** (`SendMessage`/`ListAgents` between sessions on one machine): reaches any running
+  session by its name — an interactive one, a busy `claude -p` run (E8), a `claude --bg` session (E14) — but never a
+  sub-agent of another session, and nothing once the process is gone. `agent send` keeps working after an agent's
+  process ends (it resumes the session) and leaves a journal line; prefer it for headless agents.
 
 ## Decision table
 
@@ -43,7 +54,9 @@ Other axes:
   agent starts ~10k tokens heavier and talks only through the journal and its report. The model is chosen per call:
   long routine work goes to Opus or Sonnet, not to a capped judgement model.
 - **Visibility.** Headless agents and the sub-agents of the sessions in the role registry (the hub after
-  `hub takeover`, every spawned agent) show in `agent-top`; sub-agents read-only.
+  `hub takeover`, every spawned agent) show in `agent-top`; sub-agents read-only. A sub-agent's state comes from its
+  parent's transcript (a completion notice for a background one, the Agent call's result for a foreground one, E18)
+  and from whether the parent's process still runs (`~/.claude/sessions/<pid>.json`, E19).
 
 Why ~30 min for a background sub-agent: it dies with the hub's process and only the hub's own session can resume it
 (E5, E6, E8). The longer it runs, the likelier a restart, a handoff or a quit app costs the redo. The number is a
@@ -62,10 +75,18 @@ Compaction is not a reason: a sub-agent keeps running through it and its notice 
 
 A headless agent is a `claude -p` run. When its turn ends it waits for its background sub-agents, but only up to the
 CLI's ceiling (10 min by default), then kills them (E10); a sub-agent's own activity does not extend the wait (E11).
-`agent spawn` therefore starts every run with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (wait until they finish;
-`AGENT_HUB_BG_WAIT_CEILING_MS` sets another value, E12). While they run the agent shows as alive; `agent stop` ends
+`agent spawn` therefore starts every run with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (wait until they finish —
+a 19-minute sub-agent completed, E12; `AGENT_HUB_BG_WAIT_CEILING_MS` sets another value). While they run the agent shows as alive; `agent stop` ends
 both. The executor reports for its sub-agents — they do not write the journal, because the hub's `jwait` wakes on any
 `DONE` line.
+
+## Starting a headless agent from the hub
+
+Run `agent spawn` as a normal (foreground) Bash call: it returns within seconds, once the agent's run has started.
+The docs say that when Claude Code stops a background Bash task — at exit or from `/tasks` — processes it detached
+with `setsid` stop too. In the experiment (E16) a spawned agent survived both its parent session's exit and the
+killing of the background task that launched it, because it had already been reparented; nothing is gained by
+running it in the background, so do not rely on that.
 
 ## Journal lines from sub-agents
 
@@ -104,10 +125,14 @@ session was stopped and removed afterwards.
 | E9 | Model and effort | per-call `model: "sonnet"` honoured (resolved by the CLI version — 2.1.274 gave `claude-sonnet-5`); `effort: high` pinned by the agent definition recorded on every sub-agent assistant line |
 | E10 | The `-p` wait ceiling | with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=20000` the parent printed "Background tasks still running after 20s; terminating" and exited at 28 s; `subagent_stats.killed.system = 1`; no notice in the transcript |
 | E11 | The ceiling counts from the parent's turn end | a sub-agent making a tool call every 12 s was killed at the same 20 s ceiling after its first call |
-| E12 | Ceiling 0 | see the result line below |
+| E12 | Ceiling 0 | with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` a sub-agent made two 560 s calls; the parent, whose turn ended at 7 s, waited and exited at 1,139 s after handling the notice, exit 0 |
 | E13 | Cost shape | sub-agent's first call: ~16k context tokens (system prompt, CLAUDE.md, tools); a fresh headless parent in the same setup: ~27k |
 | E14 | `claude --bg` | returns at once; hosted by `claude daemon` → `bg-pty-host`; `claude agents --json` lists it (`kind: background`, `status`, `state`); inherits the launching shell's environment (`jlog` worked); transcript at the usual `projects/<project>/<session>.jsonl`; a peer's `SendMessage` to its name ran a command in it; `--bg -p` refused; `--dangerously-skip-permissions` refused until accepted interactively; a variadic flag (`--allowedTools Bash "<task>"`) swallowed the prompt; after SIGTERM to its process it was not restarted (`state: blocked`) and `claude --bg --resume <id>` started a copy with the history |
 | E15 | A sub-agent that backgrounds its own command | its turn ends at once and the parent gets a `completed` notice with an interim result; the backgrounded command is killed when the `-p` parent exits |
+| E16 | `agent spawn` and the parent session's exit | a `claude -p` session ran `agent spawn` once as a foreground and once as a background Bash call, then exited after 10 s: both agents (fake CLI holding 45 s) kept running and wrote their `result`; a third spawn inside a background task that was still running (`agent spawn … && sleep 120`) also survived when the CLI killed that task at exit |
+| E17 | Bash timeouts | with `BASH_DEFAULT_TIMEOUT_MS=15000` a foreground 40 s command was moved to the background at 15 s (`is_backgrounded`), and a background `jwait --for 12h` was not stopped at 15 s; both were stopped when the `-p` run exited. The docs give background commands 30 min by default (the Bash call's `timeout` raises it, 2 h at most unless `BASH_MAX_TIMEOUT_MS`); see the waiting rule in the skill |
+| E18 | Foreground sub-agent | `requestShape: "foreground"` in its meta; no `<task-notification>` in the parent; the parent's `tool_result` for the meta's `toolUseId` carries its answer |
+| E19 | Which processes run | `~/.claude/sessions/<pid>.json` holds `pid` and `sessionId` for every running CLI process, headless and Desktop-hosted alike; no stale files were left by the runs above |
 
 Docs and experiment: the docs say a `-p` run waits for background sub-agents "until 10 minutes of continuous idle
 waiting"; in the experiment the sub-agent's own tool calls did not reset that clock (E11). The docs' limits on

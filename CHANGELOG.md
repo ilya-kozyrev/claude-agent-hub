@@ -8,7 +8,9 @@
 - `agent spawn` runs wait for their background sub-agents: `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` by default
   (the CLI kills them after 10 min otherwise); new setting `AGENT_HUB_BG_WAIT_CEILING_MS`.
 - `agent-top` lists the sub-agents of the sessions in a stage's role registry, read-only, as `<role>/<id>`: state from
-  the parent's completion notices, current action, feed from the sub-agent's transcript.
+  the parent's transcript (completion notices; a foreground sub-agent's Agent-call result) and from whether the parent
+  process runs (`~/.claude/sessions/<pid>.json`), current action, model and effort, feed from the sub-agent's
+  transcript.
 
 ## 0.3.0 — 2026-10-01
 

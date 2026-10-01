@@ -187,7 +187,7 @@ def bg_wait_ceiling(cwd=None) -> str:
     """Milliseconds a run whose turn ended waits for its background sub-agents before the CLI kills them.
     The CLI's default (10 min) cuts a background sub-agent of a headless agent short; 0 waits until it finishes."""
     raw = str(hc.setting("AGENT_HUB_BG_WAIT_CEILING_MS", cwd=cwd) or "0").strip()
-    if not raw.isdigit():
+    if not re.fullmatch(r"[0-9]+", raw):
         raise hc.UsageError("AGENT_HUB_BG_WAIT_CEILING_MS must be a whole number of milliseconds (0 = no ceiling)")
     return raw
 
@@ -444,6 +444,8 @@ def cmd_send(a) -> int:
     meta = load_meta(stage, a.role)
     if a.role not in hc.roles_load(stage)["roles"]:
         raise hc.Failure(f"agent {a.role} was stopped (role retired); start a new one with agent spawn")
+    if not alive(meta):
+        bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
     t = hc.now()
     if msg:
         with open(Path(meta["dir"]) / "inbox.md", "a", encoding="utf-8") as fh:
