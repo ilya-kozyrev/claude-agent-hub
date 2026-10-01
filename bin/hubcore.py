@@ -37,6 +37,8 @@ HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT")
+# Yes/no settings: a JSON boolean is accepted for them (read with truthy()).
+BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending.
 # $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
@@ -125,7 +127,12 @@ def read_config(path: Path, project: bool) -> dict:
             continue
         if isinstance(value, dict):  # {"sonnet": "claude-…"} for AGENT_HUB_MODEL_MAP
             value = ",".join(f"{k}={v}" for k, v in value.items())
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        if isinstance(value, bool):  # a JSON boolean: "true" / "false", what truthy() reads
+            if name not in BOOL_KEYS:
+                _warn(f"{path}: {name} is not a yes/no setting (true/false); ignored")
+                continue
+            value = "true" if value else "false"
+        if not isinstance(value, (str, int, float)):
             _warn(f"{path}: {name} must be a string or a number; ignored")
             continue
         out[name] = str(value)

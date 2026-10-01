@@ -134,7 +134,7 @@ PREV=12121212-1212-4121-8121-121212121212; PREV_CLI=34343434-3434-4343-8343-3434
 printf '{"sessionId":"local_%s","cliSessionId":"%s","title":"Hub #4"}' $PREV $PREV_CLI > $CLAUDE_SESSIONS_DIR/a/b/local_$PREV.json
 tk_setup(){
   new_home; R=$AGENT_HUB_HOME; mkdir -p $R/stage-a/coordinator/work
-  python3 -c 'import json,sys; json.dump({"version":1,"roles":{"hub":{"session":"local_"+sys.argv[2],"kind":"desktop","tag":"hub-4"}},"retired":[],"sends":[]}, open(sys.argv[1],"w"))' $R/stage-a/roles.json $PREV
+  python3 -c 'import json,sys; json.dump({"version":1,"roles":{"hub":{"session":"local_"+sys.argv[2],"cli_session_id":sys.argv[3],"kind":"desktop","tag":"hub-4","title":"Hub #4"}},"retired":[],"sends":[]}, open(sys.argv[1],"w"))' $R/stage-a/roles.json $PREV $PREV_CLI
   [ "$1" = prev-mm ] && python3 - "$R/board.md" "$PREV_CLI" <<'PY'
 import json, sys
 row = {"kind": "main-merge", "repo": "webapp", "owner_name": "Hub #4", "session_id": sys.argv[2],
@@ -175,4 +175,33 @@ grep -q "Hub notes of this project — read before planning: $(cd $REPO && pwd -
 printf '{"AGENT_HUB_JWAIT_MATCH": "PENDING OWNER"}\n' > $R/config.json
 (cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --dry-run) > $P/t6.out 2>&1
 grep -q -- "--match '.*AWAITING ANSWER|PENDING OWNER'" $P/t6.out; check $? 0 "the digest's jwait carries AGENT_HUB_JWAIT_MATCH"
+
+# ---- delta review: N1 (another repo's main-merge of the predecessor does not hide the hub repo's free one),
+#      N2 (JSON boolean settings), N3 (release with two own locks of the kind names them)
+tk_setup none; python3 - "$R/board.md" "$PREV_CLI" <<'PY2'
+import json, sys
+row = {"kind": "main-merge", "repo": "mobile", "owner_name": "Hub #4", "session_id": sys.argv[2],
+       "until": "2099-12-31T23:59:00+00:00", "why": "stage hub", "taken_at": "2026-09-29T14:00:00+00:00"}
+open(sys.argv[1], "w").write("# b\n\n```locks\n" + json.dumps(row) + "\n```\n")
+PY2
+printf '{"AGENT_HUB_DEFAULT_REPO": "webapp", "AGENT_HUB_TAKE_MAIN_MERGE": "true"}\n' > $REPO/.agent-hub/config.json
+(cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI) > $P/n1.out 2>&1
+check "$(mm)" "mobile:eeee,webapp:eeee" "N1: the predecessor's main-merge (mobile) does not stop taking the hub repo's free one (webapp)"
+tk_setup prev-mm
+(cd $OUT && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --take-main-merge) > $P/n1b.out 2>&1
+grep -q 'main-merge (\*) was wanted but not taken' $P/n1b.out; check $? 0 "N1: a wanted main-merge that is not taken is said"
+tk_setup none; printf '{"AGENT_HUB_DEFAULT_REPO": "webapp", "AGENT_HUB_TAKE_MAIN_MERGE": true}\n' > $REPO/.agent-hub/config.json
+(cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI) > $P/n2.out 2>&1
+check "$(mm)" "webapp:eeee" "N2: a JSON boolean true is accepted"
+grep -q 'must be a string' $P/n2.out; check $? 1 "…without a warning"
+tk_setup none; printf '{"AGENT_HUB_DEFAULT_REPO": "webapp", "AGENT_HUB_TAKE_MAIN_MERGE": false}\n' > $REPO/.agent-hub/config.json
+(cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI) > /dev/null 2>&1
+check "$(mm)" "-" "N2 negative: a JSON boolean false takes nothing"
+rm -f $R/board.md
+(cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo webapp --until +1h --why x) > /dev/null
+(cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo mobile --until +1h --why x) > /dev/null
+(cd $OUT && CLAUDE_CODE_SESSION_ID=$ME $B/lock release stage) > $P/n3.out 2>&1; rc=$?
+check $rc 1 "N3: release without --repo and two own locks of the kind: exit 1"
+grep -q 'stage (webapp)' $P/n3.out && grep -q 'stage (mobile)' $P/n3.out && grep -q -- '--repo' $P/n3.out; check $? 0 "…names both and says --repo"
+check "$(grep -c '"kind": "stage"' $R/board.md)" 2 "…and releases nothing"
 exit $fail

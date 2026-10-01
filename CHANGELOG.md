@@ -28,7 +28,11 @@ Project configuration: a team's own conventions live in its repository, not in a
     tool (and both hooks) at import. `AGENT_HUB_HANDOFF_MAX_BYTES` likewise warns.
   - `hub takeover --take-main-merge` run outside the hub repository no longer adds a second, wildcard `main-merge`
     next to the one taken over from the previous hub (that lock refused merges in every other repository).
-  - `lock release` without `--repo`, run from another directory, finds this session's only lock of that kind.
+  - `lock release` without `--repo`, run from another directory, finds this session's only lock of that kind;
+    with several it names them and exits 1.
+  - Takeover: a main-merge the previous hub held in another repository no longer hides the hub repository's free
+    one; a main-merge that was wanted but could not be taken is reported. `AGENT_HUB_TAKE_MAIN_MERGE` accepts a JSON
+    boolean.
   - `hub takeover` says when it finds no `takeover.sh` in the config layers of its working directory.
 - New settings: `AGENT_HUB_TAKE_MAIN_MERGE` (repository: takeover takes the hub repository's main-merge by default;
   without it a free main-merge of a configured hub repository is reported in the digest), `AGENT_HUB_JWAIT_MATCH`

@@ -458,13 +458,18 @@ def cmd_takeover(a) -> int:
         # The hub repo's free main-merge. Never when a main-merge is already ours (taken over from the previous
         # hub or held): a second record, and a wildcard one above all, would lock merges in other repositories.
         held_here = any(repo_of(r) in (mm_repo, "*") for r in active if r["kind"] == "main-merge")
-        if take_mm and not ours and not held_here and not (mm_repo == "*" and any(
-                r["kind"] == "main-merge" for r in active)):
+        ours_here = mm_repo in ours or "*" in ours
+        any_mm = any(r["kind"] == "main-merge" for r in active)
+        if take_mm and not ours_here and not held_here and not (mm_repo == "*" and any_mm):
             to_take.append({"kind": "main-merge", "repo": mm_repo, "until": a.main_merge_until,
                             "why": "stage hub", "_from": None})
-        elif not take_mm and not ours and not held_here and mm_repo != "*":
-            notes.append(f"nobody holds main-merge ({mm_repo}): merges to its main are not guarded — "
-                         "--take-main-merge, or AGENT_HUB_TAKE_MAIN_MERGE=true in the repository's config.json")
+        elif not ours_here and not held_here:
+            if take_mm:
+                notes.append(f"main-merge ({mm_repo}) was wanted but not taken: other main-merge locks exist and the "
+                             "hub repo is unknown here — run from the repository or set AGENT_HUB_DEFAULT_REPO")
+            elif mm_repo != "*":
+                notes.append(f"nobody holds main-merge ({mm_repo}): merges to its main are not guarded — "
+                             "--take-main-merge, or AGENT_HUB_TAKE_MAIN_MERGE=true in the repository's config.json")
     if kept:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 

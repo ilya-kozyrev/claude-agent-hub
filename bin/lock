@@ -120,6 +120,11 @@ def cmd_release(args) -> int:
                 args.repo = own[0].get("repo") or board.DEFAULT_REPO
                 print(f"note: no {args.kind} ({DEFAULT_REPO}) lock; releasing your only {args.kind} lock "
                       f"({args.repo})")
+            elif len(own) > 1:
+                names = ", ".join(f"{args.kind} ({r.get('repo') or board.DEFAULT_REPO})" for r in own)
+                print(f"no {args.kind} ({DEFAULT_REPO}) lock; this session holds {names} — pass --repo; "
+                      "nothing released", file=sys.stderr)
+                return 1
         if not hit:
             print(f"no {args.kind} ({args.repo}) lock on the board")
             return 0
