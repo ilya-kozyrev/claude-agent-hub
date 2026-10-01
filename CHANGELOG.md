@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-10-01
 
-The hub's files move out of `~/.claude`, which Claude Code protects, and where they live becomes a setting.
+The hub's files move out of `~/.claude`, which Claude Code protects, and where they live becomes a setting. The
+default changes to `~/agent-hub`; an existing `~/.claude/agent-hub` keeps working with a warning until
+`hub home migrate --apply` moves it.
 
 - **The hub home is a setting.** Resolved in this order: `AGENT_HUB_HOME` in the environment (any path); a repository's
   `.agent-hub/config.json` key `AGENT_HUB_HOME`, only `"project"` (`<main checkout>/.agent-hub/local/`, shared by all
