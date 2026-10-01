@@ -53,8 +53,10 @@ duration.
   (`bash <(echo '…')`) and `eval "$(…)"` are not looked into.
 - Polling guard, text fed to a shell: "fed" is decided per pipeline, not for the whole command; `xargs` counts only
   with `sh -c` (`echo "sleep 5m" | xargs echo` is not a wait); a shell behind a wrapper with flags (`sudo -u app bash`,
-  `sudo -E bash`, `/usr/bin/env bash`, `time bash`) and a heredoc that reaches a shell through an intermediate stage
-  (`cat <<EOF | tee f | bash`) are now caught.
+  `sudo -E bash`, `/usr/bin/env bash`, `time bash`), a heredoc that reaches a shell through an intermediate stage
+  (`cat <<EOF | tee f | bash`), a line continuation or a trailing `|` before the shell, `(echo '…') | bash`, a shell
+  word glued from several strings (`bash -c 'until … '"$F"' …'`) and shell options before `-c` (`bash -eo pipefail -c`,
+  `bash -c --`) are caught; `\$(…)` in double quotes is a literal, and a here-string is no longer read as a heredoc.
 - Polling guard: only the 300 characters before a quoted string are read to decide whether it runs, so a command with
   tens of thousands of strings is judged in well under a second.
 

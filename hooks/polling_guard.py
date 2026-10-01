@@ -73,15 +73,18 @@ _UNIT = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # only with `sh -c` (`xargs rm` gets the text as arguments); a wrapper's flag takes a value only for `-u` / `-g`
 # (otherwise `env -i grep bash` would read `grep` as the flag's value).
 _SHELL = r"(?:\S*/)?(?:bash|sh|zsh|dash|ksh)"
-_WRAPPER = r"(?:\S*/)?(?:sudo|env|nohup|exec|time)(?:\s+(?:-[ug]\s+\S+|-\S+))*"
+# A flag's value never starts with `-`: `-[ug]\s+\S+` and `-\S+` overlap, and `-u -u -u …` backtracked exponentially.
+_WRAPPER = r"(?:\S*/)?(?:sudo|env|nohup|exec|time)(?:\s+(?:-[ug]\s+(?!-)\S+|-\S+))*"
 _SHELL_CONSUMER = re.compile(rf"^\s*(?:(?:\w+=\S+|{_WRAPPER}|timeout\s+\S+)\s+)*"
                              rf"(?:{_SHELL}|eval|source|xargs\b.*?\s{_SHELL}\s+-\w*c)\b")
 # A quoted string whole, backslash escapes included; `\x` outside quotes is swallowed so `\"` does not open a string.
 _QUOTED = re.compile(r"""'[^']*'|"(?:\\.|[^"\\])*"|\\.""", re.DOTALL)
 _TOKEN = re.compile(r"\x00(\d+)\x00")
-# A string right after this is a program for a shell: the argument of `-c` (`bash -lc`, `timeout 600 bash -c`,
-# `xargs sh -c`), of `eval`, a here-string to a shell, or `ssh host '…'`.
-_EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+-\S+)*?\s+-\w*c|eval)\s*$")
+# A string right after this is a program for a shell: the argument of `-c` (`bash -lc`, `bash -eo pipefail -c`,
+# `timeout 600 bash -c`, `xargs sh -c`), of `eval`, a here-string to a shell, or `ssh host '…'`. An option with a
+# value (`-o pipefail`) must not break the chain up to `-c`.
+_EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+(?:-\w*[oO]\s+\w+|-\S+))*?\s+-\w*c(?:\s+--)?"
+                       r"|eval)\s*$")
 _SSH = re.compile(r"(?:^|[\s;&|(/])ssh\s")
 _HERE_STRING = re.compile(r"<<<\s*$")
 _LOOKBEHIND = 300  # characters before a string read to decide "executed or data" (a whole-prefix search is quadratic)
@@ -89,12 +92,13 @@ _SEQ = re.compile(r"seq\s+(?:-?\w+\s+)?(\d+)\s+(\d+)")
 _BRACE_RANGE = re.compile(r"\{(\d+)\.\.(\d+)\}")
 _FOR_LIST = re.compile(r"\bfor\s+\w+\s+in\s+([^;$({\n]+?)(?:;|\s+do\b)")
 _PGREP_F = re.compile(r"pgrep\s+(?:-\w+\s+)*-\w*f\w*\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
-# A heredoc body is a file being written, not commands being run.
-_HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DOTALL | re.MULTILINE)
-# Segments that print rather than run: `echo 'until …; do sleep 20; done'`.
-_PRINTING = re.compile(r"^\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
+# A heredoc body is a file being written, not commands being run. `<<<` is a here-string, not a heredoc opener.
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DOTALL | re.MULTILINE)
+# Segments that print rather than run: `echo 'until …; do sleep 20; done'` (also in a subshell: `(echo '…') | bash`).
+_PRINTING = re.compile(r"^\s*[({]?\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
 _SEGMENT_SEP = re.compile(r"(?:\|\||&&|[;|\n])")
-_SEGMENT_SPLIT = re.compile(r"(\|\||&&|[;|\n])")  # the same, separators kept in the result
+# The same, separators kept in the result; a `|` at the end of a line (`echo '…' |⏎ bash`) is a pipe too.
+_SEGMENT_SPLIT = re.compile(r"(\|\||&&|\|[ \t]*\n|[;|\n])")
 _PIPE = re.compile(r"(?<!\|)\|(?!\|)")  # a single `|`, not `||`
 
 INSTEAD = """Instead:
@@ -177,13 +181,26 @@ def _protect(cmd: str):
     return _QUOTED.sub(stash, cmd), strings
 
 
-def _runs_argument(seg: str, end: int) -> bool:
-    """Does a shell run the string that starts at `end` in `seg`, or is it data? Only the tail before the string is
-    read: `bash -lc` and `ssh -o … host` fit in it, and a search of the whole prefix per string is quadratic."""
-    head = seg[max(0, end - _LOOKBEHIND):end]
-    if _HERE_STRING.search(head):
-        return bool(_SHELL_CONSUMER.match(seg[:end]))
-    return bool(_EXEC_ARG.search(head) or _SSH.search(head))
+def _word_start(seg: str, end: int) -> int:
+    """Where the shell word that ends at `end` starts: `'a'"$B"'c'` is one word made of three strings."""
+    low = max(0, end - _LOOKBEHIND)
+    window = seg[low:end]
+    gap = max(window.rfind(" "), window.rfind("\t"))
+    return low + gap + 1 if gap != -1 else low
+
+
+def _runs_argument(seg: str, start: int, shell_segment: bool) -> bool:
+    """Does a shell run the word that starts at `start` in `seg`, or is it data? Only the tail before the word is
+    read: `bash -lc` and `ssh -o … host` fit in it, and a search of the whole prefix per string is quadratic. A cheap
+    check of the tail's end goes first: most strings are arguments of git or grep, not of a shell. `shell_segment` —
+    the whole segment is a shell consumer (`bash … <<< '…'`) — is computed once per segment."""
+    head = seg[max(0, start - _LOOKBEHIND):start]
+    tail = head.rstrip()
+    if tail.endswith("<<<"):
+        return shell_segment
+    if tail.endswith(("c", "--", "eval")) and _EXEC_ARG.search(head):
+        return True
+    return "ssh" in head and bool(_SSH.search(head))
 
 
 def _unquote(quoted: str) -> str:
@@ -201,12 +218,14 @@ def _substitutions(quoted: str) -> list:
     bodies = []
     start = quoted.find("$(")
     while start != -1:
+        escaped = (start - len(quoted[:start].rstrip("\\"))) % 2 == 1  # `\$(` is a literal, not a substitution
         depth, end = 1, start + 2
-        while end < len(quoted) and depth:
+        while not escaped and end < len(quoted) and depth:
             depth += (quoted[end] == "(") - (quoted[end] == ")")
             end += 1
-        bodies.append(quoted[start + 2:end - 1 if depth == 0 else end])
-        start = quoted.find("$(", end)
+        if not escaped:
+            bodies.append(quoted[start + 2:end - 1 if depth == 0 else end])
+        start = quoted.find("$(", end if not escaped else start + 2)
     return bodies
 
 
@@ -214,10 +233,11 @@ def _wait_segment(seg: str, strings: list, runs_all: bool) -> str:
     """A segment for the wait search: strings a shell runs are unwrapped into commands, the rest become `""`."""
     out = []
     pos = 0
+    shell_segment = "<<<" in seg and bool(_SHELL_CONSUMER.match(seg))
     for m in _TOKEN.finditer(seg):
         out.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
-        if runs_all or _runs_argument(seg, m.start()):
+        if runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment):
             out.append(f";{views(_unquote(quoted))[0]};")
         else:
             out.append('""')
@@ -243,21 +263,27 @@ def views(cmd: str):
 
     The CI projection keeps the quotes as they are: the path of `glab api "…/pipelines/1"` lives in a string, and so
     does a `pgrep -f` pattern."""
-    cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", ""))
+    # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
+    cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
     protected, strings = _protect(cmd)
     parts = _SEGMENT_SPLIT.split(protected)
     segs, seps = parts[0::2], parts[1::2]
     fed = [False] * len(segs)  # the segment's output reaches a shell through a pipe
     reaches_shell = False
     for i in range(len(segs) - 2, -1, -1):
-        reaches_shell = seps[i] == "|" and (reaches_shell or bool(_SHELL_CONSUMER.match(segs[i + 1])))
+        next_is_shell = bool(_SHELL_CONSUMER.match(segs[i + 1]))
+        reaches_shell = seps[i].startswith("|") and seps[i] != "||" and (reaches_shell or next_is_shell)
         fed[i] = reaches_shell
     wait, raw = [], []
     for i, seg in enumerate(segs):
         printing = bool(_PRINTING.match(seg))
         if printing and not fed[i]:
-            for num in _TOKEN.findall(seg):  # printing is not running, but the shell does run `$(…)` in double quotes
-                wait.extend(f";{views(body)[0]};" for body in _substitutions(strings[int(num)]))
+            # Printing is not running, but the shell does run `$(…)` in double quotes — for the wait search and for
+            # the CI rules alike: `echo "$(gh run view 1)"`.
+            for num in _TOKEN.findall(seg):
+                for body in _substitutions(strings[int(num)]):
+                    wait.append(f";{views(body)[0]};")
+                    raw.append(body)
             continue
         wait.append(_wait_segment(seg, strings, runs_all=printing and fed[i]))
         raw.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))

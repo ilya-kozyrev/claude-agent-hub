@@ -116,6 +116,8 @@ DATA=(
   'grep -rn "sleep 5m" scripts/'
   'git commit -m "docs: never write while true; do sleep 60; done"'
   'rg "until .*; do"'
+  'rg "until .*; do sleep 20"'
+  'git commit -m "docs: do not write \$(sleep 5m) in text"'
   "rg 'sleep 60' app/"
   "git log --grep='sleep 60' --oneline -5"
   "sed -i 's/sleep 60/sleep 5/' scripts/wait.sh"
@@ -149,13 +151,25 @@ RUN=(
   "echo 'until [ -f /tmp/done ]; do sleep 30; done' | sudo -u app bash"
   "echo 'until [ -f /tmp/done ]; do sleep 30; done' | /usr/bin/env bash"
   $'cat <<\'EOF\' | tee /tmp/waiter.sh | bash\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+  # one shell word made of several strings; a line continuation or a trailing `|` before the shell; a subshell
+  "bash -c 'until [ -f '\"\$F\"' ]; do sleep 20; done'"
+  "bash -c \"\$PRE\"'until [ -f /tmp/done ]; do sleep 20; done'"
+  $'echo \'until [ -f /tmp/done ]; do sleep 20; done\' \\\n  | bash'
+  $'echo \'until [ -f /tmp/done ]; do sleep 20; done\' |\n  bash'
+  "(echo 'until [ -f /tmp/done ]; do sleep 20; done') | bash"
+  # options of the shell between its name and `-c`
+  "bash -eo pipefail -c 'until [ -f /tmp/done ]; do sleep 20; done'"
+  "bash -o pipefail -c 'until [ -f /tmp/done ]; do sleep 20; done'"
+  "bash -c -- 'until [ -f /tmp/done ]; do sleep 20; done'"
 )
 i=0; for c in "${RUN[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: executed string $i denied"; denied "$c" 1; check $? 1 "poll: executed string $i in the background passes"; done
+denied 'echo "$(gh run view 123456)"'; check $? 0 "poll: a CI status read in \$(…) under echo is denied"
 pg "zsh -c 'until ! pgrep -f \"pytest -n 4\"; do sleep 20; done'" | grep -q 'matches the waiting shell'; check $? 0 "poll: a pgrep -f self-match inside bash -c is named"
 pg "bash -c 'until ! pgrep -f \"[p]ytest -n 4\"; do sleep 20; done'" | grep -q 'matches the waiting shell'; check $? 1 "poll: …and the bracket trick inside bash -c is not"
-python3 - "$HOOKS/polling_guard.py" <<'PY'; check $? 0 "poll: commands of 40000 quote characters or 20000 strings are judged within 5 s"
+python3 - "$HOOKS/polling_guard.py" <<'PY'; check $? 0 "poll: long and adversarial commands (quotes, strings, here-strings, flags) are judged within 5 s"
 import json, subprocess, sys, time
-for cmd in ('bash -c ' + '"' * 40000, 'git commit -m "x" ' * 20000):
+for cmd in ('bash -c ' + '"' * 40000, 'git commit -m "x" ' * 20000, 'xargs ' + '<<< "$a" ' * 10000,
+            "echo 'x' | sudo -u " + "-u " * 36 + "x"):
     event = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": "/", "tool_input": {"command": cmd}})
     t = time.time()
     subprocess.run([sys.executable, sys.argv[1]], input=event, capture_output=True, text=True, timeout=60)
