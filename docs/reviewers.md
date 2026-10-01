@@ -24,19 +24,25 @@ it comes from the environment, a repository's `.agent-hub/config.json` or the hu
 |---|---|---|
 | `name` | required | Unique. An `agent` reviewer's role is `review-<name>`. Letters, digits, `.`, `_`, `-`. |
 | `kind` | required | `agent` — a headless agent started with `agent spawn`; `skill` — a reviewer skill (contract below). |
-| `skill` | kind `skill`, required | The skill's name, as the Skill tool knows it. |
-| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). A haiku reviewer gets no effort. |
-| `check` | optional | A shell command; exit 0 means "available now" — a quota probe, a login check. Runs with a 10 s timeout, its whole process group killed on expiry; its output is shown only by `--all`. |
+| `skill` | kind `skill`, required | The skill's name, as the Skill tool knows it: letters, digits, `.`, `_`, `-`, and one `:` for `plugin:skill`. |
+| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). `model` is what `agent spawn --model` takes: `opus`, `sonnet`, `haiku`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` (letters, digits and `. _ : [ ] -` only); `effort` one of `low`, `medium`, `high`, `xhigh`, `max`. A haiku reviewer gets no effort. |
+| `check` | optional | A shell command; exit 0 means "available now" — a quota probe, a login check. The verdict is the shell's own exit: a background child that keeps the output open does not hold it up. It runs in the hub home — not in the repository you are working in, whose `make`, `./script` or `npm` it would otherwise run — with a 10 s timeout (`AGENT_HUB_REVIEW_CHECK_TIMEOUT`, in seconds, finite and above 0, overrides it); on expiry its whole process group is killed. Its output is shown only by `--all`. |
 | `until` | optional | `YYYY-MM-DD`: available through that day (hub time zone), not after — for a quota or a credit that expires. |
-| `for` | optional | The change classes the entry serves (next section). Absent: every class. |
+| `for` | optional | The change classes the entry serves (next section), each made of letters, digits, `.`, `_`, `-`. Absent: every class. |
 
 Rules the tool enforces:
 - **A `check` from a repository's config is never run.** A cloned repository must not run commands through the hub:
   such an entry is skipped, with a warning that names it. Put entries with a `check` in the environment or in the hub
-  home's `config.json`. (An entry without a `check` is harmless there and works from either place.)
+  home's `config.json`. (An entry without a `check` works from either place.) The refusal covers the hub's own config
+  files only: the environment is trusted, and a repository's `.claude/settings.json` has an `env` block that Claude
+  Code applies to the session once you trust the folder — it can set `AGENT_HUB_REVIEWERS`, `check` included, and the
+  hub cannot tell that from you setting it. Trust a folder only if you would run its commands.
+- **Nothing a repository writes reaches the line the hub runs, or the text it reads, unchecked.** `name`, `skill`,
+  `model`, `effort` and the change classes must match the patterns above whichever layer they come from; an entry that
+  does not is reported and skipped. The `agent spawn` line the hub is told to run has every value shell-quoted.
 - **A broken entry is reported and skipped, never a crash.** Not an object, a missing or duplicate `name`, an unknown
-  `kind`, a `skill` entry without `skill`, a field that belongs to the other kind, a bad `effort` or `until`, an
-  unknown field (a misspelt `for` must not quietly widen an entry to every class). A list with no valid entry — or
+  `kind`, a `skill` entry without a valid `skill`, a field that belongs to the other kind, a bad `model`, `effort`,
+  `until` or class, an unknown field (a misspelt `for` must not quietly widen an entry to every class). A list with no valid entry — or
   not valid JSON — falls back to the built-in default.
 - **The built-in default** when nothing is set is one entry, `{"name": "agent", "kind": "agent"}`, with the model and
   effort from `AGENT_HUB_REVIEW_MODEL` and `AGENT_HUB_REVIEW_EFFORT`.

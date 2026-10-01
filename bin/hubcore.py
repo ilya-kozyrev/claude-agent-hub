@@ -32,6 +32,11 @@ STAGE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
+MODEL_ALIASES = ("opus", "sonnet", "haiku")
+# A full model id, `claude-` plus letters, digits and . _ : [ ] - ("claude-opus-4-7[1m]" is one): nothing a shell treats
+# as syntax, so an id from a repository's config cannot carry a command into a line the hub runs.
+MODEL_ID_RE = re.compile(r"claude-[A-Za-z0-9._:\[\]-]+")
+MODEL_ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
                  "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
@@ -276,6 +281,33 @@ def _zone() -> dt.tzinfo:
 TZ = _zone()
 TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
 DEFAULT_MESSAGE_CAP = 10
+
+
+def model_map(cwd=None) -> dict:
+    """Alias -> full id from AGENT_HUB_MODEL_MAP ("sonnet=claude-…,opus=claude-…"; env, else the agent's repo
+    .agent-hub/config.json, else the hub home's config.json); empty = pass aliases through."""
+    out = {}
+    for part in (setting("AGENT_HUB_MODEL_MAP", cwd=cwd) or "").split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k.strip() and v.strip():
+                out[k.strip()] = v.strip()
+    return out
+
+
+def model_problem(model, cwd=None) -> Optional[str]:
+    """None when `agent spawn --model` takes `model`: an alias (opus, sonnet, haiku), an alias of
+    AGENT_HUB_MODEL_MAP, or a full id claude-… — and in each case only the characters above; else the reason."""
+    if not isinstance(model, str) or not model:
+        return "not a model name"
+    if model in MODEL_ALIASES:
+        return None
+    if MODEL_ALIAS_RE.fullmatch(model) and model in model_map(cwd):
+        return None
+    if MODEL_ID_RE.fullmatch(model):
+        return None
+    return (f"one of {', '.join(MODEL_ALIASES)}, an alias from AGENT_HUB_MODEL_MAP, or a full id claude-… "
+            "(letters, digits and . _ : [ ] - only)")
 
 
 def int_setting(name: str, default: int, minimum: int = 1) -> int:

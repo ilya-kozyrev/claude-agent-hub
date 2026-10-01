@@ -9,10 +9,17 @@ duration.
   or the hub home's): an ordered JSON list, the first available entry wins. An entry is an `agent` (an ordinary
   `agent spawn`, model and effort from the new `AGENT_HUB_REVIEW_MODEL` / `AGENT_HUB_REVIEW_EFFORT`, default
   `opus` / `high`) or a `skill` (a reviewer skill the user plugs in), with an optional `check` command (exit 0 =
-  available now, 10 s timeout), `until` date and `for` change classes. A `check` from a repository's config is never
-  run — the entry is skipped with a warning; a broken entry is reported and skipped; a list with no valid entry gives
+  available now, 10 s timeout, run in the hub home), `until` date and `for` change classes. A `check` from a
+  repository's config is never run — the entry is skipped with a warning (the refusal covers the hub's own config
+  files; a trusted repository's `.claude/settings.json` `env` block can still set the list). `name`, `skill`
+  (`plugin:skill` allowed), `model`, `effort` and the change classes must match strict patterns from every layer, and
+  every value of the printed `agent spawn` line is shell-quoted, so a repository's config cannot put commands or
+  instructions into what the hub runs or reads. A broken entry is reported and skipped; a list with no valid entry gives
   the built-in default, one `agent` reviewer. The hub skill and `docs/launch-modes.md` no longer route reviews to a
   cloud session: a review is `hub reviewer`, and a cloud service is a reviewer skill if the user has one.
+- **`agent spawn --model` is validated more strictly**, by the rule `hub reviewer` shares with it: `opus`, `sonnet`,
+  `haiku`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` made of letters, digits and `. _ : [ ] -`
+  (it used to take anything starting with `claude-`).
 - **`hub reviewer [--for CLASS] [--json] [--all]`** walks the list and prints the chosen reviewer and exactly how to
   start it (the full `agent spawn` line with `<REPO>` / `<BRIEF>` placeholders and no `--worktree`, or "load skill …");
   `--all` lists every entry with why it was skipped; exit 1 when none is available.
@@ -26,9 +33,10 @@ duration.
   waits on CI / a deploy / another party, touches production or must be reachable by someone else is `agent spawn`;
   estimated duration is a hint only. Every sub-agent brief ends with a call budget (a recommended N in the skill).
 - **`hub handoff` guard.** Before writing the draft it looks for live sub-agents of the hub's own session
-  (`--session`, else the registered hub's); if any runs it exits 2 and lists them (id, description, age) with the
-  three ways out. `--allow-live-subagents` goes on and writes them into the draft's TODO. The discovery and state logic
-  `agent-top` used for sub-agents moved to the shared `bin/subagents.py`; `agent-top` behaves as before.
+  (`--session`, else the registered hub's and the calling session when it is another one); if any runs it exits 2 and
+  lists them (id, description, age) with the three ways out. `--allow-live-subagents` goes on and writes them into the
+  draft's TODO. The discovery and state logic `agent-top` used for sub-agents moved to the shared `bin/subagents.py`;
+  `agent-top` behaves as before.
 - **`jwait` default `--for` is now 2h** (was 12h): a background Bash task is not guaranteed to live longer. The hub
   skill also says to add `--exclude-tag <hub tag>` when `jwait` is called with `--caller <session id>` instead of as
   the hub's tag, or the hub's own `@agent` messages wake it.

@@ -64,8 +64,25 @@ echo "{\"pid\": $SLEEPER, \"sessionId\": \"99999999-0000-4000-8000-999999999999\
 handoff; check $? 0 "a session registry without the hub's session (not the caller): its unfinished sub-agents died, exit 0"
 kill $SLEEPER; wait $SLEEPER 2>/dev/null
 
+# ---- the calling session's own sub-agents when it is not the registered hub (review of 283b1ed)
+keep done1
+CLAUDE_CODE_SESSION_ID=$STR handoff; check $? 2 "the caller is another session than the registered hub: its live sub-agent (ghost1) blocks"
+grep -q 'ghost1' $R/h.err && grep -q '5555555' $R/h.err; check $? 0 "…listed, with its session"
+keep alive1
+CLAUDE_CODE_SESSION_ID=$STR handoff; check $? 2 "both sessions have live sub-agents: exit 2"
+grep -q '\[33333333\] alive1' $R/h.err && grep -q '\[55555555\] ghost1' $R/h.err; check $? 0 "…both are listed, each with its session"
+grep -q "sessions\? 33333333 and 55555555\|session 33333333 and 55555555" $R/h.err; check $? 0 "…and the message names both sessions"
+keep done1
+CLAUDE_CODE_SESSION_ID=$STR handoff --session $HUB; check $? 0 "negative: --session given — only that session is checked, the caller's is not"
+CLAUDE_CODE_SESSION_ID=local_not-a-uuid handoff; check $? 0 "negative: a caller id that is not a uuid is ignored"
+CLAUDE_CODE_SESSION_ID=$HUB handoff; check $? 0 "the caller is the registered hub: one session, nothing live, exit 0"
+CLAUDE_CODE_SESSION_ID=$STR handoff --allow-live-subagents; check $? 0 "--allow-live-subagents with the caller's sub-agent: exit 0…"
+grep -q '\[55555555\] ghost1\|ghost1' $R/H.md; check $? 0 "…and it is in the draft's TODO"
+
 # ---- no hub known: the guard says so and the handoff goes on
 new_home; R=$AGENT_HUB_HOME; mkdir -p $R/stage-a/coordinator/work
 $B/hub handoff --stage stage-a --n 7 --out $R/H.md > $R/h.out 2> $R/h.err; check $? 0 "no hub registered, --n given: exit 0"
 grep -q 'no hub session known' $R/h.err; check $? 0 "…the guard says it did not check"
+CLAUDE_CODE_SESSION_ID=$STR $B/hub handoff --stage stage-a --n 7 --out $R/H3.md > $R/h.out 2> $R/h.err; check $? 2 "no hub registered, but the caller is a session with a live sub-agent: exit 2"
+grep -q 'ghost1' $R/h.err; check $? 0 "…listed"
 exit $fail

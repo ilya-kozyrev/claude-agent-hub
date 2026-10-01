@@ -52,9 +52,9 @@ yet, offer the `agent-hub:setup` skill: it asks which shared resources the proje
 
 Leaving: `hub handoff --stage <S>` writes a `HANDOFF-hub-*.md` draft with the facts filled in and TODOs; fill the TODOs
 (skill `handoff`). Locks are not released — the successor's `hub takeover` takes them. It first looks for sub-agents of
-your own session (`--session`, else the registered hub's) that still run and refuses — exit 2, listing id, description
-and age — because they die with you and the successor cannot message them; the ways out are under *Choosing how to
-launch work*.
+your own session (`--session`, else the registered hub's and the session you run it in) that still run and refuses —
+exit 2, listing id, description and age — because they die with you and the successor cannot message them; the ways out
+are under *Choosing how to launch work*.
 
 ## Waiting
 

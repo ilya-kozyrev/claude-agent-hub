@@ -11,22 +11,28 @@ a repository's .agent-hub/config.json or the hub home's config.json (the usual o
   kind    required: `agent` (an ordinary `agent spawn`) or `skill` (a reviewer skill the user plugged in)
   skill   kind skill, required: the skill's name
   model, effort   kind agent: default from AGENT_HUB_REVIEW_MODEL (opus) and AGENT_HUB_REVIEW_EFFORT (high)
-  check   optional shell command, exit 0 = available now; run with a timeout and never taken from a repository's
-          config (a cloned repository must not run commands through the hub): such an entry is skipped
+  check   optional shell command, exit 0 = available now; run in the hub home (never in the repository), with a
+          timeout, and never taken from a repository's config (a cloned repository must not run commands through
+          the hub): such an entry is skipped
   until   optional YYYY-MM-DD: available through that day, not after
   for     optional list of change classes the entry serves; absent = every class
 
 A broken entry is reported on stderr and skipped; a list with no valid entry gives the built-in default, one
-`agent` entry.
+`agent` entry. Every value that reaches the line the hub is told to run, or the text it reads — name, skill, model,
+effort, change classes — is checked against a strict pattern, whichever layer it comes from.
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 import os
+import math
 import re
+import shlex
 import signal
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 import hubcore as hc
@@ -34,7 +40,8 @@ import hubcore as hc
 SETTING = "AGENT_HUB_REVIEWERS"
 KINDS = ("agent", "skill")
 FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for")
-NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")                            # name, change class
+SKILL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?")  # skill or plugin:skill
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DEFAULT_MODEL, DEFAULT_EFFORT = "opus", "high"
 CHECK_TIMEOUT_S = 10.0  # $AGENT_HUB_REVIEW_CHECK_TIMEOUT (seconds) overrides it; the tests use that
@@ -82,8 +89,9 @@ def _review_defaults(cwd=None) -> tuple:
     """(model, effort) of an `agent` reviewer that names none: AGENT_HUB_REVIEW_MODEL / _EFFORT, else opus / high."""
     model = (hc.setting("AGENT_HUB_REVIEW_MODEL", cwd=cwd) or DEFAULT_MODEL).strip()
     effort = (hc.setting("AGENT_HUB_REVIEW_EFFORT", cwd=cwd) or DEFAULT_EFFORT).strip()
-    if not model or " " in model:
-        hc.warn(f"AGENT_HUB_REVIEW_MODEL={model!r} is not a model name; using {DEFAULT_MODEL}")
+    problem = hc.model_problem(model, cwd)
+    if problem:
+        hc.warn(f"AGENT_HUB_REVIEW_MODEL={model!r}: {problem}; using {DEFAULT_MODEL}")
         model = DEFAULT_MODEL
     if effort not in hc.EFFORTS:
         hc.warn(f"AGENT_HUB_REVIEW_EFFORT={effort!r}: one of {', '.join(hc.EFFORTS)}; using {DEFAULT_EFFORT}")
@@ -91,7 +99,7 @@ def _review_defaults(cwd=None) -> tuple:
     return model, effort
 
 
-def _validate(item, seen: set) -> dict:
+def _validate(item, seen: set, cwd=None) -> dict:
     """The entry as a dict, or ValueError with the reason."""
     if not isinstance(item, dict):
         raise ValueError("not a JSON object")
@@ -101,24 +109,26 @@ def _validate(item, seen: set) -> dict:
         raise ValueError(f"unknown field {', '.join(map(repr, unknown))} (known: {', '.join(FIELDS)})")
     name = item.get("name")
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
-        raise ValueError("`name` is required: letters, digits, '.', '_' and '-'")
+        raise ValueError("`name` is required: letters, digits, '.', '_' and '-' only")
     if name in seen:
         raise ValueError(f"duplicate name {name!r}")
     kind = item.get("kind")
     if kind not in KINDS:
         raise ValueError(f"`kind` is required: one of {', '.join(KINDS)}")
     if kind == "skill":
-        if not isinstance(item.get("skill"), str) or not item["skill"].strip():
-            raise ValueError("kind skill needs `skill`, the skill's name")
+        if not isinstance(item.get("skill"), str) or not SKILL_RE.fullmatch(item["skill"]):
+            raise ValueError("kind skill needs `skill`, the skill's name (letters, digits, '.', '_', '-', and one ':' "
+                             "for plugin:skill)")
         for field in ("model", "effort"):
             if field in item:
                 raise ValueError(f"`{field}` is for kind agent")
     else:
         if "skill" in item:
             raise ValueError("`skill` is for kind skill")
-        model = item.get("model")
-        if "model" in item and (not isinstance(model, str) or not model.strip() or " " in model.strip()):
-            raise ValueError("`model` must be a model name or alias")
+        if "model" in item:
+            problem = hc.model_problem(item["model"], cwd)
+            if problem:
+                raise ValueError(f"`model` must be {problem}")
         if "effort" in item and item["effort"] not in hc.EFFORTS:
             raise ValueError(f"`effort` must be one of {', '.join(hc.EFFORTS)}")
     if "check" in item and (not isinstance(item["check"], str) or not item["check"].strip()):
@@ -133,8 +143,10 @@ def _validate(item, seen: set) -> dict:
             raise ValueError(f"`until` must be a date YYYY-MM-DD, got {until!r}") from None
     if "for" in item:
         classes = item["for"]
-        if not isinstance(classes, list) or not classes or not all(isinstance(c, str) and c.strip() for c in classes):
-            raise ValueError("`for` must be a non-empty list of change classes, e.g. [\"code\", \"risky\"]")
+        if (not isinstance(classes, list) or not classes
+                or not all(isinstance(c, str) and NAME_RE.fullmatch(c) for c in classes)):
+            raise ValueError("`for` must be a non-empty list of change classes — letters, digits, '.', '_' and '-' "
+                             "only — e.g. [\"code\", \"risky\"]")
     return item
 
 
@@ -156,8 +168,10 @@ def load(cwd=None) -> Loaded:
         seen: set = set()
         for i, item in enumerate(data, 1):
             label = item.get("name") if isinstance(item, dict) and isinstance(item.get("name"), str) else None
+            if label is not None and not NAME_RE.fullmatch(label):
+                label = repr(label[:30])  # not a valid name: shown escaped and cut, never raw
             try:
-                clean = _validate(item, seen)
+                clean = _validate(item, seen, cwd)
             except ValueError as e:
                 problems.append(f"{SETTING} entry {i}{f' ({label})' if label else ''}: {e}; skipped")
                 continue
@@ -177,30 +191,47 @@ def load(cwd=None) -> Loaded:
 # ---------------------------------------------------------------- availability
 
 def _check_timeout() -> float:
+    """CHECK_TIMEOUT_S, or $AGENT_HUB_REVIEW_CHECK_TIMEOUT when it is a finite number of seconds above 0."""
     raw = os.environ.get("AGENT_HUB_REVIEW_CHECK_TIMEOUT")
+    if not raw:
+        return CHECK_TIMEOUT_S
     try:
-        return float(raw) if raw else CHECK_TIMEOUT_S
+        value = float(raw)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError
+        return value
     except ValueError:
+        hc.warn(f"AGENT_HUB_REVIEW_CHECK_TIMEOUT={raw!r} is not a finite number of seconds above 0; "
+                f"using {CHECK_TIMEOUT_S:g}")
         return CHECK_TIMEOUT_S
 
 
+def _check_dir() -> Path:
+    """Where a `check` runs: the hub home, never the repository the hub happens to be in — a command such as
+    `make quota` or `./quota-ok` would run that repository's code. The user's home if there is no hub home yet."""
+    home = hc.root()
+    return home if home.is_dir() else Path.home()
+
+
 def run_check(command: str, timeout: float) -> tuple:
-    """(exit code or None, output) of a `check` command: its own process group, killed whole on the timeout."""
-    proc = subprocess.Popen(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, start_new_session=True, text=True, errors="replace")
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-        return proc.returncode, (out or "").strip()
-    except subprocess.TimeoutExpired:
+    """(exit code or None, output) of a `check` command, run in the hub home in its own process group. The verdict
+    is the exit of the shell itself; its output goes to a file, so a child that keeps the output open after the shell
+    exited cannot hold the answer up. On the timeout the whole group is killed."""
+    with tempfile.TemporaryFile() as out:
+        proc = subprocess.Popen(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, stdout=out,
+                                stderr=subprocess.STDOUT, start_new_session=True, cwd=_check_dir())
+        code: Optional[int]
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        try:
-            out, _ = proc.communicate(timeout=2)
-        except subprocess.TimeoutExpired:  # something detached still holds the pipe
-            out = ""
-        return None, (out or "").strip()
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            proc.wait()
+            code = None
+        out.seek(0)
+        return code, out.read(4 * OUTPUT_CHARS).decode("utf-8", errors="replace").strip()
 
 
 def _short(text: str) -> str:
@@ -221,12 +252,13 @@ def judge(entry: Entry, change_class: Optional[str], origin: str) -> Verdict:
                      "(a cloned repository must not run commands through the hub); skipped — set the list in the "
                      "environment or in the hub home's config.json")
             return Verdict(entry, False, "its `check` comes from a repository's config and is never run")
+        timeout = _check_timeout()
         try:
-            code, out = run_check(entry.check, _check_timeout())
+            code, out = run_check(entry.check, timeout)
         except OSError as e:
             return Verdict(entry, False, f"check could not run: {e}")
         if code is None:
-            return Verdict(entry, False, f"check did not finish in {_check_timeout():g} s", _short(out))
+            return Verdict(entry, False, f"check did not finish in {timeout:g} s", _short(out))
         if code != 0:
             return Verdict(entry, False, f"check exited {code}", _short(out))
         return Verdict(entry, True, "check exited 0", _short(out))
@@ -254,8 +286,9 @@ def start_line(entry: Entry) -> str:
     if entry.kind == "skill":
         return (f"load skill `{entry.skill}`; give it the brief file, the repository, the base sha and the head ref "
                 "(the skill reviewer contract: docs/reviewers.md)")
-    effort = "" if "haiku" in (entry.model or "") else f" --effort {entry.effort}"
-    return f"agent spawn --role review-{entry.name} --cwd <REPO> --model {entry.model}{effort} --brief <BRIEF>"
+    effort = "" if "haiku" in (entry.model or "") else f" --effort {shlex.quote(entry.effort)}"
+    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd <REPO> --model {shlex.quote(entry.model)}"
+            f"{effort} --brief <BRIEF>")
 
 
 def describe(entry: Entry) -> str:
