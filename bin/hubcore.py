@@ -75,6 +75,11 @@ PROJECT_KEYS += ("AGENT_HUB_POLL_GUARD", "AGENT_HUB_POLL_MAX_SLEEP", "AGENT_HUB_
 # set them all; a `check` command in a repository's list is never run (see reviewers.py).
 PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REVIEW_EFFORT")
 BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
+# Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their
+# permission mode.
+HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",
+                  "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
+BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",

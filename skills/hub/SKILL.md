@@ -51,7 +51,8 @@ older models: tell the owner to update Claude Code) or when a same-named command
 
 ## Taking over a shift
 
-1. `hub takeover --stage <S> --session <your full session id> [--handoff <file>]` — one command: the previous hub's
+1. `hub takeover --stage <S> --session <your full session id | self> [--handoff <file>]` — one command (`self` = this
+   session's `$CLAUDE_CODE_SESSION_ID`, read by the tool): the previous hub's
    locks (`--skip-lock <resource>` if its executor still works under that lock; `--take-main-merge` to take the merge
    role too; `AGENT_HUB_TAKE_MAIN_MERGE=true` in the repository's config makes that the default), `roles set hub`, a
    start line in the journal (and `coordinator:` of the night queue, if the stage has one). Your number is the
@@ -70,6 +71,18 @@ Leaving: `hub handoff --stage <S>` writes a `HANDOFF-hub-*.md` draft with the fa
 your own session (`--session`, else the registered hub's and the session you run it in) that still run and refuses —
 exit 2, listing id, description and age — because they die with you and the successor cannot message them; the ways out
 are under *Choosing how to launch work*.
+
+**Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; README "Autopilot"): the context budget message tells you when, and gives
+the `hub succeed` command with your model, mode and directory filled in. At a quiet point — no agent waiting for your
+reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,
+start the `jwait` it prints with `run_in_background: true`. Its start line → tell the owner one line (the successor's
+name and link) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a
+headless successor's ALARM: `--again`, if `agent status` says it is not running). A refusal that prints a `jwait` →
+run that `jwait`, then retry. Exit 3 (chain limit), exit 2, or any other exit 1 → tell the owner the handoff path and
+why, and wait for them. Run `hub succeed` yourself, never from a sub-agent.
+A session whose first prompt carries `[agent-hub auto-handoff k/N]` is an automatic successor: run the takeover
+command the prompt gives, then work the handoff's queue. The owner may be away: questions go to `ask add` with a
+default, and you hand over the same way when your own budget says so.
 
 ## Waiting
 

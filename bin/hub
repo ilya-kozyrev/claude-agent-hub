@@ -5,6 +5,8 @@
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
                [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
   hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
+  hub succeed  --stage stage-a --handoff PATH [--model M] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
+  hub succeed  --stage stage-a --fallback [--why TEXT]
   hub reviewer [--for CLASS] [--json] [--all]
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
@@ -19,7 +21,9 @@ successor named in the latest handoff ("… → \"Hub <stage> #N\""); handoff = 
 --n overrides both (a re-run of a takeover finds itself registered and keeps its number).
 
 --session is the new hub's own session: a Claude Desktop id (local_…, looked up in the Desktop session
-metadata for its CLI id and title) or a Claude Code CLI session uuid ($CLAUDE_CODE_SESSION_ID).
+metadata for its CLI id and title) or a Claude Code CLI session uuid ($CLAUDE_CODE_SESSION_ID); `self` = the session
+running the command ($CLAUDE_CODE_SESSION_ID read by the tool, so the command line holds no shell expansion and an
+allow rule `Bash(hub takeover:*)` matches it).
 
 takeover, in order, each step verified, the first failed step stops with a message; a step whose
 target state is already there is skipped as "already done", so a re-run finishes a broken takeover:
@@ -54,13 +58,28 @@ own session — --session, else the registered hub's, and the session running th
 sub-agent dies with its parent session and the successor cannot message it. If any is live it lists them (id,
 description, age) and the three ways out, and exits 2; with --allow-live-subagents it writes the draft with the list in
 its TODO section.
+succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
+chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
+exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` in --cwd with the hub's model and permission mode
+and the prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
+journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
+When the background session cannot start (CLI not logged in, an untrusted directory after one try in the main
+checkout) it starts a headless hub with `agent spawn` instead; bypassPermissions without its accepted disclaimer
+becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
+tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it
+($CLAUDE_CODE_SESSION_ID, else $HUB_TAG; exit 2 otherwise; a sub-agent of the hub shares its session id and passes —
+the hub never delegates it), only with AGENT_HUB_AUTO_HANDOFF on (exit 2; --force for the owner by hand), one
+successor per shift: a second call while one is
+being started or has not taken over is refused with the time to retry and a ready jwait; --again drops the record
+of a successor that did not take over and is not running. The successor's takeover carries --auto-handoff, which keeps the
+chain; any other takeover resets it.
 reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
 .agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
 available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
 --all judges and lists every entry, with why not for the ones passed over; --json prints the same as JSON.
 Exit 0 with a reviewer, 1 when none is available, 2 usage.
 Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub. Exit: 0 ok, 1 step failed (reviewer: no reviewer available),
-2 usage — or, for handoff, sub-agents of the hub's session still running.
+2 usage — or, for handoff, sub-agents of the hub's session still running; succeed: 3 chain limit reached.
 """
 from __future__ import annotations
 
@@ -78,6 +97,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import autopilot  # noqa: E402
 import hubcore as hc  # noqa: E402
 import reviewers  # noqa: E402
 import subagents  # noqa: E402
@@ -485,8 +505,20 @@ def environment_warnings(persist: bool = True) -> list:
     return [w for w in out if w]
 
 
+def resolve_self(raw: str) -> str:
+    """`--session self` = the Claude Code session running the command."""
+    if raw.strip() != "self":
+        return raw
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or os.environ.get("AGENT_SESSION_ID", "").strip()
+    if not sid:
+        raise hc.UsageError("--session self: neither $CLAUDE_CODE_SESSION_ID nor $AGENT_SESSION_ID (set by `agent spawn`) "
+                            "is set here — pass the full session id")
+    return sid
+
+
 def cmd_start(a) -> int:
     stage = hc.check_stage(a.stage)
+    a.session = resolve_self(a.session)
     n, rec = registered_hub(stage)
     session, cli, _, _ = new_hub_session(a.session)
     if rec and rec.get("session") not in (session, cli) and rec.get("cli_session_id") != cli:
@@ -498,7 +530,7 @@ def cmd_start(a) -> int:
     if not a.dry_run:
         hc.work_dir(stage).mkdir(parents=True, exist_ok=True)
     a.n = a.n or n or 1
-    a.handoff, a.skip_lock, a.start = None, None, True
+    a.handoff, a.skip_lock, a.start, a.auto_handoff = None, None, True, False
     for warning in environment_warnings(persist=not a.dry_run):
         print(f"ATTENTION: {warning}")
     return cmd_takeover(a)
@@ -510,6 +542,7 @@ def cmd_takeover(a) -> int:
     if not (hc.root() / stage).is_dir() and not (starting and a.dry_run):
         raise hc.UsageError(f"no stage directory {hc.root() / stage} — the first hub of a stage runs "
                             f"`hub start --stage {stage} --session <your session id>`")
+    a.session = resolve_self(a.session)
     session, cli, kind, title = new_hub_session(a.session)
     env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if env_sid and env_sid != cli:
@@ -665,6 +698,8 @@ def cmd_takeover(a) -> int:
               lambda: None if start_line_present(stage, tag, session) else "no line in the journal",
               short="journal")
 
+    if not a.dry_run:
+        autopilot.on_takeover(stage, n, a.auto_handoff)  # the automatic successor keeps the chain; anyone else resets it
     print()
     print(digest(stage, n, name, handoff, plan.done, notes))
     return 0
@@ -848,6 +883,43 @@ TODO: questions asked in chat without a record — `ask add` first, then their i
     return 0
 
 
+# ---------------------------------------------------------------- succeed (autopilot)
+
+def check_caller(stage: str, n: int) -> None:
+    """Only the registered hub hands its shift over: a stale hub (its successor already took over) must not start or
+    stop a successor in the current hub's name. Judged by $CLAUDE_CODE_SESSION_ID, else $HUB_TAG; a terminal without
+    either (the owner by hand) passes."""
+    rec = hc.roles_load(stage)["roles"].get("hub") or {}
+    sid, tag = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip(), os.environ.get("HUB_TAG", "").strip()
+    if sid and rec and sid not in (rec.get("session"), rec.get("cli_session_id")):
+        raise hc.UsageError(f"this session ({sid[:8]}) is not the hub of stage {stage} (hub-{n}: "
+                            f"{rec.get('title') or rec.get('session')}) — only the registered hub hands over")
+    if tag and not sid and tag != f"hub-{n}":
+        raise hc.UsageError(f"HUB_TAG {tag} is not the hub of stage {stage} (hub-{n}) — only the registered hub hands over")
+
+
+def cmd_succeed(a) -> int:
+    stage = hc.check_stage(a.stage)
+    if not (hc.root() / stage).is_dir():
+        raise hc.UsageError(f"no stage directory {hc.root() / stage}")
+    if not (autopilot.enabled() or a.force or a.dry_run):
+        raise hc.UsageError("autopilot is off (AGENT_HUB_AUTO_HANDOFF in the hub home's config.json): a hub starts no "
+                            "background session unasked. The owner, at a terminal, may pass --force")
+    n = handoff_number(stage)
+    check_caller(stage, n)
+    if a.fallback:
+        return autopilot.fallback(stage, n, a.why)
+    if not a.handoff:
+        raise hc.UsageError("--handoff is required (the draft `hub handoff` wrote, TODOs filled)")
+    handoff = Path(a.handoff).expanduser().resolve()
+    if not handoff.is_file():
+        raise hc.UsageError(f"--handoff {handoff}: no such file")
+    cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
+    if not cwd.is_dir():
+        raise hc.UsageError(f"--cwd {cwd}: no such directory")
+    return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again)
+
+
 # ---------------------------------------------------------------- reviewer
 
 def cmd_reviewer(a) -> int:
@@ -899,7 +971,8 @@ def main(argv: list) -> int:
     t = sub.add_parser("takeover", help="take over the hub role")
     t.add_argument("--stage", required=True)
     t.add_argument("--n", type=int, help="number of the new hub (default: derived from roles.json / the handoff)")
-    t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid)")
+    t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid; `self` = "
+                                                     "$CLAUDE_CODE_SESSION_ID)")
     t.add_argument("--handoff", help="handoff file (default: the latest HANDOFF-hub-*.md)")
     t.add_argument("--name", help="title (default: \"Hub <stage> #<n>\")")
     t.add_argument("--skip-lock", action="append", metavar="RESOURCE",
@@ -907,6 +980,9 @@ def main(argv: list) -> int:
     t.add_argument("--main-merge-until", default="+30d", help="main-merge expiry when taken from nobody")
     t.add_argument("--take-main-merge", action="store_true",
                    help="also take main-merge when it is free or held by a third party")
+    t.add_argument("--auto-handoff", action="store_true",
+                   help="this is the successor `hub succeed` started (its prompt gives the command): keeps the chain of "
+                        "automatic handoffs, which any other takeover resets")
     t.add_argument("--dry-run", action="store_true")
     h = sub.add_parser("handoff", help="write a handoff draft")
     h.add_argument("--stage", required=True)
@@ -915,12 +991,28 @@ def main(argv: list) -> int:
     h.add_argument("--session", help="the hub's session whose sub-agents are checked (default: the registered hub's)")
     h.add_argument("--allow-live-subagents", action="store_true",
                    help="write the draft although sub-agents of the hub still run; the list goes into its TODO")
+    sc = sub.add_parser("succeed", help="start the successor of an automatic handoff (autopilot)")
+    sc.add_argument("--stage", required=True)
+    sc.add_argument("--handoff", help="the filled handoff draft")
+    sc.add_argument("--model", help="the successor's model (default: AGENT_HUB_SUCCESSOR_MODEL, else the hub's own)")
+    sc.add_argument("--permission-mode", help="the successor's mode (default: AGENT_HUB_SUCCESSOR_PERMISSION_MODE, "
+                                              "else default)")
+    sc.add_argument("--cwd", help="the successor's working directory (default: here)")
+    sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn) right away")
+    sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
+                                                            "and start a headless one")
+    sc.add_argument("--why", help="with --fallback: the reason for the journal")
+    sc.add_argument("--again", action="store_true", help="the recorded successor did not take over and is not running: "
+                                                         "drop its record and start a new one")
+    sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand)")
+    sc.add_argument("--dry-run", action="store_true")
     r = sub.add_parser("reviewer", help="choose the reviewer for a change and print how to start it")
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
     r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
     r.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
-    return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "reviewer": cmd_reviewer}[a.cmd](a)
+    return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
+            "reviewer": cmd_reviewer}[a.cmd](a)
 
 
 if __name__ == "__main__":

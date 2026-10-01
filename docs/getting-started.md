@@ -310,6 +310,33 @@ Journal (last 5 lines):
 
 Two agents are done, one is finishing its tests, and you are asked for nothing except the one non-blocking question.
 
+## Leave the hub running
+
+To walk away while a stage runs, turn on autopilot once, in the hub home's `config.json`
+(`~/.claude/agent-hub/config.json`):
+
+```json
+{"AGENT_HUB_AUTO_HANDOFF": "on"}
+```
+
+Before you rely on it, check three things in a terminal: `claude auth status` says `"loggedIn": true` (else
+`claude auth login` — Claude Desktop's login does not count), `claude` has been run once in the project directory and
+its trust prompt accepted, and — only if your hub runs in bypass mode — `claude --dangerously-skip-permissions` has
+been accepted once.
+
+When the hub's context reaches the warn threshold (300k tokens), it writes the handoff at its next quiet point and
+starts its successor as a background session named `<stage>-hub-<n>`. The journal gets one line with its Remote
+Control link and `claude attach <id>`, and the old hub tells you the same in one line before it stops. To reach the
+successor:
+
+- **Phone or browser:** open the link, or find the session by name in the Claude app's Code section (Remote Control).
+- **Terminal:** `claude attach <id>`; `claude agents` lists background sessions.
+
+If the background session cannot start (the CLI is not logged in, the directory is not trusted) or does not take over
+in 10 minutes, the successor is a headless hub instead: ask it things with `agent send hub-<n> "…"` and read its
+answers in the journal and `ask list`. After 10 automatic handoffs in a row (`AGENT_HUB_AUTO_HANDOFF_CHAIN`) the hub
+writes its handoff and waits for you; anything you type to the hub resets that count.
+
 ## When you are needed
 
 - **Approve the plan and the briefs**, before any agent starts. This is the cheapest moment to change direction.

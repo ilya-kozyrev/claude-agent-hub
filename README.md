@@ -5,8 +5,9 @@ A Claude Code plugin for running long, parallel work with **one hub session and 
 The hub is your interactive Claude Code session. It writes a brief, starts a detached `claude -p` agent for it, and
 goes back to planning. Agents report through a shared **journal**, take messages through an **inbox**, ask the owner
 through a **question register**, and respect **locks** on shared resources such as merging to main. When the hub's
-context fills up, it writes a **handoff** and a fresh hub takes over — the agents keep running. `agent-top` shows
-all of it at a glance, in the terminal or as a chat widget.
+context fills up, it writes a **handoff** and a fresh hub takes over — the agents keep running. With **autopilot**
+on, the hub does that by itself: it starts its successor as a background session you can reach from your phone.
+`agent-top` shows all of it at a glance, in the terminal or as a chat widget.
 
 Everything is plain files under one directory and a handful of small Python CLIs. No server, no database.
 
@@ -123,6 +124,7 @@ flowchart LR
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
 | `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. |
+| `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub. |
 | `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
 | `agent-top` | Live console of all agents (curses), `--once` text, `--json`, `--widget` HTML. |
 
@@ -385,6 +387,7 @@ $AGENT_HUB_HOME/                      default ~/.claude/agent-hub
 └── <stage>/                          one directory per stream of work
     ├── roles.json                    role → full session id, kind, tag; send counts
     ├── questions.md                  owner-question register (ask)
+    ├── auto-handoff.json             autopilot: automatic handoffs in a row, the successor last started
     ├── night-queue.md, night-log.md  optional night queue (nightq; macOS + Claude Desktop)
     ├── handoff-facts.sh              optional: prints environment rows for hub handoff (also brief-footer.md, takeover.sh)
     ├── agents/<role>/                one headless agent
@@ -397,7 +400,8 @@ $AGENT_HUB_HOME/                      default ~/.claude/agent-hub
         ├── HANDOFF-hub-<stage>-<date>.md
         └── work/
             ├── journal-YYYY-MM-DD.md one line per event: - HH:MM [tag] text
-            └── <tag>-REPORT.md       agents' reports
+            ├── <tag>-REPORT.md       agents' reports
+            └── hub-<n>-takeover-brief.md  autopilot: the brief of a headless successor
 
 <repo>/.agent-hub/                    committed: the team's conventions, same file names as above (Configuration layers)
 <repo>/.worktrees/<branch>/           agent worktrees from `agent spawn --worktree`, excluded in .git/info/exclude
@@ -532,11 +536,51 @@ worker subagents.
 
 | Hook | Default | Prevents |
 |---|---|---|
-| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`agent-hub:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). |
+| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`agent-hub:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and past the block threshold it is forced to. |
 | `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
 | `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. |
 
 Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call.
+
+### Autopilot: the hub hands over by itself
+
+Off by default: it starts background sessions, which nobody should get unasked. Turn it on in the hub home's
+`config.json` (`"AGENT_HUB_AUTO_HANDOFF": "on"`; `agent-hub:setup` asks). Then, in the session registered as a stage's
+hub:
+
+1. At the warn threshold the context-budget message becomes the procedure: at the next quiet point (no agent waiting
+   for a reply, no merge or lock operation in flight) `hub handoff`, fill the TODOs, then `hub succeed` — the hook
+   writes the exact command with the hub's model, permission mode and directory.
+2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
+   `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, its Remote Control link and
+   `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
+3. When the line arrives the old hub tells you the successor's name and link in one line and stops. It releases
+   nothing: the successor's `hub takeover` moves the locks.
+4. Fallbacks, each journaled with its reason: bypass mode without the accepted disclaimer → `auto` (`acceptEdits` for
+   Haiku); an untrusted directory → the repository's main checkout, once; the CLI not logged in, or still untrusted →
+   a headless hub (`agent spawn`, in its permission mode: `bypassPermissions` unless `AGENT_HUB_PERMISSION_MODE` says
+   otherwise — a `claude -p` hub has nobody to approve a prompt); no takeover by the deadline → `hub succeed --fallback` journals the session's log
+   tail, stops it and starts the headless hub. You talk to a headless hub through `ask` and `agent send`.
+5. At most `AGENT_HUB_AUTO_HANDOFF_CHAIN` automatic handoffs in a row (default 10). At the limit the hub writes its
+   handoff, starts no successor and waits for you. Your own prompt in the hub's session, or a takeover you start by
+   hand (without the `--auto-handoff` the successor's command carries), resets the count.
+
+Past the block threshold the hub's Bash passes only when every command of the line is `hub handoff`, `hub succeed`,
+`jlog` or `jwait` (output redirected only to `/dev/null`, a descriptor or a HANDOFF file), and Write/Edit only on a
+`HANDOFF-*.md` file. Only the registered hub can run `hub succeed`, only with autopilot on (`--force` for you at a
+terminal), and only one successor per shift starts; a refused call prints when to retry and the `jwait` to wait with.
+A successor that never took over stops blocking the shift: `hub succeed --again` drops its record once it is not
+running, and your own prompt in the hub's session drops it once the takeover timeout has passed. A sub-agent of the hub
+shares the hub's session id and could run `hub succeed` too — the hub runs it itself, never delegates it.
+
+A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,
+`ask`, `roles`, `lock list`, `agent status`) and the hub home allowed (`--settings`), so it takes over without a prompt;
+anything else asks, and you answer over Remote Control. It never gets `agent spawn` pre-allowed.
+
+Requirements: a logged-in standalone `claude` CLI (`claude auth login` — Claude Desktop's login does not reach
+`claude --bg`), the project directory trusted by the CLI (run `claude` there once and accept the prompt), and for a
+successor in bypass mode a one-time `claude --dangerously-skip-permissions` in a terminal. How to reach the successor:
+[Getting started](docs/getting-started.md#leave-the-hub-running).
 
 ### Worker subagents
 
@@ -568,6 +612,11 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it anywhere passes (handing over). Deliberately loose: the block is a nudge that leaves a trace in the transcript, not a lock — a prompt that merely cites a handoff file passes. |
 | `AGENT_HUB_CONTEXT_TODO` | points at `agent-hub:handoff` | hub home only | The "what to do" sentence of both messages. |
 | `AGENT_HUB_STATE_DIR` | `<hub home>/.state` | hub home only | Warning buckets and delegation levels. |
+| `AGENT_HUB_AUTO_HANDOFF` | `off` | hub home only | `on` (or JSON `true`): [autopilot](#autopilot-the-hub-hands-over-by-itself) — the stage hub hands over to a successor by itself. |
+| `AGENT_HUB_AUTO_HANDOFF_CHAIN` | `10` | hub home only | Automatic handoffs in a row without the owner; `0` = never start a successor. |
+| `AGENT_HUB_SUCCESSOR_MODEL` | the hub's own | hub home only | The successor's model (alias or `claude-…` id); default: the model of the hub's last turn. |
+| `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` | `inherit` | hub home only | The successor's `--permission-mode`; `inherit` = the hub's own (plan mode starts it in the default mode). |
+| `AGENT_HUB_SUCCESSOR_TIMEOUT` | `600` | hub home only | Seconds to wait for the successor's takeover line before the headless fallback. |
 | `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |
 | `AGENT_HUB_POLL_MAX_SLEEP`, `AGENT_HUB_POLL_MAX_BOUNDED_WAIT` | `30`, `90` | repo or home | Seconds: a bare sleep; a bounded loop's iterations × sleep. |
 | `AGENT_HUB_POLL_ESCAPE` | `poll-ok` | repo or home | The marker word of `# poll-ok: <reason>`. |
@@ -635,6 +684,9 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
   as kind `cli`. Interactive terminal, `claude -p` and `claude --bg` sessions receive cross-session messages while
   their process is alive, and nothing once it is gone; for a headless agent prefer `agent send` (it resumes a finished
   session and leaves a journal line) — see [docs/launch-modes.md](docs/launch-modes.md).
+- Autopilot needs the standalone `claude` CLI logged in and the project directory trusted by it (see
+  [Autopilot](#autopilot-the-hub-hands-over-by-itself)); otherwise its successor is a headless hub, which you reach
+  through `ask` and `agent send` rather than from your phone.
 - `sendPrompt` buttons do not work in the Claude Code desktop tab, so the `/agent-top` widget has no buttons; it names
   the commands to type instead.
 

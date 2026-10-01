@@ -42,9 +42,14 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    unless you saw one.
 6. Should the hub hold `main-merge` by default (`AGENT_HUB_TAKE_MAIN_MERGE=true` in `config.json`)? *Recommended:* yes
    when more than one agent may merge; no for a solo repository.
+7. Autopilot — should a stage hub hand its shift to a background successor by itself when its context grows large, so
+   the stage runs while you are away (`AGENT_HUB_AUTO_HANDOFF=on`, in the hub home's `config.json`, not the
+   repository's)? Check first: `claude auth status` shows `"loggedIn": true`, and `claude` has been run once in this
+   directory with its trust prompt accepted. *Recommended:* on if the user wants to leave stages running and both
+   checks pass; off otherwise (say which check failed and the command that fixes it).
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
-what the user should confirm.
+what the user should confirm. Autopilot stays off in that case: nobody asked for background sessions.
 
 ## 3. Write
 
@@ -58,7 +63,9 @@ lock rules add migration-head --about "expected head of the migration chain"    
 ```
 Resource names are lowercase letters, digits and hyphens; pick names the team will say aloud. `add` refuses a bad
 regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_MERGE": "true"` to
-`.agent-hub/config.json` by hand.
+`.agent-hub/config.json` by hand. For question 7, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's
+`config.json` (`$AGENT_HUB_HOME`, default `~/.claude/agent-hub/`; create it as `{}` first, keep its other keys) — a
+repository's `config.json` cannot turn it on.
 
 ## 4. Prove it
 

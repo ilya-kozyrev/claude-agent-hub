@@ -20,8 +20,10 @@ the start — what the work does and who must reach it — not on an estimate of
 A cloud session fits read-only work such as a review (a bundle made from a GitLab checkout cannot push back); a user
 who has the credit for it plugs it in as a reviewer skill (`docs/reviewers.md`), it is not a launch mode of its own
 here. A `claude --bg` session
-works (E14) but is not wired into the hub's tools: it has no stream-json log for `agent-top`, no `EXIT` line when it
-dies, and `--dangerously-skip-permissions` needs a one-time interactive acceptance.
+works (E14) but is not wired into the hub's tools for executors: it has no stream-json log for `agent-top`, no `EXIT`
+line when it dies, and `--dangerously-skip-permissions` needs a one-time interactive acceptance. It is the right shape
+for one thing — the hub's own successor under autopilot (`hub succeed`, README "Autopilot"): with `--remote-control`
+the owner reaches it from the phone (E20), and its failure modes (E21–E23) each have a fallback.
 
 Claude Code's other parallel mechanisms, and where they sit here:
 - **Agent view** (`claude agents`, research preview) is the screen over `claude --bg` sessions: dispatch, watch,
@@ -159,6 +161,12 @@ session was stopped and removed afterwards.
 | E17 | Bash timeouts | with `BASH_DEFAULT_TIMEOUT_MS=15000` a foreground 40 s command was moved to the background at 15 s (`is_backgrounded`), and a background `jwait --for 12h` was not stopped at 15 s; both were stopped when the `-p` run exited. The docs give background commands 30 min by default (the Bash call's `timeout` raises it, 2 h at most unless `BASH_MAX_TIMEOUT_MS`), but in a long `claude -p` session (CLI 2.1.284) a background command started without `timeout` was still running at 31 min. The skill's waiting rule passes `timeout: 7200000` with `jwait --for 2h` either way |
 | E18 | Foreground sub-agent | `requestShape: "foreground"` in its meta; no `<task-notification>` in the parent; the parent's `tool_result` for the meta's `toolUseId` carries its answer |
 | E19 | Which processes run | `~/.claude/sessions/<pid>.json` holds `pid` and `sessionId` for every running CLI process, headless and Desktop-hosted alike; no stale files were left by the runs above |
+| E20 | `claude --bg --remote-control <name> -n <title> --model haiku "<prompt>"` from inside a Claude Desktop session (its environment as is), cwd a trusted repository (CLI 2.1.285) | started under `claude daemon`, printed `backgrounded · <id> · <name>`, logged in with the subscription and answered; `claude logs <id>` (ANSI screen text) contains the Remote Control link `claude.ai/code/session_<…>`; `claude agents --json` lists it (`kind: background`, `id`, `sessionId`, `name`, `status`, `state`); a `SendMessage` from another session to its name was not delivered: it was held for the recipient's approval (a different permission mode) and expired — so `hub succeed` puts the takeover instruction in the CLI prompt and the two hubs talk only through the journal; it inherits the launching process's environment (`AGENT_HUB_HOME` reached it); `claude stop <id>` / `claude rm <id>` remove it |
+| E21 | The standalone CLI not logged in | the session shows "Not logged in · Run /login" and does nothing: Claude Desktop's own login does not reach `claude --bg`; `claude auth status` (JSON `loggedIn`) detects it beforehand |
+| E22 | `--permission-mode bypassPermissions` with `--bg` before the disclaimer was accepted | exit 1: "requires accepting the disclaimer first. Run `claude --dangerously-skip-permissions` once interactively" |
+| E23 | An untrusted cwd | exit 1: "Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt"; a Claude Desktop worktree path may be untrusted for the CLI while its main checkout is trusted |
+| E24 | A `--bg` successor in the default permission mode (`hub succeed`, Haiku, CLI 2.1.285) | it loaded `/agent-hub:hub` from the prompt and ran the takeover command, then sat at `state: blocked, waitingFor: permission prompt`; with `--settings '{"permissions":{"allow":["Bash(hub takeover:*)",…]}}'` it still asked, because the command held `"$CLAUDE_CODE_SESSION_ID"` (a probe: `Bash(echo:*)` passed `echo hello` and denied `echo "$VAR"`); with `--session self` the takeover ran, and it then asked to `Read` the handoff outside the project; with `additionalDirectories` and `Edit(/<hub home>/**)` it took over, read the handoff and journaled DONE ~20 s after start, no prompt |
+| E25 | Cleaning up | `claude stop <id>` then `claude rm <id>`; with no background session left the transient `claude daemon` exits by itself (`claude daemon status`: not running) |
 
 Docs and experiment: the docs say a `-p` run waits for background sub-agents "until 10 minutes of continuous idle
 waiting"; in the experiment the sub-agent's own tool calls did not reset that clock (E11). The docs' limits on
