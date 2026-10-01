@@ -81,7 +81,7 @@ check "$(grep -c '^\[already done\] \(night-queue\|roles\|journal\)' $R/again.ou
 $B/hub handoff --stage stage-a --n 17 --out $R/H.md > $R/h.out 2>&1; check $? 0 "handoff exit 0"
 miss=0; for s in 0 1 2 3 4 5; do grep -q "^## $s\." $R/H.md || { echo "missing § $s"; miss=1; }; done; check $miss 0 "handoff has §§ 0–5"
 [ "$(wc -c < $R/H.md)" -le 12288 ]; check $? 0 "handoff ≤ 12 KB"
-grep -q "TODO" $R/H.md && grep -q "deploy-window (\*)" $R/H.md && grep -q "hub takeover --stage stage-a --n 18" $R/H.md; check $? 0 "handoff has facts and TODOs"
+grep -q "TODO" $R/H.md && grep -q "deploy-window (\*)" $R/H.md && grep -q "hub takeover --stage stage-a --session" $R/H.md; check $? 0 "handoff has facts and TODOs"
 $B/hub handoff --stage stage-a --n 17 --out $R/H.md >/dev/null 2>&1; check $? 1 "negative: handoff does not overwrite"
 printf '#!/bin/sh\necho "| Production | v1.4 deployed | release notes |"\n' > $R/stage-a/handoff-facts.sh; chmod +x $R/stage-a/handoff-facts.sh
 $B/hub handoff --stage stage-a --n 17 --out $R/H2.md >/dev/null 2>&1; grep -q '^| Production | v1.4 deployed' $R/H2.md; check $? 0 "handoff-facts.sh rows go into § 1"

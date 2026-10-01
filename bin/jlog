@@ -29,8 +29,9 @@ def main(argv: list) -> int:
     stage = hc.check_stage(args.stage or hc.default_stage())
     tag = args.tag or hc.caller_tag(stage)
     if not tag:
-        raise hc.UsageError("no tag: pass --tag, set $HUB_TAG or register this session "
-                            "(`roles set <role> <id> --tag …`)")
+        raise hc.UsageError("no tag: pass --tag, set $HUB_TAG or register this session (the first hub of a stage: "
+                            "`hub start --stage S --session $CLAUDE_CODE_SESSION_ID`; anyone else: "
+                            "`roles set <role> <session id> --tag …`)")
     try:
         line = hc.journal_append(stage, tag, " ".join(args.text))
     except OSError as e:
