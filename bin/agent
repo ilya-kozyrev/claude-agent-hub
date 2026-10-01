@@ -150,6 +150,10 @@ def make_worktree(repo: Path, role: str, branch: str | None) -> tuple[Path, str,
     if git("check-ref-format", "--branch", branch, cwd=top).returncode != 0:
         raise hc.UsageError(f"--worktree: {branch!r} is not a valid branch name")
     existing = _worktrees(top).get(branch)
+    if existing is not None and not existing.is_dir():
+        # a worktree directory deleted without `git worktree remove`: drop the stale entry, then create it afresh
+        git("worktree", "prune", cwd=top)
+        existing = _worktrees(top).get(branch)
     if existing is not None:
         if existing.resolve() == top.resolve():
             raise hc.UsageError(f"--worktree: {branch} is checked out in the main checkout {top} — pick another branch")

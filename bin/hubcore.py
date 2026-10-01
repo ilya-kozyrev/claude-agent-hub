@@ -88,9 +88,29 @@ def project_dir(start=None) -> Optional[Path]:
     for d in [p] + list(p.parents):
         if (d / CONFIG_DIRNAME).is_dir():
             return d
+        if (d / ".git").is_file():
+            # a linked worktree without its own .agent-hub/ (not committed, or not yet) uses the main checkout's:
+            # a guard configured there must not vanish in an agent's worktree
+            main = main_checkout(d)
+            return main if main is not None and (main / CONFIG_DIRNAME).is_dir() else None
         if (d / ".git").exists():
             return None
     return None
+
+
+def main_checkout(worktree: Path) -> Optional[Path]:
+    """The main working tree of a linked worktree (its `.git` file names a gitdir with a `commondir`); None for
+    anything else, a submodule included."""
+    try:
+        m = re.match(r"gitdir:\s*(.+)", (worktree / ".git").read_text(encoding="utf-8").strip())
+        if not m:
+            return None
+        gitdir = Path(m.group(1).strip())
+        gitdir = gitdir if gitdir.is_absolute() else (worktree / gitdir)
+        common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+    except (OSError, ValueError):
+        return None
+    return common.parent if common.name == ".git" else None
 
 
 def in_scope(path) -> bool:
@@ -101,7 +121,13 @@ def in_scope(path) -> bool:
         p = Path(path).expanduser().resolve()
     except (OSError, ValueError, TypeError):
         return False
-    dirs = [root()] + [Path(d).expanduser() for d in (setting("AGENT_HUB_SCOPE_DIRS") or "").split(":") if d.strip()]
+    dirs = [root()]
+    for d in (setting("AGENT_HUB_SCOPE_DIRS") or "").split(":"):
+        if d.strip():
+            if not Path(d.strip()).expanduser().is_absolute():
+                _warn(f"AGENT_HUB_SCOPE_DIRS: {d.strip()!r} is not an absolute path (or ~/…); ignored")
+                continue
+            dirs.append(Path(d.strip()).expanduser())
     for d in dirs:
         try:
             if p == d.resolve() or d.resolve() in p.parents:

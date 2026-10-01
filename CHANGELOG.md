@@ -44,6 +44,10 @@ hub rules kept as recommended defaults a project can override.
   as recommended defaults with the reason for each, overridable in `hub-rules.md` (hub home → repository → stage,
   later wins; `templates/hub-rules-example.md`); the handoff threshold stated relative to the context window; night
   queue, night nudge and send budget marked as optional macOS + Claude Desktop modules; status words defined.
+- A linked worktree without its own `.agent-hub/` uses the main checkout's (lock rules, config, brief footer, hub
+  rules): an agent's `--worktree` no longer silently loses the repository's guards. `lock rules init` from a worktree
+  configures the main checkout; `lock rules add` extends a file without `resources` by declaring the names its rules
+  use; a relative `AGENT_HUB_SCOPE_DIRS` entry is ignored with a warning.
 - **Templates**: a short `brief-executor-template.md`; the previous one is `brief-executor-advanced.md`. The handoff
   draft marks the night-queue section optional and points at worktrees to clean up.
 

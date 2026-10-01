@@ -168,12 +168,14 @@ def cmd_release(args) -> int:
 # ---------------------------------------------------------------- rules
 
 def repo_root(raw: str | None) -> Path:
-    """The working tree to configure: --dir, else the git top level of the working directory."""
+    """The working tree to configure: --dir, else the git top level of the working directory; from a linked
+    worktree, the main checkout (worktrees read its .agent-hub/ when they have none of their own)."""
     d = Path(raw or os.getcwd()).expanduser().resolve()
     res = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if res.returncode != 0:
         raise SystemExit(f"{d} is not inside a git repository (pass --dir)")
-    return Path(res.stdout.strip())
+    top = Path(res.stdout.strip())
+    return hc.main_checkout(top) or top if (top / ".git").is_file() else top
 
 
 def repo_name(top: Path) -> str:
@@ -254,7 +256,11 @@ def cmd_rules_add(args) -> int:
         data = json.loads(path.read_text(encoding="utf-8"))
     else:
         data = {"protected_branches": ["main"], "resources": {}, "rules": []}
-    res = data.setdefault("resources", {})
+    if "resources" not in data:
+        # a file without declarations (0.2.0 style): declare what its rules already use, so they stay valid
+        data["resources"] = {k: "" for r in data.get("rules") or [] for k in r.get("kinds") or []
+                             if k not in lockrules.BUILTIN}
+    res = data["resources"]
     if args.resource not in res and not args.about:
         print(f"{args.resource} is new: say what it is with --about", file=sys.stderr)
         return 2

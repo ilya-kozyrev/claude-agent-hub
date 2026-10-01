@@ -61,7 +61,7 @@ python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","session_id":s
   | python3 $HOOKS/board_locks.py | grep -q '"deny"'; check $? 1 "negative: the holder passes"
 cd $OUT
 $B/lock take staging --until +1h --why x > /dev/null 2>&1; check $? 0 "a resource already on the board is takeable anywhere (handover)"
-$B/lock take staging-two --until +1h --why x > /dev/null 2>&1; check $? 2 "negative: outside the repository its other names are unknown"
+$B/lock take deploy-window --until +1h --why x > /dev/null 2>&1; check $? 2 "negative: outside the repository its resources (not on the board) are unknown"
 
 # ---- declared resources catch a typo in a rule
 mkdir -p $P/typo/.agent-hub; git init -q $P/typo
@@ -80,4 +80,27 @@ PY
 $B/lock list > $P/legacy.out; check $? 0 "a board with legacy kinds parses"
 [ "$(grep -c 'old hub' $P/legacy.out)" = 3 ]; check $? 0 "…and lists all three records"
 $B/lock take stage --until +1h --why "successor" --force > /dev/null; check $? 0 "a legacy resource on the board can be taken over"
+
+# ---- review fixes: worktrees see the main checkout's .agent-hub/; add extends a file without "resources"; init from
+#      a worktree configures the main checkout; relative AGENT_HUB_SCOPE_DIRS are refused
+cd $APP && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && git worktree add -q -b wt-b $APP/.worktrees/wt-b
+(cd $APP/.worktrees/wt-b && $B/lock rules check "make deploy-prod" --expect deploy-window) > /dev/null; check $? 0 "a worktree without .agent-hub/ uses the main checkout's rules"
+python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","session_id":sys.argv[1],"cwd":sys.argv[2],"tool_input":{"command":"make deploy-prod"}}))' $ME $APP/.worktrees/wt-b \
+  | python3 $HOOKS/board_locks.py | grep -q '"deny"'; check $? 0 "…and the real hook denies there under another session's lock"
+mkdir -p $APP/.worktrees/wt-b/.agent-hub && echo '{"rules": []}' > $APP/.worktrees/wt-b/.agent-hub/lock-rules.json
+(cd $APP/.worktrees/wt-b && $B/lock rules check "make deploy-prod" --expect-none) > /dev/null; check $? 0 "…but a worktree's own .agent-hub/ wins"
+rm -rf $APP/.worktrees/wt-b/.agent-hub
+git init -q $P/sub-host && git init -q $P/sub-host/inner && mkdir -p $P/sub-host/.agent-hub && echo '{"rules": []}' > $P/sub-host/.agent-hub/lock-rules.json
+python3 -c "import sys; sys.path.insert(0, '$B'); import hubcore; print(hubcore.project_dir('$P/sub-host/inner'))" | grep -qx None; check $? 0 "control: a nested repository does not inherit its host's config"
+mkdir -p $P/old/.agent-hub; git init -q $P/old
+printf '{"rules": [{"match": "^make ship\\\\b", "kinds": ["deploy-window"]}, {"match": "^make stg\\\\b", "kinds": ["stage"]}]}\n' > $P/old/.agent-hub/lock-rules.json
+(cd $P/old && $B/lock rules add stage --about "staging" --match '^make stg2\b') > /dev/null 2>&1; check $? 0 "add extends a file without resources (0.2.0 style)"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert set(d["resources"])=={"deploy-window","stage"} and len(d["rules"])==3, d' $P/old/.agent-hub/lock-rules.json; check $? 0 "…declaring the names its rules already use"
+git init -q -b main $P/fresh && git -C $P/fresh -c user.email=t@t -c user.name=t commit -q --allow-empty -m i && git -C $P/fresh worktree add -q -b w $P/fresh/.worktrees/w
+(cd $P/fresh/.worktrees/w && $B/lock rules init) > /dev/null; check $? 0 "init from a worktree"
+[ -f $P/fresh/.agent-hub/lock-rules.json ] && [ ! -e $P/fresh/.worktrees/w/.agent-hub ]; check $? 0 "…configures the main checkout"
+echo '{"AGENT_HUB_SCOPE_DIRS": "relative/dir"}' > $R/config.json
+(cd $P && python3 -c "import sys; sys.path.insert(0, '$B'); import hubcore; print(hubcore.in_scope('$P/relative/dir/x'))") > $P/scope.out 2> $P/scope.err
+grep -qx False $P/scope.out && grep -q "not an absolute path" $P/scope.err; check $? 0 "a relative AGENT_HUB_SCOPE_DIRS entry is ignored with a warning"
+rm $R/config.json
 exit $fail

@@ -48,6 +48,12 @@ mkdir -p $REPO/.worktrees/taken
 $B/agent spawn --role t --cwd $REPO --model haiku --brief $P/b.md --worktree taken > /dev/null 2>&1; check $? 1 "negative: a foreign directory at the path"
 $B/agent spawn --role p --cwd $P/plain --model haiku --brief $P/b.md --worktree > /dev/null 2>&1; check $? 2 "negative: --worktree outside a git repository"
 $B/agent spawn --role bad --cwd $REPO --model haiku --brief $P/b.md --worktree 'a..b' > /dev/null 2>&1; check $? 2 "negative: a bad branch name"
+# a worktree directory deleted by hand: the stale entry is pruned and the worktree made again
+$B/agent spawn --role gone --cwd $REPO --model haiku --brief $P/b.md --worktree > /dev/null 2>&1; wait_dead gone
+rm -rf $REPO/.worktrees/agent/gone
+$B/agent spawn --role gone --cwd $REPO --model haiku --brief $P/b.md --worktree > $P/gone.out 2>&1; check $? 0 "re-spawn after the worktree directory was deleted by hand"
+grep -q 'created' $P/gone.out && [ -d $REPO/.worktrees/agent/gone ]; check $? 0 "…prunes the stale entry and creates it again"
+wait_dead gone
 $B/agent spawn --role nowt --cwd $REPO --model haiku --brief $P/b.md > /dev/null 2>&1; check $? 0 "control: without --worktree"
 wait_dead nowt
 check "$(meta nowt 'm["cwd"]')" "$(cd $REPO && pwd -P)" "…the agent runs in --cwd itself"
