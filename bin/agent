@@ -24,8 +24,9 @@ Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effor
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
 (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
-These settings (and CLAUDE_BIN, AGENT_INIT_TIMEOUT, AGENT_HUB_BG_WAIT_CEILING_MS) may also come from config.json of the agent's repository
-(<repo>/.agent-hub/) or of the hub home; a brief-footer.md there is appended to the footer of every brief.
+These settings (and CLAUDE_BIN, AGENT_INIT_TIMEOUT, AGENT_HUB_BG_WAIT_CEILING_MS) may also come from config.json
+of the agent's repository (<repo>/.agent-hub/) or of the hub home; a brief-footer.md there is appended to the
+footer of every brief.
 status: alive or not, age of the last log event, model turns, the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
 the session is resumed detached with `claude --resume <id> -p "msg"` in the same cwd, the unread
