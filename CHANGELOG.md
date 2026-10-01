@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-01
+
+A shape for teams other than the author's — generic lock resources, a setup flow, a first-hub start, the author's
+hub rules kept as recommended defaults a project can override — and background sub-agents in the hub's toolbox.
+**Breaking:** `deploy-window`, `stage` and `migration-head` are no longer built-in lock resources; a project that
+uses them declares them in its `lock-rules.json` (same names, no board migration).
 
 - **Choosing how to launch work.** `docs/launch-modes.md` and a section of the `hub` skill: when a piece of work is a
   foreground or background sub-agent of the hub, a headless agent, a cloud or a Desktop session, with defaults
@@ -11,10 +16,6 @@
   the parent's transcript (completion notices; a foreground sub-agent's Agent-call result) and from whether the parent
   process runs (`~/.claude/sessions/<pid>.json`), current action, model and effort, feed from the sub-agent's
   transcript.
-
-A shape for teams other than the author's: generic lock resources, a setup flow, a first-hub start, and the author's
-hub rules kept as recommended defaults a project can override.
-
 - **Locks on generic named resources.** Only `main-merge` is built in (merges into, and pushes to, the protected
   branches). Every other resource is named by the project in `lock-rules.json`, with an optional
   `"resources": {name: description}` object; when it is present, a rule naming an undeclared resource is refused (a
