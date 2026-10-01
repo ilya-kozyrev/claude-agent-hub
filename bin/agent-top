@@ -26,7 +26,7 @@ r refresh · ? help · q quit.  --read-only disables m and x.
 Logs are read incrementally from the last offset (log.jsonl reaches several MB): only assistant/result lines are
 parsed, a log over $AGENT_TOP_SCAN_MAX bytes (8 MB) is scanned from its tail and its turn count is marked with +.
 Files of agents are never opened for writing.
-Env: AGENT_HUB_HOME (hub home, default ~/.claude/agent-hub), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
+Env: AGENT_HUB_HOME (hub home; `hub home` shows which and why), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
 default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB), NO_COLOR.
 Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
 """

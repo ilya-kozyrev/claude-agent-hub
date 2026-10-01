@@ -21,7 +21,7 @@ Usage:
   nightq status [--json]            every stage with a night-queue.md: coordinator, open/done/invalid items
   nightq check --stage stage-a      exit 1 and list the items that break the format
   nightq log --stage stage-a "text" append a timestamped line to <stage>/night-log.md
-Env: AGENT_HUB_HOME (default ~/.claude/agent-hub); AGENT_HUB_NIGHT night window, default "23:00-08:00".
+Env: AGENT_HUB_HOME (the hub home; `hub home` shows which); AGENT_HUB_NIGHT night window, default "23:00-08:00".
 """
 from __future__ import annotations
 

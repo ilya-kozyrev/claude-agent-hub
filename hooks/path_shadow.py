@@ -5,7 +5,7 @@ the usual one. The agent-hub commands then run the other program, and an agent's
 reads.
 
 Reads PATH as this hook process sees it; nothing is run. Does nothing, and writes nothing, until a hub home exists
-(<hub home>, default ~/.claude/agent-hub: `hub start` creates it): a machine that never ran a hub is left alone.
+(<hub home>: `hub start` creates it): a machine that never ran a hub is left alone.
 Scope as in questions.py: a session that starts in the hub home, in a repository with `.agent-hub/`, under
 AGENT_HUB_SCOPE_DIRS, or as a hub agent (HUB_TAG) hears it every time; a session elsewhere (a first project that has no `.agent-hub/` yet) hears it once per distinct set of shadowing
 paths, remembered in <state dir>/path-shadow/seen (AGENT_HUB_STATE_DIR, default <hub home>/.state). Fail-open: any
