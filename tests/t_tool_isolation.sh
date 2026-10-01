@@ -9,25 +9,45 @@ export HOME=$P/emptyhome; mkdir -p $HOME  # no Claude Desktop bundle: the CLI wa
 ln -s "$(command -v python3)" $P/pybin/python3
 wait_dead(){ for i in $(seq 1 40); do $B/agent status $1 | grep -q 'ALIVE' || return 0; sleep 0.5; done; }
 
-# ---- agent spawn: bin/ first on the agent's PATH, jlog by absolute path in the footer
+# ---- agent spawn: bin/ first on the agent's PATH, jlog as "$HUB_BIN/jlog" in the footer
 echo "brief: do the thing" > $W/b.md
 (export HUB_STAGE=stage-a HUB_TAG=hub-test CLAUDE_BIN=$T/fake_claude.py PATH="$P/shadow:$PATH"
  $B/agent spawn --role iso --cwd $W --model haiku --brief $W/b.md > $P/spawn.out 2>&1; check $? 0 "spawn with another directory first on the caller's PATH"
  wait_dead iso)
 check "$(grep '^PATH_FIRST=' $W/env.log | tail -1)" "PATH_FIRST=$BP" "the agent's PATH starts with the plugin's bin/"
-grep -qF "\`$BP/jlog \"…\"\`" $W/prompts.log; check $? 0 "the brief footer names jlog by its absolute path"
-grep -qF "\`$BP/jlog \"@hub QUESTION" $W/prompts.log; check $? 0 "…in the question line too"
+check "$(grep '^HUB_BIN=' $W/env.log | tail -1)" "HUB_BIN=$BP" "the agent's environment names the plugin's bin/ in HUB_BIN"
+grep -qF '`"$HUB_BIN/jlog" "…"`' $W/prompts.log; check $? 0 "the brief footer names jlog as \"\$HUB_BIN/jlog\""
+grep -qF '`"$HUB_BIN/jlog" "@hub QUESTION' $W/prompts.log; check $? 0 "…in the question line too"
 grep -q '`jlog "' $W/prompts.log; check $? 1 "negative: no bare \`jlog\` is left in the footer"
+grep -qF "$BP/jlog" $W/prompts.log; check $? 1 "negative: …and no version-pinned path either (it vanishes with a plugin update)"
+# a resume after a plugin update: the footer of the first prompt is history, the variable is rebuilt by the new copy
+cp -R $BP $P/binA; cp -R $BP $P/binB
+(export HUB_STAGE=stage-a HUB_TAG=hub-test CLAUDE_BIN=$T/fake_claude.py
+ $P/binA/agent spawn --role upd --cwd $W --model haiku --brief $W/b.md > /dev/null 2>&1; wait_dead upd
+ $P/binB/agent send upd "after the update" > /dev/null 2>&1; check $? 0 "resume through the updated copy of the plugin"
+ wait_dead upd)
+grep '^HUB_BIN=' $W/env.log | tail -2 | tr '\n' ' ' | grep -q "HUB_BIN=$(cd $P/binA && pwd -P) HUB_BIN=$(cd $P/binB && pwd -P)"; check $? 0 "…HUB_BIN of the spawn is the old copy, of the resume the new one"
 
 # ---- hub start warns about a shadowing command
 H1=11111111-1111-4111-8111-111111111111
 for t in hub jlog; do printf '#!/bin/sh\necho other %s\n' $t > $P/shadow/$t; chmod +x $P/shadow/$t; done
 ln -s $BP/jlog $P/linkbin/jlog; ln -s $BP/ask $P/linkbin/ask
+mkdir -p $P/shadow2; for t in agent-spawn nightq board.py hubcore.py; do printf '#!/bin/sh\n' > $P/shadow2/$t; chmod +x $P/shadow2/$t; done
 (PATH="$P/shadow:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/s1.out 2>&1; check $? 0 "hub start with an old hub and jlog first on PATH"
 [ "$(grep -c '^ATTENTION: .*is .*shadow/' $P/s1.out)" = 1 ]; check $? 0 "…warns once"
 grep -q "ATTENTION: \`hub\` is $P/shadow/hub, \`jlog\` is $P/shadow/jlog" $P/s1.out; check $? 0 "…naming every shadowing path"
 grep -q "put the plugin's bin/ first on PATH, or remove the old tool" $P/s1.out; check $? 0 "…and the fix"
 grep -q 'GitHub CLI `hub` from Homebrew' $P/s1.out; check $? 0 "…and the usual culprit"
+# the commands are every executable of bin/, not a fixed list: agent-spawn and nightq count, the .py modules do not
+(PATH="$P/shadow2:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/s5.out 2>&1; check $? 0 "hub start with an old agent-spawn and nightq first on PATH"
+grep -q "ATTENTION: \`agent-spawn\` is $P/shadow2/agent-spawn, \`nightq\` is $P/shadow2/nightq" $P/s5.out; check $? 0 "…names exactly those two (board.py and hubcore.py there are not commands)"
+python3 - $BP > $P/tools.out <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1]); import hubcore as hc
+want = sorted(n for n in os.listdir(sys.argv[1]) if os.path.isfile(os.path.join(sys.argv[1], n)) and os.access(os.path.join(sys.argv[1], n), os.X_OK) and "." not in n)
+print("ok" if hc.plugin_tools() == want and {"agent-stop", "agent-send", "delegation", "nightq", "hub", "jlog"} <= set(want) else f"{hc.plugin_tools()} != {want}")
+PY
+check "$(cat $P/tools.out)" ok "plugin_tools() is the executables of bin/ (agent-stop, delegation, nightq included)"
 (PATH="$BP:$P/shadow:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/s2.out 2>&1
 grep -q 'shadow' $P/s2.out; check $? 1 "negative: the plugin's bin/ first on PATH, no warning"
 (PATH="$P/linkbin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/s3.out 2>&1
@@ -51,5 +71,9 @@ hook $P/plain > $P/h5.out; [ ! -s $P/h5.out ]; check $? 0 "negative: …but the 
 printf '#!/bin/sh\n' > $P/shadow/lock; chmod +x $P/shadow/lock
 hook $P/plain > $P/h6.out; [ -s $P/h6.out ]; check $? 0 "a new shadowing command is reported again"
 HUB_TAG=x hook $P/plain > $P/h7.out; [ -s $P/h7.out ]; check $? 0 "a hub agent (HUB_TAG) hears it every time"
+(export AGENT_HUB_HOME=$P/nohome; hook $P/proj > $P/h8.out; check $? 0 "hook on a machine without a hub home"
+ [ ! -s $P/h8.out ] && [ ! -e $P/nohome ]; check $? 0 "negative: …says nothing and creates nothing (no .state/path-shadow)")
+(export AGENT_HUB_HOME=$P/nohome; hook $P/plain > $P/h9.out; [ ! -s $P/h9.out ] && [ ! -e $P/nohome ]); check $? 0 "…also outside any scope"
+mkdir $P/nohome; (export AGENT_HUB_HOME=$P/nohome; hook $P/plain > $P/h10.out); [ -s $P/h10.out ]; check $? 0 "positive control: once the hub home exists the hook speaks"
 printf 'not json' | PATH="$P/shadow:$BP:$P/pybin" python3 $HOOKS/path_shadow.py > /dev/null; check $? 0 "fail-open: a broken event does not fail the hook"
 exit $fail

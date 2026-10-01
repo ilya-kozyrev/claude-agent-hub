@@ -9,7 +9,9 @@ description: Tools and recommended rules for a stage hub — the one interactive
 
 Do these before anything else, in this order:
 
-1. `hub start --stage <S> --session "$CLAUDE_CODE_SESSION_ID"` — S is a short name for the goal (*Starting a stage*).
+1. `hub start --stage <S> --session "$CLAUDE_CODE_SESSION_ID"` — S is a short name for the goal (*Starting a stage*). If
+   `hub` answers with an error such as `invalid choice` or `not a git command`, another `hub` (GitHub CLI) is ahead of
+   the plugin's on PATH: run `${CLAUDE_PLUGIN_ROOT}/bin/hub start …` and tell the owner in one line.
 2. `ask search <words of the goal>` — decisions already on record are settled.
 3. One round of questions, each as "Q1 … → Recommendation: …", then a plan (*Planning a stage*). Write no code and
    start no agents before the owner approves the plan.

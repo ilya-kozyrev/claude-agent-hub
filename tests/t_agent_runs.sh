@@ -40,17 +40,18 @@ grep -q 'EXIT turns: .*turns 3 (total 8)' $(journal stage-a); check $? 0 "the EX
 $B/agent-top --json --stage stage-a > $P/top.json 2>&1
 python3 -c 'import json,sys; a={x["role"]:x for x in json.load(open(sys.argv[1]))["agents"]}["turns"]; assert (a["run_turns"], a["turns"])==(3, 8), a' $P/top.json; check $? 0 "agent-top --json: run_turns 3, turns 8"
 $B/agent-top --once --stage stage-a --width 120 > $P/top.out 2>&1
-grep -E '^. turns ' $P/top.out | grep -q ' 3/8 '; check $? 0 "agent-top --once: the TURN column reads 3/8"
+grep -E '^[^ ]+ turns ' $P/top.out | grep -q ' 3/8 '; check $? 0 "agent-top --once: the TURN column reads 3/8"
 $B/agent-top --once --stage stage-a --agent turns --width 120 > $P/card.out 2>&1
 grep -q 'turns 3 (total 8)' $P/card.out; check $? 0 "agent-top card: turns 3 (total 8)"
 $B/agent-top --widget --stage stage-a > $P/widget.html 2>&1
 grep -q '3 turns (total 8)' $P/widget.html; check $? 0 "agent-top widget: 3 turns (total 8)"
 FAKE_TURNS=0 $B/agent spawn --role single --cwd $W --model haiku --brief $W/b.md > /dev/null 2>&1; wait_dead single
 $B/agent-top --once --stage stage-a --width 120 > $P/top2.out 2>&1
-grep -E '^. single ' $P/top2.out | grep -Eq ' 1 '; check $? 0 "negative: an agent of one run keeps a plain TURN cell"
-grep -E '^. single ' $P/top2.out | grep -q '/'; check $? 1 "…without a slash"
+grep -E '^[^ ]+ single ' $P/top2.out | grep -Eq ' 1 '; check $? 0 "negative: an agent of one run keeps a plain TURN cell"
+grep -E '^[^ ]+ single ' $P/top2.out | grep -q '/'; check $? 1 "…without a slash"
 
 # ---- 5. --worktree in a repository with no commits
+# (a glyph in the first column of agent-top is matched with [^ ]+, not ".": the tests do not depend on the locale)
 git init -q -b main $P/empty
 $B/agent spawn --role first --cwd $P/empty --model haiku --brief $W/b.md --worktree > $P/e1.out 2>&1; check $? 1 "spawn --worktree in a repository with no commits fails"
 grep -q 'the repository .* has no commits yet — make a first commit' $P/e1.out; check $? 0 "…saying the repository has no commits yet"
@@ -61,4 +62,12 @@ git -C $P/empty -c user.email=t@t -c user.name=t commit -q --allow-empty -m "fir
 $B/agent spawn --role first --cwd $P/empty --model haiku --brief $W/b.md --worktree > $P/e2.out 2>&1; check $? 0 "positive control: after the first commit the same spawn works"
 [ -d $P/empty/.worktrees/agent/first ]; check $? 0 "…in .worktrees/agent/first"
 wait_dead first
+# the check is for a branch made from HEAD only: an unborn HEAD beside commits on another branch still takes an existing branch
+git init -q -b main $P/orph; git -C $P/orph -c user.email=t@t -c user.name=t commit -q --allow-empty -m "first commit"
+git -C $P/orph checkout -q --orphan unborn
+$B/agent spawn --role ex --cwd $P/orph --model haiku --brief $W/b.md --worktree main > $P/o1.out 2>&1; check $? 0 "HEAD unborn, commits on main: --worktree main (an existing branch) works"
+[ -d $P/orph/.worktrees/main ] && [ "$(git -C $P/orph/.worktrees/main rev-parse --abbrev-ref HEAD)" = main ]; check $? 0 "…a worktree of main"
+wait_dead ex
+$B/agent spawn --role nb --cwd $P/orph --model haiku --brief $W/b.md --worktree brand-new > $P/o2.out 2>&1; check $? 1 "negative: a new branch from the unborn HEAD still says there are no commits"
+grep -q 'has no commits yet' $P/o2.out; check $? 0 "…naming the reason"
 exit $fail

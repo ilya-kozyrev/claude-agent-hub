@@ -6,16 +6,23 @@ FAKE_CLAUDE=die: no init, exits 1 after 2 s (a CLI that rejects its flags slowly
 FAKE_CLAUDE=hang: alive for 60 s without an init event.
 FAKE_READ_INBOX=1: a Bash tool call on inbox.md after the hold; FAKE_FINAL=<text>: the last answer.
 FAKE_TURNS=<n>: n extra assistant messages (distinct ids) before the last answer.
-`--version` prints FAKE_VERSION (default 2.1.285) like the real CLI and exits, leaving no log. The init event carries
+`--version` prints FAKE_VERSION (default 2.1.285) like the real CLI and exits, leaving no log: FAKE_VERSION_BANNER
+is printed on a line before it (a version manager's shim), FAKE_VERSION_LOG is a file that gets one line per call.
+The init event carries
 `model`: FAKE_MODEL, else the --model value with an alias resolved the way a current CLI does (sonnet -> claude-sonnet-5-5).
 Every prompt is appended to ./prompts.log, every argv (minus the prompt) to ./argv.log and the environment the
-plugin sets for the CLI (the first PATH entry and the background-wait ceiling) to ./env.log, so a test can see what the
+plugin sets for the CLI (the first PATH entry, HUB_BIN and the background-wait ceiling) to ./env.log, so a test can see what the
 agent was told, with which flags and settings.
 """
 import json, os, sys, time
 
 argv = sys.argv[1:]
 if argv == ["--version"]:
+    if os.environ.get("FAKE_VERSION_LOG"):
+        with open(os.environ["FAKE_VERSION_LOG"], "a", encoding="utf-8") as fh:
+            fh.write("called\n")
+    if os.environ.get("FAKE_VERSION_BANNER"):
+        print(os.environ["FAKE_VERSION_BANNER"])
     print(os.environ.get("FAKE_VERSION", "2.1.285") + " (Claude Code)")
     sys.exit(0)
 def opt(name):
@@ -29,6 +36,7 @@ with open("argv.log", "a", encoding="utf-8") as fh:
     fh.write(" ".join(a for a in argv if a != prompt) + "\n")
 with open("env.log", "a", encoding="utf-8") as fh:
     fh.write(f"PATH_FIRST={os.environ.get('PATH', '').split(os.pathsep)[0]}\n")
+    fh.write(f"HUB_BIN={os.environ.get('HUB_BIN', '<unset>')}\n")
     fh.write(f"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS={os.environ.get('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', '<unset>')}\n")
 if os.environ.get("FAKE_CLAUDE") == "hang":  # alive, never sends init (a slow MCP server, a stuck start)
     time.sleep(60)

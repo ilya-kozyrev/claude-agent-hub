@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""SessionStart hook: one line when a command of the same name as one of the plugin's tools (hub jlog jwait agent ask
-roles lock agent-top) comes before the plugin's bin/ on PATH — GitHub CLI `hub` from Homebrew is the usual one. The
-agent-hub commands then run the other program, and an agent's `jlog` writes to a journal the hub never reads.
+"""SessionStart hook: one line when a command of the same name as one of the plugin's tools (any executable of its bin/:
+hub, jlog, jwait, agent, ask, roles, lock, …) comes before the plugin's bin/ on PATH — GitHub CLI `hub` from Homebrew is
+the usual one. The agent-hub commands then run the other program, and an agent's `jlog` writes to a journal the hub never
+reads.
 
-Reads PATH as this hook process sees it; nothing is run. Scope as in questions.py: a session that starts in the hub
-home, in a repository with `.agent-hub/`, under AGENT_HUB_SCOPE_DIRS, or as a hub agent (HUB_TAG) hears it every time;
-a session elsewhere (a first project that has no `.agent-hub/` yet) hears it once per distinct set of shadowing
+Reads PATH as this hook process sees it; nothing is run. Does nothing, and writes nothing, until a hub home exists
+(<hub home>, default ~/.claude/agent-hub: `hub start` creates it): a machine that never ran a hub is left alone.
+Scope as in questions.py: a session that starts in the hub home, in a repository with `.agent-hub/`, under
+AGENT_HUB_SCOPE_DIRS, or as a hub agent (HUB_TAG) hears it every time; a session elsewhere (a first project that has no `.agent-hub/` yet) hears it once per distinct set of shadowing
 paths, remembered in <state dir>/path-shadow/seen (AGENT_HUB_STATE_DIR, default <hub home>/.state). Fail-open: any
 error of its own -> exit 0 with no output.
 """
@@ -31,13 +33,14 @@ def main() -> int:
     sys.path.insert(0, str(bin_dir()))
     import hubcore as hc  # noqa: E402
 
+    if not hc.root().is_dir():
+        return 0
     shadowed = hc.shadowed_tools()
     if not shadowed:
         return 0
     seen = None
     if not (os.environ.get("HUB_TAG") or hc.in_scope(event.get("cwd") or os.getcwd())):
-        raw = hc.setting("AGENT_HUB_STATE_DIR")
-        seen = (Path(raw).expanduser() if raw else hc.root() / ".state") / "path-shadow" / "seen"
+        seen = hc.state_dir() / "path-shadow" / "seen"
         signature = "\n".join(sorted(f"{n}={p}" for n, p in shadowed))
         try:
             if seen.read_text(encoding="utf-8") == signature:

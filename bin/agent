@@ -17,8 +17,8 @@ spawn: `claude -p` with a fixed --session-id, --output-format stream-json --verb
 (default bypassPermissions: nobody is there to approve a tool call; $AGENT_HUB_PERMISSION_MODE or
 --permission-mode changes it), in its own session and process group (setsid), stdin from /dev/null: it
 survives the calling shell and the calling session. The agent gets HUB_TAG=<tag>, HUB_STAGE and this
-plugin's bin/ first on PATH (the brief footer names jlog by its absolute path, since a shell may put an old
-same-named tool ahead); it is recorded in `roles` (kind headless, pid).
+plugin's bin/ first on PATH and in $HUB_BIN (the brief footer names jlog as "$HUB_BIN/jlog", since a shell may put
+an old same-named tool ahead; every resume rebuilds the variable, so it follows a plugin update); it is recorded in `roles` (kind headless, pid).
 Model: an alias (opus, sonnet, haiku, fable) or a full id claude-…. An alias follows the CLI: a current Claude Code
 resolves it to the latest model of that family, an older one (before 2.1.285) to an older model, and spawn warns about
 it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
@@ -54,7 +54,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -89,8 +88,8 @@ FOOTER = """
 ---
 You are "{role}" (journal tag `{tag}`), stage `{stage}`, a headless `claude -p` session with nobody on the
 other end: questions asked in chat are read by no one. The brief above is your contract.
-- Talk to the hub only through the journal: `{jlog} "…"` (your tag is already in $HUB_TAG; run it by this path:
-  another `jlog` earlier on PATH writes to a journal the hub does not read). Write only on events: MERGED / STOP /
+- Talk to the hub only through the journal: `{jlog} "…"` (your tag is already in $HUB_TAG; run it by this
+  path, $HUB_BIN is the plugin's bin/: another `jlog` earlier on PATH writes to a journal the hub does not read). Write only on events: MERGED / STOP /
   DONE / BLOCKED / a question. One line = status word, path, one sentence. The full report goes to `{report}`.
 - A question to the hub: `{jlog} "@hub QUESTION …"`, then end your turn with the word BLOCKED and the report
   path. The answer arrives as a new message in this same session (the hub runs `agent send {role} "…"`,
@@ -106,7 +105,7 @@ def footer(stage: str, cwd: Path, **fields) -> str:
     """The standard footer plus the first brief-footer.md of the config layers (stage, the agent's repository,
     hub home), with {role} {tag} {stage} {report} {inbox} {jlog} filled in."""
     fields["stage"] = stage
-    fields["jlog"] = shlex.quote(str(hc.BIN / "jlog"))
+    fields["jlog"] = '"$HUB_BIN/jlog"'  # not the path itself: a resumed run follows the plugin's current version
     text = FOOTER.format(**fields)
     extra = hc.config_file("brief-footer.md", stage, cwd)
     if extra:
@@ -161,7 +160,9 @@ def make_worktree(repo: Path, role: str, branch: str | None) -> tuple[Path, str,
         if existing.resolve() == top.resolve():
             raise hc.UsageError(f"--worktree: {branch} is checked out in the main checkout {top} — pick another branch")
         return existing, branch, False
-    if git("rev-parse", "--verify", "--quiet", "HEAD", cwd=top).returncode != 0:
+    exists = git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", cwd=top).returncode == 0
+    if not exists and git("rev-parse", "--verify", "--quiet", "HEAD", cwd=top).returncode != 0:
+        # a new branch starts from HEAD; an existing one needs no commit on HEAD (an unborn HEAD beside commits elsewhere)
         raise hc.Failure(f"--worktree: the repository {top} has no commits yet — make a first commit "
                          "(`git commit --allow-empty -m \"first commit\"`); a worktree needs a commit to start from")
     path = top / WORKTREES_DIR / branch
@@ -176,7 +177,6 @@ def make_worktree(repo: Path, role: str, branch: str | None) -> tuple[Path, str,
                 fh.write(("" if not lines or lines[-1] == "" else "\n") + f"/{WORKTREES_DIR}/\n")
     except OSError as e:
         print(f"note: could not add /{WORKTREES_DIR}/ to {exclude}: {e}", file=sys.stderr)
-    exists = git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", cwd=top).returncode == 0
     argv = ["worktree", "add", str(path), branch] if exists else ["worktree", "add", "-b", branch, str(path)]
     res = git(*argv, cwd=repo)
     if res.returncode != 0:
@@ -414,7 +414,7 @@ def cmd_spawn(a) -> int:
     meta["runs"].append({"pid": pid, "at": hc.now().isoformat(timespec="seconds"), "kind": "spawn"})
     save_meta(stage, a.role, meta)
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
-                       note=f"agent-spawn {a.model}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
+                       note=f"agent-spawn {model_name(meta)}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
     got = meta.get("resolved_model")
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
                                f"{', asked for ' + a.model if got and got != a.model else ''}), "

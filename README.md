@@ -190,8 +190,9 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
   example in a plain shell outside Claude Code, `lock take` refuses unless you pass `--force`: the lock would have no
   owner the hook could recognise. The plugin's `bin/` comes after your own `PATH` entries, so an older command of the
   same name wins — in practice the GitHub CLI `hub` from Homebrew, or an old copy of `jlog` in `~/.local/bin`. `hub start`
-  and a SessionStart hook warn once when `hub`, `jlog`, `jwait`, `agent`, `ask`, `roles`, `lock` or `agent-top` resolves
-  outside the plugin's `bin/`; the fix is to put the plugin's `bin/` first on `PATH` or remove the old tool.
+  and a SessionStart hook warn once when any command of the plugin (every executable in its `bin/`: `hub`, `jlog`,
+  `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
+  first on `PATH` or remove the old tool.
 - **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
   (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name); four pinned-effort worker subagents.
 - **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
@@ -204,8 +205,8 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
     `AGENT_HUB_SCOPE_DIRS`, and, for `questions`, in agents started by `agent spawn`. A session in an unrelated
     project hears nothing from them.
   - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
-    `PATH`. It speaks every time in the same places as `questions`, and once per distinct set of paths elsewhere, so a
-    first project with no `.agent-hub/` yet still hears it.
+    `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
+    time in the same places as `questions`, and once per distinct set of paths elsewhere.
 - Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`.
 
 ### After install: run `agent-hub:setup` in each repository
@@ -275,8 +276,9 @@ branch is merged, `git worktree remove <path>`.
 The brief template is short: why, decisions already made, steps with a check for "done", verification, where to stop and
 a turn limit. `agent spawn` appends a footer that tells the agent how to talk back: `jlog "DONE <report path>"` when
 finished, `jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
-The footer names `jlog` by its absolute path, and the agent starts with the plugin's `bin/` first on its `PATH`: an
-older `jlog` found first would write to a journal the hub never reads.
+The footer names `jlog` as `"$HUB_BIN/jlog"`, and the agent starts with the plugin's `bin/` first on its `PATH` and in
+`$HUB_BIN` (rebuilt at every spawn and resume, so a resumed agent follows a plugin update): an older `jlog` found first
+would write to a journal the hub never reads.
 The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules;
 `templates/brief-review.md` is the brief for a reviewer.
 
@@ -295,11 +297,13 @@ A full working day, step by step: [docs/a-day-with-agent-hub.md](docs/a-day-with
 - **`agent-top` shows a dollar figure only when the CLI reports one** (the cost of finished runs); a live run shows `—`.
 - **Agents run on the latest models if Claude Code is current.** `--model opus|sonnet|haiku|fable` goes to the CLI,
   which resolves the alias to the newest model of that family: Claude Code 2.1.285 and later gives `claude-sonnet-5-5`,
-  `claude-opus-5-5`, `claude-haiku-4-5` and `claude-fable-5-1`, an older CLI gives older models. Keep Claude Code
+  `claude-opus-5-5`, `claude-haiku-4-5-20251001` and `claude-fable-5-1`, an older CLI gives older models. Keep Claude Code
   updated; `agent spawn` and `hub start` warn when the CLI is older than 2.1.285, and without `CLAUDE_BIN` they start the
   newer of `claude` on `PATH` and the CLI bundled with Claude Desktop (`agent spawn` prints which). The plugin pins no
   ids, since a pin goes stale with the next release: the id each run reports is shown by `agent status`, the journal's
-  `started headless agent` line and `agent-top` (`sonnet-5-5`, not `sonnet`). If you must hold a model, pin it with
+  `started headless agent` line, the roles note and `agent-top` (`sonnet-5-5`, not `sonnet`). The CLI's version is read
+  with `claude --version` (5 s at most; the line `<version> (Claude Code)`) and remembered by path, size and modification
+  time in `<hub home>/.state/cli-version/`. If you must hold a model, pin it with
   `AGENT_HUB_MODEL_MAP`.
 - **Turns are counted per run.** `agent status` and `agent-top` show the last run's turns next to the total once an
   agent was resumed (`turns 31 (total 60)`; `31/60` in the agent-top list), so a limit in the brief can be checked.
