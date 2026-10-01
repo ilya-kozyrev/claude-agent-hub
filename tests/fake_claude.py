@@ -5,8 +5,8 @@ FAKE_CLAUDE=ok (default): init event, FAKE_HOLD seconds of work, one assistant l
 FAKE_CLAUDE=die: no init, exits 1 after 2 s (a CLI that rejects its flags slowly).
 FAKE_CLAUDE=hang: alive for 60 s without an init event.
 FAKE_READ_INBOX=1: a Bash tool call on inbox.md after the hold; FAKE_FINAL=<text>: the last answer.
-Every prompt is appended to ./prompts.log and every argv (minus the prompt) to ./argv.log, so a test can
-see what the agent was told and with which flags.
+Every prompt is appended to ./prompts.log, every argv (minus the prompt) to ./argv.log and the environment the
+plugin sets for the CLI to ./env.log, so a test can see what the agent was told, with which flags and settings.
 """
 import json, os, sys, time
 
@@ -20,6 +20,8 @@ with open("prompts.log", "a", encoding="utf-8") as fh:
     fh.write(prompt + "\n=====\n")
 with open("argv.log", "a", encoding="utf-8") as fh:
     fh.write(" ".join(a for a in argv if a != prompt) + "\n")
+with open("env.log", "a", encoding="utf-8") as fh:
+    fh.write(f"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS={os.environ.get('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', '<unset>')}\n")
 if os.environ.get("FAKE_CLAUDE") == "hang":  # alive, never sends init (a slow MCP server, a stuck start)
     time.sleep(60)
     sys.exit(0)
