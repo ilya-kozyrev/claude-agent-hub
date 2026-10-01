@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 — 2026-10-01
+
+Agent discipline: the hooks that keep long agent work cheap ship with the plugin, every rule configurable.
+
+- **Context budget** (`hooks/context_budget.py`, on by default): measures the session's context from its transcript
+  (a subagent from its own), warns once per step above `AGENT_HUB_CONTEXT_WARN` and points at `agent-hub:handoff`;
+  above `AGENT_HUB_CONTEXT_BLOCK` denies the tools in `AGENT_HUB_CONTEXT_BLOCK_TOOLS` unless the call hands work over
+  (`AGENT_HUB_CONTEXT_ESCAPE`: a `HANDOFF-*.md` path or `handoff-ok`).
+- **Polling guard** (`hooks/polling_guard.py`, on by default, switchable per repository): denies foreground wait loops,
+  long bare `sleep`, self-matching `pgrep -f`, and one-off CI status reads from configurable `gh`/`glab` pattern lists
+  (`AGENT_HUB_CI_STATUS_DENY` / `_ALLOW`; logs, traces, write calls and a pipeline lookup by sha pass). Background
+  commands, printed text and heredocs are exempt; `# poll-ok: <reason>` passes deliberately. The message names
+  `run_in_background`, `jwait` and the project's own wait command (`AGENT_HUB_WAIT_HINT`). Every `jwait` form the hub
+  prints passes it (tested, including extra wake words).
+- **Delegation dial** (`hooks/delegation.py`, `/delegation` skill, `delegation` CLI; off by default): levels 0-5 per
+  session, globally or from the environment; policy text per level from `AGENT_HUB_DELEGATION_LEVELS`; level rules
+  from `AGENT_HUB_DELEGATION_RULES` (default: level 0 denies `Agent`, `Task`, `Workflow`).
+- **Subagent effort rules** (`AGENT_HUB_EFFORT_RULES`, `bin/subagent_rules.py`): one rule format for the in-session
+  `Agent`/`Task` tool and for `agent spawn` (refused with exit 2, the rule named); a shorthand `{"model": "high|xhigh"}`;
+  agent definitions are found in the project, `~/.claude/agents` and installed plugins (`agent-hub:worker-high`).
+  No model name is built in; `docs/examples/subagent-policy.json` is a complete example.
+- **Worker subagents** `agent-hub:worker-low|medium|high|xhigh`: pinned effort, model chosen per call.
+- `config.json` accepts JSON lists and objects for the list-valued settings; `hubcore.setting_json`.
+
 ## 0.2.0 — 2026-10-01
 
 Project configuration: a team's own conventions live in its repository, not in a fork of the plugin.

@@ -146,9 +146,10 @@ Requirements: macOS or Linux, Python 3.10+ (standard library only), the `claude`
 While the plugin is enabled its `bin/` is on the Bash tool's `PATH`, so Claude can call `agent`, `jlog`, `jwait` and the
 rest directly. To use them in your own terminal too, add the plugin's `bin/` to your `PATH` or symlink the tools.
 
-The plugin adds three skills — `hub` (the workflow), `handoff` and `agent-top` (invoked as `/agent-hub:agent-top`,
-or `/agent-top` when no other skill has that name) — and three hooks: the lock-board guard, an owner-question line at
-session start, and a size cap on `HANDOFF-*.md` files.
+The plugin adds four skills — `hub` (the workflow), `handoff`, `agent-top` (invoked as `/agent-hub:agent-top`, or
+`/agent-top` when no other skill has that name) and `delegation` — and hooks: the lock-board guard, an owner-question
+line at session start, a size cap on `HANDOFF-*.md` files, and the [agent-discipline](#agent-discipline) hooks
+(context budget, polling guard, delegation dial and subagent rules), with four pinned-effort worker subagents.
 
 ### Recommended companion: grilling
 
@@ -247,6 +248,7 @@ $AGENT_HUB_HOME/                      default ~/.claude/agent-hub
 ├── config.json                       optional: settings (see Configuration)
 ├── lock-rules.json                   optional: extra commands the lock hook guards
 ├── .jwait-state/<caller>.json        what each jwait caller has already seen
+├── .state/                           context-budget warnings, delegation levels (agent discipline)
 └── <stage>/                          one directory per stream of work
     ├── roles.json                    role → full session id, kind, tag; send counts
     ├── questions.md                  owner-question register (ask)
@@ -346,6 +348,106 @@ gets `HUB_STAGE`, `HUB_N`, `HUB_TAG`, `HUB_NAME`, `HUB_SESSION`, `HUB_CLI_SESSIO
 
 Scripts in `.agent-hub/` run with your permissions when you run `hub handoff` or `hub takeover` in that repository,
 and `brief-footer.md` goes into your agents' prompts — treat the directory like a Makefile and review it in code review.
+
+## Agent discipline
+
+Three habits make long agent work slow and expensive, and instructions alone do not stop them: a session keeps going
+long after its context is huge, a session waits for something in a foreground loop, and a subagent silently inherits
+the session's (expensive) effort. The plugin ships one hook against each, every rule configurable, plus pinned-effort
+worker subagents.
+
+```text
+ SessionStart ────────── delegation.py session-start   inject the delegation level's policy        (dial on)
+ UserPromptSubmit ────┬─ delegation.py prompt          re-inject it after the level changed         (dial on)
+                      └─ context_budget.py             warn once per step above the warn threshold
+ PreToolUse  Bash ────── polling_guard.py              deny foreground wait loops, long sleeps,
+                                                       self-matching pgrep -f, one-off CI status reads
+             Agent|Task|Workflow ─ delegation.py pre-tool   deny by level rules and subagent effort rules
+             * ───────── context_budget.py             past the block threshold deny Agent/Task/SendMessage
+                                                       (a handoff still passes)
+ PostToolUse * ───────── context_budget.py             warn once per step above the warn threshold
+ agent spawn (CLI) ───── bin/subagent_rules.py         the same effort rules for headless agents
+```
+
+| Hook | Default | Prevents |
+|---|---|---|
+| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`agent-hub:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). |
+| `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done`, a bare `sleep` over 30 s, `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls, a pipeline lookup by commit sha, and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
+| `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. |
+
+Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call.
+
+### Worker subagents
+
+A subagent runs at the effort its definition pins; without one it **inherits the session's effort**, so a session
+at a high effort makes every search subagent just as expensive. The plugin ships `agent-hub:worker-low`,
+`worker-medium`, `worker-high` and `worker-xhigh`: general-purpose subagents that pin only the effort, so you choose
+the model per call:
+
+```text
+Agent(subagent_type="agent-hub:worker-medium", model="sonnet", prompt=…)
+```
+
+There is no model-pinned variant: an effort rule can require or forbid any model × effort pair, so a combination such
+as "this model only at xhigh" is a rule, not another agent file.
+
+### Settings
+
+All settings follow [Configuration](#configuration): environment first, then `config.json`. **Hub home only** marks
+the user's own limits, which a cloned repository must not loosen; the others may also come from the repository's
+`.agent-hub/config.json`.
+
+| Setting | Default | Where | Meaning |
+|---|---|---|---|
+| `AGENT_HUB_CONTEXT_BUDGET` | `on` | hub home only | `off` (or JSON `false`) disables the context-budget hook. |
+| `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` | hub home only | First warning, then one more every step. |
+| `AGENT_HUB_CONTEXT_BLOCK` | `500000` | hub home only | From here the tools below are denied. |
+| `AGENT_HUB_CONTEXT_BLOCK_TOOLS` | `["Agent", "Task", "SendMessage"]` | hub home only | Tools denied past the block threshold. |
+| `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it passes (handing over). |
+| `AGENT_HUB_CONTEXT_TODO` | points at `agent-hub:handoff` | hub home only | The "what to do" sentence of both messages. |
+| `AGENT_HUB_STATE_DIR` | `<hub home>/.state` | hub home only | Warning buckets and delegation levels. |
+| `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |
+| `AGENT_HUB_POLL_MAX_SLEEP`, `AGENT_HUB_POLL_MAX_BOUNDED_WAIT` | `30`, `90` | repo or home | Seconds: a bare sleep; a bounded loop's iterations × sleep. |
+| `AGENT_HUB_POLL_ESCAPE` | `poll-ok` | repo or home | The marker word of `# poll-ok: <reason>`. |
+| `AGENT_HUB_CI_STATUS_DENY`, `AGENT_HUB_CI_STATUS_ALLOW` | `gh` and `glab` lists | repo or home | Regex lists, searched in each command segment; a denied segment that matches an allow pattern passes. A list replaces the defaults — print them with `python3 hooks/polling_guard.py --defaults`. |
+| `AGENT_HUB_WAIT_HINT` | a `gh run watch` line | repo or home | One line for the deny message: your project's own CI wait command. |
+| `AGENT_HUB_DELEGATION` | `off` | hub home only | `on` (or JSON `true`) enables the dial: policy injection and level rules. |
+| `AGENT_HUB_DELEGATION_DEFAULT` | `3` | hub home only | Level when no session, environment (`AGENT_HUB_DELEGATION_LEVEL`) or global level is set. |
+| `AGENT_HUB_DELEGATION_LEVELS` | built-in texts | hub home only | `{"3": {"name": "BALANCED", "policy": "…"}, …}` — your text per level. |
+| `AGENT_HUB_DELEGATION_COMMON` | one sentence | hub home only | Appended to every level's policy. |
+| `AGENT_HUB_DELEGATION_RULES` | level 0 denies `Agent`, `Task`, `Workflow` | hub home only | Rule list, evaluated while the dial is on (may test `level`). |
+| `AGENT_HUB_EFFORT_RULES` | none | repo or home | Rule list or shorthand for every subagent launch: the `Agent`/`Task` tool and `agent spawn`. |
+
+### Subagent rules
+
+`AGENT_HUB_DELEGATION_RULES` and `AGENT_HUB_EFFORT_RULES` share one format: a JSON list, first match decides, no
+match allows. A rule's `when` tests fields of the call with globs (a list means "any of"):
+
+| Field | Value |
+|---|---|
+| `tool` | `Agent`, `Task`, `Workflow`, or `agent-spawn` |
+| `level` | the delegation level `0`-`5`, or `off` while the dial is off |
+| `subagent_type` | as called, e.g. `agent-hub:worker-high`, `Explore`, `fork`; empty when not given |
+| `defined` | `true` when a definition was found (project `.claude/agents`, `~/.claude/agents`, installed plugins' `agents/`) |
+| `model` | the call's `model`, else the definition's `model:`, else `inherit`; for `agent spawn` the alias and the id it maps to |
+| `model_from` | `param`, `definition` or `inherit` |
+| `effort` | the definition's pinned `effort:`, else `inherit`; for `agent spawn` the effort used (`none` when the model takes none) |
+
+```json
+{"AGENT_HUB_EFFORT_RULES": [
+  {"when": {"model": "*haiku*"}, "decision": "allow"},
+  {"when": {"effort": ["inherit", "max"]}, "decision": "deny",
+   "reason": "Pin the effort: use agent-hub:worker-medium or worker-high ({subagent_type} at {effort})."}]}
+```
+
+The shorthand `{"AGENT_HUB_EFFORT_RULES": {"sonnet": "high|xhigh"}}` means "this model only at these efforts". The
+denial names the rule (`[AGENT_HUB_EFFORT_RULES rule 1]`); `delegation try --type <type> --model <model>` shows what
+the rules say about a call without making it. A malformed list is reported on stderr and ignored.
+
+[docs/examples/subagent-policy.json](docs/examples/subagent-policy.json) is a complete example for a user whose
+sessions run at a high effort: the smallest model free at any type, every other model only through a pinned-effort
+worker with an explicit model, one mid-size model only at high or xhigh, forks denied, level 0 closing `Agent` and
+`Workflow`.
 
 ## Limitations
 

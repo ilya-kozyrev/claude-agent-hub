@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Example hub-home config.json: the delegation dial and subagent rules of a user whose sessions run at a high",
+    "effort and who does not want subagents to inherit it. Merge the keys into <hub home>/config.json.",
+    "Policy: the smallest model (Haiku) runs freely at any type; every other model runs only through an agent",
+    "definition that pins effort (the plugin's agent-hub:worker-* or your own) and with an explicit model;",
+    "xhigh and max are not pinned for them, except Sonnet, which runs only at high or xhigh, never lower;",
+    "a fork (which ignores `model`) is denied; headless `agent spawn` only refuses Sonnet below high;",
+    "level 0 of the dial denies the Agent and Workflow tools (the built-in delegation rule)."
+  ],
+  "AGENT_HUB_DELEGATION": "on",
+  "AGENT_HUB_DELEGATION_DEFAULT": 3,
+  "AGENT_HUB_EFFORT_RULES": [
+    {"when": {"subagent_type": "fork"}, "decision": "deny",
+     "reason": "A fork ignores `model` and runs at the parent's model and effort: use subagent_type agent-hub:worker-medium / agent-hub:worker-high with an explicit model, or model \"haiku\" for mechanical work."},
+    {"when": {"model": "*haiku*"}, "decision": "allow"},
+    {"when": {"tool": "agent-spawn", "model": "*sonnet*", "effort": ["low", "medium"]}, "decision": "deny",
+     "reason": "Sonnet runs only at high or xhigh (asked for {effort})."},
+    {"when": {"tool": "agent-spawn"}, "decision": "allow"},
+    {"when": {"model": "*sonnet*", "effort": ["high", "xhigh"]}, "decision": "allow"},
+    {"when": {"model": "*sonnet*"}, "decision": "deny",
+     "reason": "Sonnet runs only at high or xhigh: subagent_type agent-hub:worker-high or agent-hub:worker-xhigh with model \"sonnet\" (got {subagent_type} at effort {effort})."},
+    {"when": {"effort": ["inherit", "xhigh", "max"]}, "decision": "deny",
+     "reason": "A subagent other than Haiku must run through a definition that pins a moderate effort, or it inherits the session's: use subagent_type agent-hub:worker-medium / agent-hub:worker-high with an explicit model; mechanical work (search, logs, Explore) with model \"haiku\" (type {subagent_type}, effort {effort}, model {model})."},
+    {"when": {"model_from": "inherit"}, "decision": "deny",
+     "reason": "Name the model explicitly (the `model` parameter or `model:` in the definition) — an inherited model is the session's (type {subagent_type})."}
+  ]
+}
