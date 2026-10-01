@@ -18,8 +18,6 @@ prompt in the hub's session without the marker "[agent-hub auto-handoff k/N]" (t
 """
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import re
@@ -48,6 +46,13 @@ STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "
 # owner answers over Remote Control.
 HUB_ALLOW = ("hub takeover", "hub handoff", "hub succeed", "jlog", "jwait", "ask", "roles", "lock list", "agent status")
 LINK_WAIT_S = 90
+
+
+def tool(name: str) -> str:
+    """A plugin tool as the commands this module writes call it: by the absolute path of this bin/, so a same-named
+    command earlier on PATH (GitHub CLI `hub`) cannot answer instead, and with no shell expansion ($HUB_BIN), which an
+    allow rule would not match."""
+    return shlex.quote(str(hc.BIN / name))
 TAIL_CHARS = 600
 
 
@@ -216,7 +221,7 @@ def fallback_mode(model: str) -> str:
 # ---------------------------------------------------------------- instructions for the hub (the hook)
 
 def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str]) -> str:
-    parts = ["hub succeed", "--stage", stage, "--handoff", "<the draft>"]
+    parts = [tool("hub"), "succeed", "--stage", stage, "--handoff", "<the draft>"]
     if model:
         parts += ["--model", shlex.quote(model)]
     if mode:
@@ -232,26 +237,18 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
     when = ("Hand over now" if now_block else
             "Hand your shift to a successor yourself at the next quiet point (no agent waiting for your reply, no "
             "merge or lock operation in flight)")
-    return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `hub handoff --stage {stage}` and fill its TODOs; "
+    return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` and fill "
+            "its TODOs; "
             f"(2) `{succeed_command(stage, model, mode, cwd)}` (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
             "session, else a headless hub) and prints a `jwait` command; (3) run that `jwait` with Bash "
             "run_in_background: true. When it delivers the successor's start line, tell the owner one line — the "
             "successor's name and link from `hub succeed` — and stop: no more tool calls, release no locks (the "
-            f"successor's takeover moves them). If it ends with ALARM: `hub succeed --stage {stage} --fallback`. If "
+            f"successor's takeover moves them). If it ends with ALARM: `{tool('hub')} succeed --stage {stage} --fallback`. If "
             "`hub succeed` reports the chain limit, stop after the handoff and wait for the owner. "
             f"At {block_k} only `hub handoff`, `hub succeed`, `jlog`, `jwait` and the HANDOFF file pass.")
 
 
 # ---------------------------------------------------------------- starting the successor
-
-def _agent():
-    path = str(hc.BIN / "agent")
-    loader = importlib.machinery.SourceFileLoader("agent_cli", path)
-    spec = importlib.util.spec_from_loader("agent_cli", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
-
 
 def child_env() -> dict:
     return {k: v for k, v in hc.child_env().items() if k not in STRIP_ENV}
@@ -280,7 +277,13 @@ class Successor:
         self.title = f"Hub {stage} #{self.succ}"
         self.notes: list = []
         self.env = child_env()
-        self.claude = _agent().claude_bin(str(cwd))
+        cli = hc.find_claude(cwd)  # $CLAUDE_BIN, else the newer of `claude` on PATH and Claude Desktop's
+        if cli is None:
+            raise hc.Failure("claude not found on PATH, and no CLI is bundled with Claude Desktop (set $CLAUDE_BIN)")
+        self.claude = cli.path
+        old = hc.cli_warning(cli)
+        if old:
+            self.notes.append(old)
         self.cli_model = hc.model_map(cwd).get(model, model)  # `claude --bg` gets the id an AGENT_HUB_MODEL_MAP alias names
 
     @property
@@ -290,7 +293,7 @@ class Successor:
     def takeover_cmd(self) -> str:
         # no shell expansion (`--session self`, no AGENT_HUB_HOME= prefix: the session inherits the environment, E14,
         # E20): a command with `$VAR` in it asks for permission even under the allow rule of HUB_ALLOW (CLI 2.1.285)
-        return (f"hub takeover --stage {self.stage} --session self --auto-handoff "
+        return (f"{tool('hub')} takeover --stage {self.stage} --session self --auto-handoff "
                 f"--handoff {shlex.quote(str(self.handoff))}")
 
     def prompt(self) -> str:
@@ -415,11 +418,11 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
 
 1. Load the hub skill (`/agent-hub:hub`) and take over: `{self.takeover_cmd()}`.
    Then follow the digest and the handoff `{self.handoff}`.
-2. You are a `claude -p` run: the end of your turn ends the process. Wait with `jwait` in the foreground (Bash
-   `timeout` 600000, `--for 9m`), not in the background. When nothing is left to wait for, write a status line with
-   `jlog` and end your turn; `agent send` resumes this session.
+2. You are a `claude -p` run: the end of your turn ends the process, and a background `jwait` dies with it. Wait with
+   `"$HUB_BIN/jwait"` in the foreground (Bash `timeout` 600000, `--for 9m`). When nothing is left to wait for, write a
+   status line with `"$HUB_BIN/jlog"` and end your turn; `agent send` resumes this session.
 3. The footer below is written for executors: for you "the hub" is the owner — questions go to `ask add` and a
-   `jlog "@owner …"` line, never to chat.
+   `"$HUB_BIN/jlog" "@owner …"` line, never to chat.
 4. Your own context budget applies as it did to your predecessor: hand over the same way when it says so.
 
 {self.marker}
@@ -442,7 +445,8 @@ def successor_settings() -> dict:
     """Permissions of a successor not in bypass mode: the hub's commands, reading and writing in the hub home (its
     journal, the handoff, the next handoff). Both spellings of the home when a symlink is in its path (/tmp)."""
     homes = list(dict.fromkeys([str(hc.root()), str(hc.root().resolve())]))
-    allow = [f"Bash({c}:*)" for c in HUB_ALLOW] + [f"Edit(/{h}/**)" for h in homes]
+    allow = ([f"Bash({c}:*)" for c in HUB_ALLOW] + [f"Bash({tool(c.split()[0])}{c[len(c.split()[0]):]}:*)" for c in HUB_ALLOW]
+             + [f"Edit(/{h}/**)" for h in homes])
     return {"permissions": {"allow": allow, "additionalDirectories": homes}}
 
 
@@ -458,7 +462,7 @@ def main_checkout(cwd: Path) -> Optional[Path]:
 
 def jwait_command(stage: str, succ: int, since: str, timeout_s: int) -> str:
     match = shlex.quote(r"\[hub-" + str(succ) + r"\] start:")
-    return (f"jwait --journal --stage {stage} --match {match} --since {since} "
+    return (f"{tool('jwait')} --journal --stage {stage} --match {match} --since {since} "
             f"--settle 1 --for {timeout_s}s --note \"no takeover by hub-{succ}\"")
 
 
@@ -484,7 +488,7 @@ def report(stage: str, s: Successor, pend: dict, timeout_s: int) -> None:
     if pend["kind"] == "bg":
         print(f"Exit 0 (its start line) → tell the owner one line: \"{s.title}\" took over — "
               f"{pend.get('link') or 'claude attach ' + pend['id']}; then stop: no more tool calls.\n"
-              f"ALARM (exit 3) → hub succeed --stage {stage} --fallback")
+              f"ALARM (exit 3) → {tool('hub')} succeed --stage {stage} --fallback")
     else:
         print(f"Exit 0 → tell the owner one line: \"{s.title}\" took over headless — `agent send {pend['role']} \"…\"`; "
               "then stop: no more tool calls.\nALARM (exit 3) → tell the owner the handoff did not complete and wait "
@@ -548,7 +552,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if blocking(pend, succ) and not dry_run:
             raise hc.Failure(f"a successor hub-{succ} was already started at {pend.get('at', '?')[:16]} "
                              f"({pend.get('kind')} {pend.get('id') or pend.get('role') or ''}): wait for its takeover, "
-                             f"or `hub succeed --stage {stage} --fallback`")
+                             f"or `{tool('hub')} succeed --stage {stage} --fallback`")
         at_limit = data["chain"] >= limit
         k = data["chain"] + 1
         if not at_limit and not dry_run:

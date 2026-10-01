@@ -97,6 +97,10 @@ a hub that talked the owner out of using agents.
   default mode it stopped at the takeover's permission prompt before this).
 - **`hub takeover --session self`** reads `$CLAUDE_CODE_SESSION_ID` itself: a command with a shell expansion asks for
   permission even under an allow rule.
+- **The successor runs on the newest CLI** (`find_claude`: `$CLAUDE_BIN`, else the newer of `claude` on PATH and
+  Claude Desktop's; an old CLI is named in the journal line), and every command autopilot writes — the successor's
+  takeover, the hook's `hub handoff` / `hub succeed`, the printed `jwait` — calls the plugin's tool by absolute path:
+  a same-named `hub` earlier on PATH cannot answer, and the line holds no expansion an allow rule would not match.
 - Settings `AGENT_HUB_SUCCESSOR_MODEL` and `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` (default: the hub's own).
   `docs/launch-modes.md` gains E20–E25 (`claude --bg --remote-control` and its failure modes).
 

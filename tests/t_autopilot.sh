@@ -5,6 +5,7 @@
 . "$(dirname "$0")/lib.sh"
 unset CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2
+BR_BIN=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$B")  # the plugin bin/ as the tools resolve it
 HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
 HUB3=33333333-3333-4333-8333-333333333333
 
@@ -51,24 +52,25 @@ setup
 CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli HUB_TAG=hub-1 succeed --model opus --permission-mode default > $R/s1.out 2>&1; rc=$?
 check $rc 0 "succeed: exit 0"
 call --bg argv | grep -q -- '^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --model opus --settings {'; check $? 0 "succeed: --bg command (name, title, model; no mode flag for default)"
-call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
+call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash("+os.path.realpath(sys.argv[2])+"/hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R" "$BR_BIN"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
 check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
-call --bg prompt | grep -qF "/agent-hub:hub take over stage stage-a from $H: run \`hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
+call --bg prompt | grep -qF "/agent-hub:hub take over stage stage-a from $H: run \`$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
 check "$(call --bg AGENT_HUB_HOME)" "$R" "succeed: the hub home reaches the successor through its environment"
 call --bg prompt | grep -qF "[agent-hub auto-handoff 1/10]"; check $? 0 "succeed: prompt carries the marker 1/10"
 check "$(call --bg CLAUDECODE):$(call --bg CLAUDE_CODE_ENTRYPOINT):$(call --bg HUB_TAG)" "None:None:None" "succeed: parent session identity and hub tag stripped from the child env"
 check "$(call auth count)" 1 "succeed: login checked first (claude auth status)"
 J | grep -q '\[hub-1\] auto-handoff 1/10: started "Hub stage-a #2" (opus, default) as background session bg-1234abcd — Remote Control https://claude.ai/code/session_01AbC-xyz; terminal: claude attach bg-1234abcd'; check $? 0 "succeed: journal line with bg id, Remote Control link (ANSI stripped) and attach command"
 check "$(chain):$(pending kind):$(pending id)" "1:bg:bg-1234abcd" "succeed: chain 1, pending bg successor recorded"
-grep -q "jwait --journal --stage stage-a --match '\\\\\[hub-2\\\\\] start:' --since [0-9:]* --settle 1 --for 2s" $R/s1.out; check $? 0 "succeed: prints the exact jwait command"
-grep -q "ALARM (exit 3) → hub succeed --stage stage-a --fallback" $R/s1.out; check $? 0 "succeed: says what to do on ALARM"
+grep -qF "$BR_BIN/jwait --journal --stage stage-a" $R/s1.out && grep -q "jwait --journal --stage stage-a --match '\\\\\[hub-2\\\\\] start:' --since [0-9:]* --settle 1 --for 2s" $R/s1.out; check $? 0 "succeed: prints the exact jwait command"
+grep -qF "ALARM (exit 3) → $BR_BIN/hub succeed --stage stage-a --fallback" $R/s1.out; check $? 0 "succeed: says what to do on ALARM"
 succeed --model opus > $R/s1b.out 2>&1; check $? 1 "succeed: refused while the started successor has not taken over"
 check "$(call --bg count)" 1 "…no second background session"
 # the successor takes over: its jwait wakes, the chain is kept
 CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/take2.out 2>&1; check $? 0 "takeover by the successor (--session self)"
 check "$($B/roles --stage stage-a get hub)" $HUB2 "--session self registers \$CLAUDE_CODE_SESSION_ID"
-JW=$(sed -n 's/^  \(jwait .*\)$/\1/p' $R/s1.out)
-eval "$B/$JW" > $R/jw.out 2>&1; check $? 0 "the printed jwait delivers the successor's start line"
+JW=$(sed -n 's/^  \(.*jwait .*\)$/\1/p' $R/s1.out)
+case "$JW" in "$BR_BIN/jwait "*) check 0 0 "the printed jwait is the plugin's own, by absolute path";; *) check "$JW" "$BR_BIN/jwait …" "the printed jwait is the plugin's own, by absolute path";; esac
+eval "$JW" > $R/jw.out 2>&1; check $? 0 "the printed jwait delivers the successor's start line"
 grep -q '\[hub-2\] start:' $R/jw.out; check $? 0 "…and it is the start line"
 check "$(chain)" 1 "chain kept by the pending successor's takeover"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["pending"]["taken_over"]' $R/stage-a/auto-handoff.json; check $? 0 "…pending marked taken over"
@@ -173,7 +175,7 @@ check "$(pending kind):$(pending role)" "headless:hub-2" "untrusted twice: headl
 J | grep -q "background successor not started — \`claude --bg\` exited 1: Workspace not trusted.*falling back to a headless hub"; check $? 0 "untrusted twice: journal says which fallback and why"
 check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "untrusted twice: agent spawn registered hub-2"
 BR=$R/stage-a/coordinator/work/hub-2-takeover-brief.md
-grep -qF "hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[agent-hub auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"
+grep -qF "$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[agent-hub auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"
 grep -q "agent send hub-2" $R/hl.out; check $? 0 "headless: tells how the owner reaches it"
 check "$(chain)" 1 "headless: counts in the chain"
 unset FAKE_BG
@@ -217,8 +219,8 @@ usage 320000
 cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:handoff" $R/h0.out && ! grep -q Autopilot $R/h0.out; check $? 0 "hook, autopilot off: the warning stays as today"
 export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
 cbh UserPromptSubmit > $R/h1.out
-grep -qF 'Autopilot is on' $R/h1.out && grep -qF 'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, mode, cwd)"
-grep -qF 'hub handoff --stage stage-a' $R/h1.out && grep -qF 'hub succeed --stage stage-a --fallback' $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
+grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, mode, cwd)"
+grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF "$BR_BIN/hub succeed --stage stage-a --fallback" $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
 SID=$HUB2 cbh PostToolUse Bash > $R/h2.out; grep -q "agent-hub:handoff" $R/h2.out && ! grep -q Autopilot $R/h2.out; check $? 0 "hook, warn: a session that is not the hub gets today's warning"
 echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "default"}' > $R/config.json; usage 360000
 cbh PostToolUse Bash | grep -qF -- '--permission-mode default --cwd'; check $? 0 "hook, warn: the configured mode wins over the session's"
@@ -228,7 +230,7 @@ usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
 cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"
 cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny".*Autopilot'; check $? 0 "hook, block: Agent denied with the autopilot text"
-for c in "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /tmp/o.txt" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m"; do
+for c in "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /tmp/o.txt" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m" "$BR_BIN/hub succeed --stage stage-a --fallback"; do
   cbh PreToolUse Bash "$(python3 -c 'import json,sys; print(json.dumps({"command":sys.argv[1]}))' "$c")" | grep -q '"deny"'; check $? 1 "hook, block escape: $c"
 done
 cbh PreToolUse Write '{"file_path":"/h/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md","content":"x"}' | grep -q '"deny"'; check $? 1 "hook, block escape: writing the HANDOFF file"
