@@ -43,6 +43,32 @@ duration.
 - **`jwait` default `--for` is now 2h** (was 12h): a background Bash task is not guaranteed to live longer. The hub
   skill also says to add `--exclude-tag <hub tag>` when `jwait` is called with `--caller <session id>` instead of as
   the hub's tag, or the hub's own `@agent` messages wake it.
+- **Polling guard: quoted text is data until a shell runs it.** Since 0.4.0 `git commit -m "… sleep 5m …"`,
+  `grep "sleep 5m"` and the body of a `gh api` call were denied: a quote counted as the start of a command, so any
+  quoted `sleep` or `while` looked like a wait (and `sleep 5m` now reads as 300 s). The guard now looks inside a quoted
+  string only when a shell executes it — the argument of `bash|sh|zsh|dash|ksh -c` (also after `timeout`, `env`, `sudo`,
+  `time`, or in `xargs sh -c`), of `eval` or `ssh`, a here-string to a shell, the text of `echo` / `printf` / `cat`
+  piped to a shell, and `$(…)` inside double quotes. Every other quoted argument is data, and a `;` or `|` inside it no
+  longer splits the command. **Not denied any more**, on purpose — 0.4.0 denied these only because every quote
+  counted as a command: the `-c` / `-e` strings of interpreters (`python3 -c "import os; os.system('sleep 300')"`,
+  `perl -e 'sleep 300'`, `node -e "execSync('sleep 300')"`) and the forms the guard does not look into, being no shell
+  parser — `bash -c "$(echo '…')"`, `eval "$(…)"`, `bash <(echo '…')`, `VAR='until …'; bash -c "$VAR"`,
+  `echo '…' > w.sh && bash w.sh`. Every other deny of 0.4.0 stays.
+- Polling guard, CI-status rules: a quoted string is read only in a `gh` / `glab` command (it carries the API path), so
+  `git commit -m 'ci: wrap gh run view in a script'` and `grep 'gh run view' f` are no longer reads of CI status; the text
+  of a `gh` / `glab` call's own arguments (`gh issue comment 1 --body 'gh run view'`) still is.
+- Polling guard, text fed to a shell: "fed" is decided per pipeline, not for the whole command; `xargs` counts only
+  with `sh -c` (`echo "sleep 5m" | xargs echo` is not a wait); a shell behind a wrapper with flags (`sudo -u app bash`,
+  `sudo -E bash`, `/usr/bin/env bash`, `time bash`), a heredoc that reaches a shell through an intermediate stage
+  (`cat <<EOF | tee f | bash`), a line continuation or a trailing `|` before the shell, `(echo '…') | bash`, a shell
+  word glued from several strings (`bash -c 'until … '"$F"' …'`) and shell options before `-c` (`bash -eo pipefail -c`,
+  `bash -c --`), a here-string glued to `<<<` (`bash <<<'…'`), printing grouped in `( … )` or `{ …; }` and piped to a
+  shell, a group around the consumer (`(bash <<< '…')`, `| (bash)`), blank lines after a `|`, the wrappers `setsid`,
+  `command`, `nice`, `ionice`, `stdbuf`, `doas`, `timeout` with flags, and stdin shells behind `ssh host`, `su`,
+  `sudo -i|-s` and `. /dev/stdin` are caught; `\$(…)` in double quotes is a literal, and a here-string is no longer
+  read as a heredoc.
+- Polling guard: only the 300 characters before a quoted string are read to decide whether it runs, so a command with
+  tens of thousands of strings is judged in well under a second.
 
 ## 0.4.0 — 2026-10-01
 
