@@ -17,9 +17,11 @@ Do these before anything else, in this order:
    start no agents before the owner approves the plan.
 
 A **stage** is one stream of work (a release, a migration, a sprint) with its own directory under the hub home
-(`$AGENT_HUB_HOME`, default `~/.claude/agent-hub`). The **hub** is the one interactive session that plans the stage,
-writes briefs, spawns headless agents and answers them. The **owner** is the person the hub works for. Everything
-they share is a file:
+(`$AGENT_HUB_HOME`, else a repository's `.agent-hub/config.json` `"project"` / `"user"`, else `~/agent-hub`; `hub home`
+prints where it is and why, and how to grant a session access to it; if `hub start` warns that it is the legacy
+`~/.claude/agent-hub`, tell the owner in one line — `hub home migrate` moves it, a dry run first). The **hub** is the
+one interactive session that plans the stage, writes briefs, spawns headless agents and answers them. The **owner** is
+the person the hub works for. Everything they share is a file:
 
 | File | Written by | Read by |
 |---|---|---|

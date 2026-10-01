@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+The hub's files move out of `~/.claude`, which Claude Code protects, and where they live becomes a setting.
+
+- **The hub home is a setting.** Resolved in this order: `AGENT_HUB_HOME` in the environment (any path); a repository's
+  `.agent-hub/config.json` key `AGENT_HUB_HOME`, only `"project"` (`<main checkout>/.agent-hub/local/`, shared by all
+  worktrees of the repository, added once to `.git/info/exclude`; `git clean -fdx` deletes it) or `"user"` — any other
+  value is ignored with a one-line warning, a cloned repository must not choose paths the tools write to; the user
+  default. A user sets another default with `{"env": {"AGENT_HUB_HOME": "…"}}` in their Claude Code settings, or in the
+  shell. README § Where the hub's files live.
+- **The default is `~/agent-hub`**, not `~/.claude/agent-hub`. Claude Code treats `.claude` as a protected directory
+  ([permission modes § Protected paths](https://code.claude.com/docs/en/permission-modes.md)): a Write or Edit there is
+  prompted in `default` and `acceptEdits`, routed to the classifier in `auto`, denied in `dontAsk`, and
+  `permissions.allow` rules cannot pre-approve it; only `bypassPermissions` passes. The Bash sandbox
+  ([§ Protected paths](https://code.claude.com/docs/en/sandboxing.md)) denies writes to most of `~/.claude` with no
+  `allowWrite` exemption, so under `/sandbox` `jlog`, `ask` and `hub` could not write at all. A plain directory granted
+  with `--add-dir`, `/add-dir` or `permissions.additionalDirectories` is writable by the sandbox and needs no prompt for
+  edits in `acceptEdits`.
+- **The legacy home still works, with a warning.** While `~/agent-hub` does not exist and `~/.claude/agent-hub` does, the
+  legacy home is used and the SessionStart hook, `hub start` (an ATTENTION line) and `hub home` say so.
+- **`hub home [--cwd DIR] [--json]`** prints the resolved home, the layer that chose it, whether it is under a `.claude`
+  directory (then it points to `hub home migrate`) and the grant lines: `/add-dir <home>`,
+  `{"permissions": {"additionalDirectories": ["<home>"]}}` for `~/.claude/settings.json`, `claude --add-dir <home>`.
+- **`hub home migrate [--from DIR] [--to DIR] [--apply]`** moves the legacy home (default `--from`) to the resolved one.
+  A dry run by default (files, bytes, JSON files to rewrite; exits 1 when `--apply` would refuse). `--apply` refuses
+  while any agent of any stage of the source is alive and when a source file already exists in the target; it copies
+  (modes kept), verifies the count and the bytes, rewrites the old absolute path in every `*.json` under the new home
+  (roles, agents' meta, `.jwait-state`, `.state`, autopilot state), leaves the `.md` history as written and renames the
+  source to `<source>.migrated-YYYYMMDD`. It never deletes; a second run says there is nothing to migrate.
+- **Hooks resolve the home for the session's directory** (the hook input's `cwd`); the tools for their working
+  directory.
+- **Children are pinned to the parent's home.** `agent spawn`, a resume (`agent send` to a finished agent), the autopilot
+  successor (`claude --bg`) and the headless successor get `AGENT_HUB_HOME=<the parent's resolved home>` and
+  `--add-dir <home>` when the home is not under the agent's directory (the successor also keeps the
+  `additionalDirectories` of its `--settings`), so a child never writes to another home than its parent.
+- **A stage in another home is an error, not a silent split.** A stage that is not in the resolved home but exists in
+  `~/agent-hub` or the legacy home makes the tools refuse, naming where it is: migrate it, set `AGENT_HUB_HOME` to that
+  place, or `mkdir -p <home>/<stage>` to start afresh.
+- **`AGENT_SESSION_ID` is stripped from the autopilot successor's environment** (a review follow-up of #13): a headless
+  hub's own id, inherited, would make the successor's `hub takeover --session self` name the old hub.
+
 ## 0.6.0 — 2026-10-01
 
 The hub can hand its shift to a successor by itself (autopilot, off by default), agents run on the latest models

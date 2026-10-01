@@ -10,7 +10,7 @@ named `api`, `ui` and `tests`. Everything below is synthetic.
 
 Three words used throughout. The **hub** is your interactive Claude Code session: it plans and coordinates but does not
 do the long work. **Agents** are headless `claude -p` sessions that do it, one per task. A **stage** is one stream of work
-(here, this feature) with its own directory of files under the hub home (`~/.claude/agent-hub/<stage>/`).
+(here, this feature) with its own directory of files under the hub home (`~/agent-hub/<stage>/`).
 
 ## The flow in one picture
 
@@ -68,6 +68,25 @@ protected, whether the project has environments or other resources that two sess
 a deploy window, a migration chain), and which commands touch each; writes `.agent-hub/lock-rules.json` and
 `config.json`; and proves the rules with `lock rules check`. A project with no deployment ends with `main-merge` only,
 which is a complete setup. Commit `.agent-hub/`.
+
+### Where the hub keeps its files
+
+The hub keeps its files (journals, inboxes, the question register, the lock board, handoffs) in `~/agent-hub`, a plain
+directory that `hub start` creates. It is not under `~/.claude`: Claude Code protects that directory, so every write
+there would prompt, and under `/sandbox` the tools could not write at all. Writes outside a session's own directories
+prompt too, so grant the hub home once: `/add-dir ~/agent-hub` in the session, or for every session add it to
+`~/.claude/settings.json`:
+
+```json
+{"permissions": {"additionalDirectories": ["<home>"]}}
+```
+
+`hub home` prints where the files are, why there, and these lines with your path filled in. Agents the hub starts, and
+its autopilot successor, get the grant from the tools. To keep the files inside the repository instead, put
+`{"AGENT_HUB_HOME": "project"}` in `.agent-hub/config.json` (`agent-hub:setup` asks; `git clean -fdx` deletes that
+folder). An installation made with 0.6 or earlier keeps its files in the legacy `~/.claude/agent-hub` until you run
+`hub home migrate` (a dry run; then `--apply`). The full story is in the README:
+[Where the hub's files live](../README.md#where-the-hubs-files-live).
 
 ### Start small
 
@@ -313,7 +332,7 @@ Two agents are done, one is finishing its tests, and you are asked for nothing e
 ## Leave the hub running
 
 To walk away while a stage runs, turn on autopilot once, in the hub home's `config.json`
-(`~/.claude/agent-hub/config.json`):
+(`~/agent-hub/config.json`):
 
 ```json
 {"AGENT_HUB_AUTO_HANDOFF": "on"}
