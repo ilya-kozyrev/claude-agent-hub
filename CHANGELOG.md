@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-10-01
+
+The hub can hand its shift to a successor by itself (autopilot, off by default), agents run on the latest models
+through the CLI, and a newcomer's first message loads the hub skill. Two newcomer tests (a Haiku hub and a Sonnet 5.5
+hub) drove the first two groups.
 
 A newcomer test showed that a smaller model given "Use the agent-hub hub skill. …" never loaded the `hub` skill and
 wrote the code itself, while a first message starting with `/agent-hub:hub` loaded it. The first group of changes below
