@@ -438,6 +438,7 @@ def main() -> int:
         return 0
     try:
         hc = hubcore()
+        hc.use_cwd(event.get("cwd"))
     except Exception:  # noqa: BLE001 — without the plugin's bin/ the built-in defaults still apply
         hc = None
     cfg = Config(cwd=event.get("cwd"), hc=hc)

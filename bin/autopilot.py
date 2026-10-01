@@ -40,8 +40,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\
 # `claude --permission-mode` values; "default" (what a hook's input says for the normal mode) means no flag.
 MODES = ("default", "manual", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan")
 # Environment a child CLI must not inherit: the parent session's identity, and the old hub's journal tag.
+# AGENT_SESSION_ID: a headless hub's own id (`agent spawn` sets it); inherited, the successor's `--session self` would
+# name the old hub.
 STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT",
-             "HUB_TAG", "AGENT_ROLE")
+             "HUB_TAG", "AGENT_ROLE", "AGENT_SESSION_ID")
 # The hub's own commands and the hub home, allowed in the successor (`--settings`) unless it runs in bypass mode: a
 # background session in the default mode otherwise stops at the permission prompt of its takeover, then at reading the
 # handoff outside the project, with nobody there to answer (smoke test, CLI 2.1.285). Everything else still asks — the
@@ -341,11 +343,14 @@ class Successor:
             raise Start("the claude CLI is not logged in (`claude auth status`: loggedIn false) — run `claude auth "
                         "login` once in a terminal")
 
-    def bg_argv(self, mode: str) -> list:
+    def bg_argv(self, mode: str, cwd=None) -> list:
         flag, note = mode_flag(mode)
         if note and note not in self.notes:
             self.notes.append(note)
-        argv = ["--bg", "--remote-control", self.rc_name, "-n", self.title, "--model", self.cli_model]
+        # the hub home, writable also under the sandbox; before another option: --add-dir takes several values and
+        # would swallow the prompt
+        argv = ["--bg", "--remote-control", self.rc_name, "-n", self.title] + hc.add_dir_args(cwd or self.cwd)
+        argv += ["--model", self.cli_model]
         if flag:
             argv += ["--permission-mode", flag]
         if flag != "bypassPermissions":
@@ -361,7 +366,7 @@ class Successor:
         tried_bypass = tried_main = False
         self.since_ms = int(time.time() * 1000) - 2000  # a little slack for the daemon's clock
         while True:
-            res = self.run(self.bg_argv(mode), cwd=cwd, timeout=BG_TIMEOUT_S)
+            res = self.run(self.bg_argv(mode, cwd), cwd=cwd, timeout=BG_TIMEOUT_S)
             out = clean(res.stdout + "\n" + res.stderr)
             if res.returncode == 0:
                 break

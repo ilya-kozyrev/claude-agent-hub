@@ -21,7 +21,7 @@ A kind already held by another session's active lock is refused unless --force (
 the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to
 AGENT_HUB_DEFAULT_REPO (env, the current repository's .agent-hub/config.json or the hub home's), else "*"
 (every repo); `release` without --repo that finds nothing there releases this session's only lock of the kind.
-Board: $AGENT_BOARD_FILE, else $AGENT_HUB_HOME/board.md, else ~/.claude/agent-hub/board.md.
+Board: $AGENT_BOARD_FILE, else <hub home>/board.md (`hub home` shows the hub home).
 """
 from __future__ import annotations
 

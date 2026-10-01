@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""SessionStart hook: one line about unanswered owner questions per stage of the hub home.
+"""SessionStart hook: one line about unanswered owner questions per stage of the hub home; and one line when the hub
+home is the legacy ~/.claude/agent-hub (a protected directory: see hubcore's "the hub home").
 
 Reads <hub home>/<stage>/questions.md through the `ask` tool's own parser (<plugin>/bin/ask), so the
 format has one home. Prints nothing when no stage has an unresolved entry. Fail-open: any error of
@@ -51,13 +52,27 @@ def build_line() -> str:
             ". Work that no question blocks goes ahead; reports and handoffs link the register instead of copying it.")
 
 
+def hubcore():
+    sys.path.insert(0, str(ask_path().parent))
+    import hubcore as hc  # noqa: E402
+
+    return hc
+
+
 def in_scope(event: dict) -> bool:
     if os.environ.get("HUB_TAG"):
         return True
-    sys.path.insert(0, str(ask_path().parent))
-    import hubcore  # noqa: E402
+    return hubcore().in_scope(event.get("cwd") or os.getcwd())
 
-    return hubcore.in_scope(event.get("cwd") or os.getcwd())
+
+def legacy_line() -> str:
+    hc = hubcore()
+    h = hc.home()
+    if h.layer != "legacy" or not h.path.is_dir():
+        return ""
+    return (f"agent-hub: the hub home is the legacy {h.path}, under ~/.claude, which Claude Code protects (every edit "
+            "there asks or is refused, the Bash sandbox refuses writes): `hub home` shows the choice, `hub home migrate` "
+            f"moves it to {hc.user_home()}. Tell the user about it in one line.")
 
 
 def main(argv: list[str]) -> int:
@@ -65,9 +80,11 @@ def main(argv: list[str]) -> int:
         event = json.loads(sys.stdin.read() or "{}")  # drained so the harness never blocks on the pipe
     except Exception:
         event = {}
-    if not in_scope(event if isinstance(event, dict) else {}):
+    event = event if isinstance(event, dict) else {}
+    hubcore().use_cwd(event.get("cwd"))  # the hub home of the session's directory (before `ask` reads it)
+    if not in_scope(event):
         return 0
-    line = build_line()
+    line = "\n".join(x for x in (legacy_line(), build_line()) if x)
     if line:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}},
                          ensure_ascii=False))

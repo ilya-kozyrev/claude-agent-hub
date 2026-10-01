@@ -25,7 +25,8 @@ if "-p" in argv:
 with open(os.environ.get("FAKE_BG_LOG", "bg.log"), "a", encoding="utf-8") as fh:
     fh.write(json.dumps({"argv": argv, "cwd": os.path.realpath(os.getcwd()),
                          "env": {k: os.environ.get(k) for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "HUB_TAG",
-                                                                "CLAUDE_CODE_ENTRYPOINT", "AGENT_HUB_HOME")}}) + "\n")
+                                                                "CLAUDE_CODE_ENTRYPOINT", "AGENT_HUB_HOME",
+                                                                "AGENT_SESSION_ID")}}) + "\n")
 mode, cmd = os.environ.get("FAKE_BG", "ok"), (argv[0] if argv else "")
 if cmd == "auth":
     print(json.dumps({"loggedIn": os.environ.get("FAKE_LOGIN", "yes") != "no", "authMethod": "claude.ai"}))

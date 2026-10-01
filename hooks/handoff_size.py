@@ -49,6 +49,7 @@ def main() -> None:
         return
     if not fnmatch.fnmatchcase(os.path.basename(fp), "HANDOFF-*.md"):
         return
+    hubcore().use_cwd(data.get("cwd"))
     if not hubcore().in_scope(os.path.join(data.get("cwd") or os.getcwd(), fp)):
         return
     try:

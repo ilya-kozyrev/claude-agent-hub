@@ -183,6 +183,7 @@ def main(argv: list) -> int:
     if cmd in ("session-start", "prompt"):
         try:
             data = hook_input()
+            hc.use_cwd(data.get("cwd"))  # the hub home (its .state, its config.json) of the session's directory
             if not enabled():
                 return 0
             sid = data.get("session_id")
@@ -204,6 +205,7 @@ def main(argv: list) -> int:
     if cmd == "pre-tool":
         try:
             data = hook_input()
+            hc.use_cwd(data.get("cwd"))
             tool = data.get("tool_name")
             if tool in ("Agent", "Task", "Workflow"):
                 reason = decide(tool, data.get("tool_input") or {}, data.get("cwd"), data.get("session_id"))

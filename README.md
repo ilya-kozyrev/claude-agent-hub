@@ -87,7 +87,7 @@ flowchart LR
         a2["reviewer"]
         a3["migrator"]
     end
-    subgraph files["Hub home — $AGENT_HUB_HOME (default ~/.claude/agent-hub)"]
+    subgraph files["Hub home — default ~/agent-hub, a setting (Where the hub's files live)"]
         brief[/"agents/&lt;role&gt;/brief.md"/]
         inbox[/"agents/&lt;role&gt;/inbox.md"/]
         log[/"agents/&lt;role&gt;/log.jsonl + meta.json"/]
@@ -209,7 +209,8 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
   - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
     `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
     time in the same places as `questions`, and once per distinct set of paths elsewhere.
-- Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`.
+- Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`. The hub's own
+  files go to `~/agent-hub` (created by `hub start`; see [Where the hub's files live](#where-the-hubs-files-live)).
 
 ### After install: run `agent-hub:setup` in each repository
 
@@ -373,11 +374,15 @@ hub home, in repositories with `.agent-hub/` and for hub agents.
 - **`.agent-hub/` committed in a repository shares conventions, not agents or locks**: the lock resources and rules, the
   brief footer, the hub rules, the team's notes, the config defaults. Everyone who installs the plugin and opens the
   repository gets the same guard and the same briefs; each runs their own hub.
+- **Where the hub keeps its files can be a convention too**: `"AGENT_HUB_HOME": "project"` committed in
+  `.agent-hub/config.json` puts each person's hub files inside their own checkout (`.agent-hub/local/`, excluded from
+  git). It is still local to that person and machine. A repository can choose only `"project"` or `"user"`, never a path
+  (see [Where the hub's files live](#where-the-hubs-files-live)).
 
 ## File layout
 
 ```text
-$AGENT_HUB_HOME/                      default ~/.claude/agent-hub
+<hub home>/                           default ~/agent-hub (see Where the hub's files live)
 ├── board.md                          lock board (lock)
 ├── config.json                       optional: settings (see Configuration)
 ├── lock-rules.json                   optional: shared resources and the commands that touch them
@@ -407,13 +412,64 @@ $AGENT_HUB_HOME/                      default ~/.claude/agent-hub
 <repo>/.worktrees/<branch>/           agent worktrees from `agent spawn --worktree`, excluded in .git/info/exclude
 ```
 
+## Where the hub's files live
+
+The hub home (journals, inboxes, the question register, the lock board, handoffs) is resolved for the directory a tool
+runs in, or for a hook the session's directory, in this order:
+
+1. `AGENT_HUB_HOME` in the environment: any path. Set it in your shell, or for every Claude Code session with
+   `{"env": {"AGENT_HUB_HOME": "…"}}` in your Claude Code settings.
+2. A repository's `.agent-hub/config.json`, key `AGENT_HUB_HOME`: `"project"` or `"user"`, nothing else (any other value
+   is ignored with a one-line warning: a cloned repository must not choose paths the tools write to). `"project"` is
+   `<main checkout>/.agent-hub/local/`, shared by all worktrees of the repository and added once to `.git/info/exclude`;
+   `"user"` is the user default.
+3. The user default, `~/agent-hub`, a visible directory.
+4. Legacy: while `~/agent-hub` does not exist and `~/.claude/agent-hub` (the default up to 0.6) does, the legacy one,
+   with a warning at session start, in `hub start` and in `hub home`.
+
+Two choices. **One shared home** (`~/agent-hub`, recommended): hubs of different projects can talk and share the lock
+board and the locks. **Inside the project** (`"project"`): nothing outside the repository, and projects do not see each
+other. `git clean -fdx` deletes the project home, journals and registers included.
+
+Why not under `~/.claude`: Claude Code treats `.claude` as a protected directory
+([permission modes § Protected paths](https://code.claude.com/docs/en/permission-modes.md)). A Write or Edit there is
+prompted in `default` and `acceptEdits`, routed to the classifier in `auto`, denied in `dontAsk`, and `permissions.allow`
+rules cannot pre-approve it; only `bypassPermissions` passes. The Bash sandbox
+([§ Protected paths](https://code.claude.com/docs/en/sandboxing.md)) denies writes to most of `~/.claude` with no
+`allowWrite` exemption, so under `/sandbox` `jlog`, `ask` and `hub` could not write there at all. A plain directory
+granted with `--add-dir`, `/add-dir` or `permissions.additionalDirectories` is writable by the sandbox and needs no
+prompt for edits in `acceptEdits`.
+
+A session started outside the home needs that grant: `/add-dir <home>` (this session), `{"permissions":
+{"additionalDirectories": ["<home>"]}}` in `~/.claude/settings.json` (every session), or `claude --add-dir <home>`.
+Children need nothing: `agent spawn`, a resume (`agent send` to a finished agent), the autopilot successor and the
+headless successor get `AGENT_HUB_HOME=<the parent's home>`, so parent and children never resolve differently, and
+`--add-dir <home>` when the home is not under their directory. A stage that is not in the resolved home but exists in
+`~/agent-hub` or the legacy home is refused with an error naming where it is: migrate the legacy home (or `mv` that one
+stage when the home is another one), set `AGENT_HUB_HOME` to that place, or `mkdir -p <home>/<stage>` to start afresh.
+
+```bash
+hub home [--cwd DIR] [--json]   # the home, the layer that chose it, protected or not, the grant lines with your path
+hub home migrate                # dry run: what would move from the legacy home to the resolved one
+hub home migrate --apply        # do it; --from DIR / --to DIR name other homes
+```
+
+`migrate --apply` refuses while any agent of any stage of the source is alive or a background hub (an autopilot
+successor) of one of its stages runs, and when a source path already exists in the target. It copies into a staging
+directory beside the target (modes kept), verifies the count and the bytes, moves the copy into place only then (a
+failed copy leaves nothing at the target), rewrites the old absolute path in every `*.json`
+under the new home (roles, agents' meta, `.jwait-state`, `.state`, autopilot state), leaves the `.md` history as written
+and renames the source to `<source>.migrated-YYYYMMDD`. It never deletes; a second run says there is nothing to migrate.
+Run it while no hub session of the source is working: it cannot see an interactive session, and a line such a
+session writes during the copy stays behind in the renamed source.
+
 ## Configuration
 
 Settings are environment variables; each can also be set in a `config.json` (below), the environment winning.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_HUB_HOME` | `~/.claude/agent-hub` | The hub home above (environment only). |
+| `AGENT_HUB_HOME` | `~/agent-hub` | The hub home above. The environment (any path), or a repository's `.agent-hub/config.json` with `"project"` or `"user"` only; the hub home's `config.json` cannot set it. [Where the hub's files live](#where-the-hubs-files-live). |
 | `HUB_STAGE` | `default` | Stage when `--stage` is not given (environment only). |
 | `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically; environment only). |
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. Hub-wide. |
@@ -575,7 +631,10 @@ shares the hub's session id and could run `hub succeed` too — the hub runs it 
 
 A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,
 `ask`, `roles`, `lock list`, `agent status`) and the hub home allowed (`--settings`), so it takes over without a prompt;
-anything else asks, and you answer over Remote Control. It never gets `agent spawn` pre-allowed.
+anything else asks, and you answer over Remote Control. It never gets `agent spawn` pre-allowed. Both kinds of
+successor are pinned to the old hub's home (`AGENT_HUB_HOME`, plus `--add-dir <home>` when it is not under their
+directory); the background one does not inherit `AGENT_SESSION_ID` (a headless hub's own id), which would make its
+`--session self` name the old hub.
 
 Requirements: a logged-in standalone `claude` CLI (`claude auth login` — Claude Desktop's login does not reach
 `claude --bg`), the project directory trusted by the CLI (run `claude` there once and accept the prompt), and for a
@@ -662,12 +721,18 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 
 ## Limitations
 
+- The `"project"` home is shared by the worktrees of an ordinary clone; the worktrees of a bare repository each get
+  their own.
 - macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
   itself runs natively on Windows. Python 3.10+, standard library only.
 - The `claude` CLI must be on `PATH` (or set `CLAUDE_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
   is newer. Model aliases follow the CLI: with Claude Code older than 2.1.285 they resolve to older models.
 - Headless agents run with `bypassPermissions` by default. Give every agent a brief that says what it must not
   touch, or set `AGENT_HUB_PERMISSION_MODE`.
+- The hub home must be writable without a prompt, so keep it out of `.claude`, which Claude Code protects (the legacy
+  `~/.claude/agent-hub` is read-only under `/sandbox`; `hub home migrate` moves it). A session started outside the home
+  needs it granted (`/add-dir`); agents and the autopilot successor get the grant from the tools. The `"project"` home
+  is deleted by `git clean -fdx`. See [Where the hub's files live](#where-the-hubs-files-live).
 - The hub must be an interactive session (Claude Desktop, or a terminal session): its background `jwait` wakes it. In
   `claude -p` the hub's background Bash `jwait` is killed when the turn ends; `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
   keeps background sub-agents alive, not background Bash tasks, so a headless hub learns about `DONE` only from its

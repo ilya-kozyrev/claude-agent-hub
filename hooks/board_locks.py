@@ -295,6 +295,9 @@ def main() -> int:
     try:
         event = json.load(sys.stdin)
         sys.path.insert(0, plugin_bin())
+        import hubcore  # noqa: E402
+
+        hubcore.use_cwd(event.get("cwd") if isinstance(event, dict) else None)  # before board reads its path
         import board  # noqa: E402
 
         reason = decide(event, board)

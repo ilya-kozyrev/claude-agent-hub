@@ -58,6 +58,18 @@ flowchart TB
     Bd --> hook
 ```
 
+## Where the hub home is
+
+`hubcore.home()` resolves it, most specific first: `$AGENT_HUB_HOME` (any path); a repository's
+`.agent-hub/config.json` key `AGENT_HUB_HOME`, only `"project"` (`<main checkout>/.agent-hub/local/`, shared by the
+repository's worktrees) or `"user"`; the user default `~/agent-hub`; and, while `~/agent-hub` does not exist and
+`~/.claude/agent-hub` does, that legacy home with a warning (`.claude` is protected by Claude Code, see README § Where
+the hub's files live). Tools resolve it for their working directory; hooks for the session's directory, the hook
+input's `cwd` (`hubcore.use_cwd`). Children never resolve on their own: `agent spawn`, a resume, the autopilot
+successor and the headless successor get `AGENT_HUB_HOME=<the parent's resolved home>`, plus `--add-dir <home>` when
+the home is not under their directory. A stage that exists in `~/agent-hub` or the legacy home but not in the resolved
+one is refused (`check_stage`), since a stage split across two homes loses half its journal.
+
 ## Hub shift handover
 
 ```mermaid

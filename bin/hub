@@ -8,11 +8,13 @@
   hub succeed  --stage stage-a --handoff PATH [--model M] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
   hub reviewer [--for CLASS] [--json] [--all]
+  hub home     [--cwd DIR] [--json]
+  hub home migrate [--from DIR] [--to DIR] [--apply]
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
-takeover. It warns (ATTENTION lines, once) when the Claude Code CLI is older than 2.1.285 — its model aliases then
-resolve to older models — and when a command of the same name as one of the plugin's tools (any executable of its
+takeover. It warns (ATTENTION lines, once) when the hub home is the legacy ~/.claude/agent-hub (`hub home`), when the
+Claude Code CLI is older than 2.1.285 — its model aliases then resolve to older models — and when a command of the same name as one of the plugin's tools (any executable of its
 bin/: hub, jlog, jwait, agent, ask, roles, lock, …) comes first on PATH, GitHub CLI `hub` from Homebrew being the
 usual one.
 
@@ -78,8 +80,14 @@ reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWER
 available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
 --all judges and lists every entry, with why not for the ones passed over; --json prints the same as JSON.
 Exit 0 with a reviewer, 1 when none is available, 2 usage.
-Hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub. Exit: 0 ok, 1 step failed (reviewer: no reviewer available),
-2 usage — or, for handoff, sub-agents of the hub's session still running; succeed: 3 chain limit reached.
+home prints where the hub keeps its files and why there: $AGENT_HUB_HOME, else a repository's .agent-hub/config.json
+AGENT_HUB_HOME "project" (<main checkout>/.agent-hub/local/) or "user", else ~/agent-hub — the legacy ~/.claude/agent-hub
+while ~/agent-hub does not exist; whether it is under a .claude directory (protected by Claude Code), and how to grant a
+session access to it. home migrate moves the legacy home (--from) to the resolved one (--to): a dry run unless --apply,
+which refuses while an agent or a background hub of the source runs, copies, verifies, rewrites the old path in the JSON files and renames the
+source to <source>.migrated-YYYYMMDD (bin/hubhome.py). Exit 0 ok; a dry run exits 1 when --apply would refuse.
+Exit: 0 ok, 1 step failed (reviewer: no reviewer available), 2 usage — or, for handoff, sub-agents of the hub's session
+still running; succeed: 3 chain limit reached.
 """
 from __future__ import annotations
 
@@ -99,6 +107,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import autopilot  # noqa: E402
 import hubcore as hc  # noqa: E402
+import hubhome  # noqa: E402
 import reviewers  # noqa: E402
 import subagents  # noqa: E402
 
@@ -494,7 +503,8 @@ def new_hub_session(raw: str) -> tuple:
 
 def environment_warnings(persist: bool = True) -> list:
     """Why agents started from here would misbehave, one line each: a Claude Code CLI older than hc.MIN_CLI_VERSION
-    (its aliases resolve to older models), a same-named command earlier on PATH than the plugin's tools. Never fails:
+    (its aliases resolve to older models), a same-named command earlier on PATH than the plugin's tools, a hub home in
+    the legacy ~/.claude/agent-hub (protected by Claude Code). Never fails:
     a lookup that does not work is no warning."""
     out = []
     try:
@@ -502,6 +512,10 @@ def environment_warnings(persist: bool = True) -> list:
     except hc.Failure:
         pass
     out.append(hc.shadow_warning(hc.shadowed_tools()))
+    h = hc.home()
+    if h.layer == "legacy":
+        out.append(f"the hub home is the legacy {h.path}, under ~/.claude, which Claude Code protects (every edit there "
+                   f"asks or is refused, the Bash sandbox refuses writes): `hub home migrate` moves it to {hc.user_home()}")
     return [w for w in out if w]
 
 
@@ -957,6 +971,12 @@ def cmd_reviewer(a) -> int:
     return 0
 
 
+def cmd_home(a) -> int:
+    if a.home_cmd == "migrate":
+        return hubhome.migrate(a.src, a.dst, a.apply)
+    return hubhome.show(a.cwd, a.json)
+
+
 def main(argv: list) -> int:
     p = argparse.ArgumentParser(prog="hub", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1010,9 +1030,18 @@ def main(argv: list) -> int:
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
     r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
     r.add_argument("--json", action="store_true")
+    ho = sub.add_parser("home", help="where the hub keeps its files; `home migrate` moves them")
+    ho.add_argument("--cwd", help="resolve for this directory (default: here)")
+    ho.add_argument("--json", action="store_true")
+    hos = ho.add_subparsers(dest="home_cmd")
+    hm = hos.add_parser("migrate", help="move the hub home (default: the legacy ~/.claude/agent-hub to the resolved one)")
+    hm.add_argument("--from", dest="src", metavar="DIR", help="default: ~/.claude/agent-hub")
+    hm.add_argument("--to", dest="dst", metavar="DIR", help="default: the resolved hub home (~/agent-hub when that is "
+                                                            "the source)")
+    hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
     a = p.parse_args(argv)
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
-            "reviewer": cmd_reviewer}[a.cmd](a)
+            "reviewer": cmd_reviewer, "home": cmd_home}[a.cmd](a)
 
 
 if __name__ == "__main__":

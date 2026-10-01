@@ -1,6 +1,6 @@
 """Shared helpers for the hub tools: jlog, jwait, roles, hub, agent, agent-top.
 
-Layout under the hub home ($AGENT_HUB_HOME, default ~/.claude/agent-hub):
+Layout under the hub home (where it is: home(); default ~/agent-hub):
   <stage>/coordinator/work/journal-YYYY-MM-DD.md   stage journal, one line per event:
                                                    "- HH:MM [tag] text" (hub time zone, see below)
   <stage>/roles.json                               role registry (tool `roles`)
@@ -86,10 +86,166 @@ JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AG
              "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
 
 
-def root() -> Path:
-    """The hub home: $AGENT_HUB_HOME, else ~/.claude/agent-hub."""
-    raw = os.environ.get("AGENT_HUB_HOME")
-    return Path(raw).expanduser() if raw else Path.home() / ".claude" / "agent-hub"
+# ---------------------------------------------------------------- the hub home
+#
+# Where the hub keeps its files (journals, inboxes, the question register, the lock board, handoffs), most specific
+# first:
+#   1. $AGENT_HUB_HOME — any path (the user's shell, or `env` of their Claude Code settings); every child the tools
+#      start gets it set to the parent's resolved home, so parent and children never resolve differently;
+#   2. the project layer: AGENT_HUB_HOME in <repo>/.agent-hub/config.json, "project" (<main checkout>/.agent-hub/local/,
+#      shared by every worktree of the repository) or "user" (3-4) — nothing else: a cloned repository must not choose
+#      arbitrary paths the tools write to;
+#   3. the user default ~/agent-hub;
+#   4. legacy: ~/.claude/agent-hub while ~/agent-hub does not exist (the default before 0.7). Claude Code protects
+#      .claude directories: an edit there is prompted (or classified, or denied) whatever the allow rules say, and the
+#      Bash sandbox refuses writes there — `hub home migrate` moves it.
+# Hooks resolve for the session's directory (use_cwd with the hook input's cwd), the tools for their working directory.
+
+HOME_KEY = "AGENT_HUB_HOME"
+HOME_CHOICES = ("project", "user")
+LOCAL_HOME = "local"  # <main checkout>/.agent-hub/local/
+
+
+class Home(NamedTuple):
+    path: Path
+    layer: str  # "env", "project", "user" (the project layer chose the user default), "default", "legacy"
+    source: str  # what chose it, for `hub home`
+
+
+def user_home() -> Path:
+    return Path.home() / "agent-hub"
+
+
+def legacy_home() -> Path:
+    return Path.home() / ".claude" / "agent-hub"
+
+
+_SESSION_CWD: Optional[str] = None
+_HOME_CACHE: dict = {}
+_HOME_WARNED: set = set()
+_STAGE_GUARD = True
+_STAGE_SEEN: set = set()
+
+
+def use_cwd(cwd, stage_guard: bool = False) -> None:
+    """For a hook: resolve the hub home (and the settings of the home layer) for the session's directory — the hook
+    input's `cwd` — instead of the process's. A hook never raises over a stage found in another home (stage_guard)."""
+    global _SESSION_CWD, _STAGE_GUARD, TZ, TZ_LABEL
+    _SESSION_CWD = str(cwd) if isinstance(cwd, str) and cwd else None
+    _STAGE_GUARD = stage_guard
+    _HOME_CACHE.clear()
+    _STAGE_SEEN.clear()
+    TZ = _zone()
+    TZ_LABEL = dt.datetime.now(TZ).strftime("%Z") or "local"
+
+
+def _git_top(d: Path) -> Optional[Path]:
+    for p in [d] + list(d.parents):
+        if (p / ".git").exists():
+            return p
+    return None
+
+
+def project_home(proj: Path) -> Path:
+    """The "project" hub home of the repository whose .agent-hub/ is in `proj`: under the main checkout (a linked
+    worktree with its own committed .agent-hub/ still shares the main checkout's), <…>/.agent-hub/local/."""
+    top = _git_top(proj)
+    if top is None:
+        return proj / CONFIG_DIRNAME / LOCAL_HOME
+    main = (main_checkout(top) if (top / ".git").is_file() else None) or top
+    return main / proj.relative_to(top) / CONFIG_DIRNAME / LOCAL_HOME
+
+
+def _exclude_project_home(home: Path) -> None:
+    """Add the project home to the main checkout's .git/info/exclude once (like .worktrees/), so it never shows as
+    untracked. Best effort: a read-only .git costs a note, never a tool."""
+    top = _git_top(home.parent.parent)
+    if top is None or not (top / ".git").is_dir():
+        return
+    line = "/" + home.relative_to(top).as_posix() + "/"
+    exclude = top / ".git" / "info" / "exclude"
+    try:
+        lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        if line in lines:
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "a", encoding="utf-8") as fh:
+            fh.write(("" if not lines or lines[-1] == "" else "\n") + line + "\n")
+    except OSError as e:
+        _warn(f"could not add {line} to {exclude}: {e}")
+
+
+def home(cwd=None) -> Home:
+    """The hub home and the layer that chose it (see the order above). `cwd`: the directory whose repository's
+    .agent-hub/config.json counts (default: the hook's session directory, else the working directory)."""
+    raw = os.environ.get(HOME_KEY)
+    if raw:
+        # absolute: a relative value pinned into a child in another directory would name another home
+        return Home(Path(raw).expanduser().absolute(), "env", "the environment ($AGENT_HUB_HOME)")
+    start = cwd or _SESSION_CWD
+    if start is None:
+        try:
+            start = os.getcwd()
+        except OSError:
+            start = None
+    key = str(start)
+    if key in _HOME_CACHE:
+        return _HOME_CACHE[key]
+    proj = project_dir(start) if start else None
+    choice, cfg = None, None
+    if proj:
+        cfg = proj / CONFIG_DIRNAME / "config.json"
+        val = read_config(cfg, project=True).get(HOME_KEY)
+        if val in HOME_CHOICES:
+            choice = val
+        elif val and (str(cfg), val) not in _HOME_WARNED:
+            _HOME_WARNED.add((str(cfg), val))
+            _warn(f"{cfg}: AGENT_HUB_HOME={val[:80]!r} ignored — a repository chooses only \"project\" or \"user\" "
+                  "(another path: set AGENT_HUB_HOME in the environment)")
+    if choice == "project":
+        path = project_home(proj)
+        _exclude_project_home(path)
+        out = Home(path, "project", f'{cfg}: AGENT_HUB_HOME "project"')
+    else:
+        user, legacy = user_home(), legacy_home()
+        if not user.exists() and legacy.is_dir():
+            out = Home(legacy, "legacy", "the legacy default: ~/agent-hub does not exist, ~/.claude/agent-hub does")
+        elif choice == "user":
+            out = Home(user, "user", f'{cfg}: AGENT_HUB_HOME "user" (the user default)')
+        else:
+            out = Home(user, "default", "the user default (~/agent-hub)")
+    _HOME_CACHE[key] = out
+    return out
+
+
+def root(cwd=None) -> Path:
+    """The hub home's path (home())."""
+    return home(cwd).path
+
+
+def is_protected(path) -> bool:
+    """Whether `path` lies under a directory named .claude, which Claude Code protects from edits."""
+    return ".claude" in Path(path).expanduser().parts
+
+
+def under(path, parent) -> bool:
+    """Whether `path` is `parent` or inside it (both resolved)."""
+    try:
+        p, d = Path(path).expanduser().resolve(), Path(parent).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return p == d or d in p.parents
+
+
+def stage_elsewhere(stage: str) -> Optional[Path]:
+    """Another home (the user default, the legacy one) that has this stage while the resolved home does not."""
+    here = root()
+    if (here / stage).is_dir():
+        return None
+    for other in dict.fromkeys((user_home(), legacy_home())):
+        if not under(other, here) and not under(here, other) and (other / stage).is_dir():
+            return other
+    return None
 
 
 # ---------------------------------------------------------------- configuration
@@ -217,12 +373,14 @@ def read_config(path: Path, project: bool) -> dict:
     except (OSError, ValueError) as e:
         _warn(f"{path} ignored: {e}")
         data = {}
-    allowed = PROJECT_KEYS if project else PROJECT_KEYS + HUB_WIDE_KEYS
+    allowed = PROJECT_KEYS + (HOME_KEY,) if project else PROJECT_KEYS + HUB_WIDE_KEYS
     for name, value in data.items():
         if name.startswith("_"):  # "_comment" and the like
             continue
         if name not in allowed:
-            hint = " (hub-wide: set it in the hub home's config.json)" if name in HUB_WIDE_KEYS else ""
+            hint = (" (hub-wide: set it in the hub home's config.json)" if name in HUB_WIDE_KEYS else
+                    " (the environment or a repository's .agent-hub/config.json chooses the hub home)"
+                    if name == HOME_KEY else "")
             _warn(f"{path}: {name} is not a setting this file may set{hint}; ignored")
             continue
         if name in JSON_KEYS and isinstance(value, (list, dict)):
@@ -385,7 +543,8 @@ def truthy(raw: Optional[str]) -> bool:
 
 
 def child_env(extra: Optional[dict] = None) -> dict:
-    """Environment for calling the sibling tools: same home, this bin/ first on PATH and in $HUB_BIN."""
+    """Environment for calling the sibling tools and the agents: the resolved home pinned in $AGENT_HUB_HOME (a child
+    in another directory must not resolve another one), this bin/ first on PATH and in $HUB_BIN."""
     env = dict(os.environ)
     env["AGENT_HUB_HOME"] = str(root())
     env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
@@ -393,6 +552,13 @@ def child_env(extra: Optional[dict] = None) -> dict:
     if extra:
         env.update(extra)
     return env
+
+
+def add_dir_args(cwd) -> list:
+    """`--add-dir <hub home>` for a CLI started in `cwd`, unless the home is under it: the session may then read and
+    write the hub's files without a prompt, and the Bash sandbox lets its tools write there."""
+    h = root()
+    return [] if under(h, cwd) else ["--add-dir", str(h)]
 
 
 # ---------------------------------------------------------------- the CLI and the PATH
@@ -570,8 +736,22 @@ def default_stage() -> str:
 
 
 def check_stage(stage: str) -> str:
+    """The stage name, checked; and the stage must not live in another hub home than the resolved one (a stage split
+    across two homes loses half its journal): Failure naming where it is."""
     if not STAGE_RE.fullmatch(stage or ""):
         raise UsageError(f"bad stage name {stage!r} (lowercase letters, digits, '-' and '_')")
+    if _STAGE_GUARD and stage not in _STAGE_SEEN:
+        other = stage_elsewhere(stage)
+        if other is not None:
+            h = home()
+            # the whole-home move fits only legacy -> the user default; into another home (a project's) it would carry
+            # every other project's stages along
+            move = ("move the old home with `hub home migrate`" if under(other, legacy_home())
+                    and under(h.path, user_home()) else
+                    f"move the stage (`mv {other / stage} {h.path}/`; its records keep the old paths)")
+            raise Failure(f"stage {stage} is not in the hub home {h.path} ({h.source}) but in {other}: {move}, or work "
+                          f"there with AGENT_HUB_HOME={other}; to start the stage afresh here, `mkdir -p {h.path / stage}`")
+        _STAGE_SEEN.add(stage)
     return stage
 
 

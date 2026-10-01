@@ -51,7 +51,7 @@ succeed(){ $B/hub succeed --stage stage-a --handoff $H --cwd $W "$@"; }
 setup
 CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli HUB_TAG=hub-1 succeed --model opus --permission-mode default > $R/s1.out 2>&1; rc=$?
 check $rc 0 "succeed: exit 0"
-call --bg argv | grep -q -- '^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --model opus --settings {'; check $? 0 "succeed: --bg command (name, title, model; no mode flag for default)"
+call --bg argv | grep -q -- "^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --add-dir $R --model opus --settings {"; check $? 0 "succeed: --bg command (name, title, the hub home granted — --cwd is inside it, not around it — model; no mode flag for default)"
 call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash("+os.path.realpath(sys.argv[2])+"/hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R" "$BR_BIN"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
 check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
 call --bg prompt | grep -qF "/agent-hub:hub take over stage stage-a from $H: run \`$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
