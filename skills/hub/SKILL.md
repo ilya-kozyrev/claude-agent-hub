@@ -21,9 +21,10 @@ they share is a file:
 The tools are on PATH while the plugin is enabled (`${CLAUDE_PLUGIN_ROOT}/bin`); each has `--help` with the full
 syntax. Stage: `--stage`, else `$HUB_STAGE`, else `default`. The hub's tag is `hub-<N>` (N = shift number, derived).
 
-**Minimal mode.** One hub and a few agents need three tools: `agent` (spawn, status, send, stop), `jlog` and `jwait`.
-`roles`, `ask`, `lock`, `hub start/takeover/handoff` and the handoff skill matter once you have more than one
-interactive session, more than one shift, or a shared resource; leave them until then.
+**Minimal mode.** One hub and a few agents need `hub start` once (it gives the hub its journal tag) and then three
+tools: `agent` (spawn, status, send, stop), `jlog` and `jwait`. `roles`, `ask`, `lock`, `hub takeover/handoff` and the
+handoff skill matter once you have more than one interactive session, more than one shift, or a shared resource;
+leave them until then.
 
 ## Starting a stage
 
@@ -182,8 +183,9 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    and every wake-up re-reads the hub's whole context.
 2. **A wake-up with nothing new is a turn of "no action"**, without analysis. *Why:* the same — a hub that thinks
    aloud on every wake-up spends its context on nothing.
-3. **Long work is a headless agent.** *Why:* an in-session sub-agent dies with its parent's session and cannot be
-   handed over; a headless one keeps working through a handoff.
+3. **Long work is a headless agent.** *Why:* an in-session sub-agent belongs to its parent session — another session
+   cannot address it and it does not carry over to the next hub; a headless one has its own session id, keeps working
+   through a handoff and any hub can message it.
 4. **A change to a production script is written by an executor and reviewed; the hub does not write it.** *Why:* the
    hub's context is the stage's memory; spending it on code costs the plan, and a hub reviewing its own code is not a
    review.

@@ -27,7 +27,7 @@ target state is already there is skipped as "already done", so a re-run finishes
      party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
      reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
      The free lock is never added when a main-merge is already taken over or held (no second, wildcard
-     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock KIND leaves that lock where it
+     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock RESOURCE leaves that lock where it
      is (a sub-agent of the old hub still works under it).
   2. night-queue.md: `coordinator: <new session id>` (the night nudge addresses it) and `updated:`
      (single-line edits, atomic write). Skipped when the stage has no night queue.

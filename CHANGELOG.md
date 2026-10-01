@@ -12,6 +12,41 @@
   process runs (`~/.claude/sessions/<pid>.json`), current action, model and effort, feed from the sub-agent's
   transcript.
 
+A shape for teams other than the author's: generic lock resources, a setup flow, a first-hub start, and the author's
+hub rules kept as recommended defaults a project can override.
+
+- **Locks on generic named resources.** Only `main-merge` is built in (merges into, and pushes to, the protected
+  branches). Every other resource is named by the project in `lock-rules.json`, with an optional
+  `"resources": {name: description}` object; when it is present, a rule naming an undeclared resource is refused (a
+  typo is an error, not a lock nobody takes). `lock take` refuses a name that is not configured where it runs and
+  lists the known ones; a name already on the board stays takeable (a handover); `lock release` takes any name; board
+  records of any kind keep parsing. **Breaking:** `deploy-window`, `stage` and `migration-head` are no longer built
+  in — a project that uses them declares them in its `lock-rules.json` (same names, no board migration).
+- **`lock rules`**: `show [--json]` (resources and the commands each guards, here), `init` (writes
+  `.agent-hub/lock-rules.json` and `config.json` with `AGENT_HUB_DEFAULT_REPO`), `add <resource> --about … [--match …
+  --action …]` (validated before the file is replaced), `check "<command>" [--expect R | --expect-none]` (the real hook
+  against a scratch board where every resource is held by someone else).
+- **Skill `agent-hub:setup`**: asks which shared resources the project has and which commands touch each (numbered
+  questions with recommended answers), writes the rules with `lock rules`, proves them with positive and negative
+  checks. A project with no deployment ends with `main-merge` only.
+- **`hub start --stage S --session ID`** registers the first hub of a new stage (stage directory, `hub-1`, start
+  line, first `jwait`). `hub takeover` and `hub handoff` derive the shift number from `roles.json` and the latest
+  handoff; `--n` is an override. The `jlog` "no tag" error says how the first hub registers.
+- **`roles set`** infers the session kind from the id (`local_…` or a uuid Claude Desktop knows = desktop, any other
+  uuid = cli) instead of defaulting to desktop.
+- **`agent spawn --worktree [BRANCH]`** (default `agent/<role>`): an existing worktree of the branch is reused,
+  otherwise `<repo>/.worktrees/<branch>` of the main repository, excluded in `.git/info/exclude`; `agent status` and
+  `agent stop` name it.
+- **Hook scope.** `handoff_size` and the SessionStart owner-questions line act only in the hub home, in repositories
+  with `.agent-hub/`, under the new hub-wide `AGENT_HUB_SCOPE_DIRS`, and (questions) for hub agents. `board_locks`
+  stays machine-wide: it acts only on protected-branch merges and pushes and on configured commands.
+- **Hub skill**: "Starting a stage" first; a stated minimal mode (`agent` + `jlog` + `jwait`); the author's rules kept
+  as recommended defaults with the reason for each, overridable in `hub-rules.md` (hub home → repository → stage,
+  later wins; `templates/hub-rules-example.md`); the handoff threshold stated relative to the context window; night
+  queue, night nudge and send budget marked as optional macOS + Claude Desktop modules; status words defined.
+- **Templates**: a short `brief-executor-template.md`; the previous one is `brief-executor-advanced.md`. The handoff
+  draft marks the night-queue section optional and points at worktrees to clean up.
+
 ## 0.3.0 — 2026-10-01
 
 Agent discipline: the hooks that keep long agent work cheap ship with the plugin, every rule configurable.

@@ -76,7 +76,8 @@ from the file by hand) and re-run all checks.
 
 ## 5. Report
 
-A short table: resource — what it guards — the checks that passed. Then: commit `.agent-hub/` (it is the team's
-shared convention; other files there are optional: `brief-footer.md`, `hub-rules.md`, `HUB-NOTES.md`,
-`handoff-facts.sh`, `takeover.sh` — see the README). Locks themselves live on the board, not in the repository:
+A short table: resource — what it guards — the checks that passed — and the answers you took by default that the
+user should confirm. Then suggest committing `.agent-hub/` (it is the team's shared convention); commit only if the
+user asked you to. Other files there are optional: `brief-footer.md`, `hub-rules.md`, `HUB-NOTES.md`,
+`handoff-facts.sh`, `takeover.sh` — see the README. Locks themselves live on the board, not in the repository:
 `lock take <resource> --until … --why …` when work starts.
