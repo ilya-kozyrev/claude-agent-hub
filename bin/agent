@@ -258,11 +258,16 @@ def cmd_spawn(a) -> int:
     mmap = model_map(cwd)
     if a.model not in ALIASES and a.model not in mmap and not a.model.startswith("claude-"):
         raise hc.UsageError(f"--model: one of {ALIASES}, an alias from AGENT_HUB_MODEL_MAP, or a full id claude-…")
-    a.model = mmap.get(a.model, a.model)
+    given, a.model = a.model, mmap.get(a.model, a.model)
     default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
     if default_effort not in EFFORTS:
         raise hc.UsageError(f"AGENT_HUB_DEFAULT_EFFORT={default_effort!r}: one of {EFFORTS}")
     effort = None if "haiku" in a.model else (a.effort or default_effort)
+    # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
+    import subagent_rules  # noqa: E402
+    denied = subagent_rules.check_spawn(given, a.model, effort, cwd)
+    if denied:
+        raise hc.UsageError(denied)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     if not brief.is_file():
         raise hc.UsageError(f"--brief {brief}: no such file")

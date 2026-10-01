@@ -42,6 +42,24 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending.
 # $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
+# Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
+# context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
+# the polling guard is a team convention a repository may set; a repository's effort rules apply in addition to the
+# user's, never instead (bin/subagent_rules.py evaluates both).
+HUB_WIDE_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_CONTEXT_WARN", "AGENT_HUB_CONTEXT_WARN_STEP",
+                  "AGENT_HUB_CONTEXT_BLOCK", "AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_CONTEXT_ESCAPE",
+                  "AGENT_HUB_CONTEXT_TODO",
+                  "AGENT_HUB_DELEGATION", "AGENT_HUB_DELEGATION_DEFAULT", "AGENT_HUB_DELEGATION_LEVELS",
+                  "AGENT_HUB_DELEGATION_COMMON", "AGENT_HUB_DELEGATION_RULES",
+                  "AGENT_HUB_STATE_DIR")
+PROJECT_KEYS += ("AGENT_HUB_POLL_GUARD", "AGENT_HUB_POLL_MAX_SLEEP", "AGENT_HUB_POLL_MAX_BOUNDED_WAIT",
+                 "AGENT_HUB_POLL_ESCAPE", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW",
+                 "AGENT_HUB_WAIT_HINT", "AGENT_HUB_EFFORT_RULES")
+BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
+# Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
+# setting_json() parses it (the environment variable holds the same JSON text).
+JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
+             "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW")
 
 
 def root() -> Path:
@@ -125,6 +143,9 @@ def read_config(path: Path, project: bool) -> dict:
             hint = " (hub-wide: set it in the hub home's config.json)" if name in HUB_WIDE_KEYS else ""
             _warn(f"{path}: {name} is not a setting this file may set{hint}; ignored")
             continue
+        if name in JSON_KEYS and isinstance(value, (list, dict)):
+            out[name] = json.dumps(value, ensure_ascii=False)
+            continue
         if isinstance(value, dict):  # {"sonnet": "claude-…"} for AGENT_HUB_MODEL_MAP
             value = ",".join(f"{k}={v}" for k, v in value.items())
         if isinstance(value, bool):  # a JSON boolean: "true" / "false", what truthy() reads
@@ -153,6 +174,22 @@ def setting(name: str, default: Optional[str] = None, cwd=None) -> Optional[str]
             if val:
                 return val
     return read_config(root() / "config.json", project=False).get(name) or default
+
+
+def setting_json(name: str, default=None, cwd=None):
+    """A JSON_KEYS setting parsed (list or object). A value that does not start like JSON ([ { ") is returned as the
+    plain string (e.g. "Agent,SendMessage" from the environment); broken JSON is reported on stderr and gives
+    `default`."""
+    raw = setting(name, cwd=cwd)
+    if not raw:
+        return default
+    if not raw.lstrip().startswith(("[", "{", '"')):
+        return raw
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        _warn(f"{name}: not valid JSON ({e}); using the default")
+        return default
 
 
 def _zone() -> dt.tzinfo:

@@ -1,0 +1,299 @@
+#!/bin/bash
+# Agent-discipline hooks: polling_guard (PreToolUse Bash), context_budget (UserPromptSubmit / PostToolUse /
+# PreToolUse), delegation (SessionStart / UserPromptSubmit / PreToolUse Agent|Task|Workflow) and the shared subagent
+# rules in `agent spawn`. Every decision has a positive and a negative control.
+. "$(dirname "$0")/lib.sh"
+unset AGENT_HUB_DELEGATION_LEVEL CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|DELEGATION\|EFFORT\|POLL\|CI_STATUS\|WAIT\|STATE\)[A-Z_]*\)=.*/\1/p')
+new_home; R=$AGENT_HUB_HOME
+EXAMPLE="$T/../docs/examples/subagent-policy.json"
+
+# ================================================================== polling guard
+# run the guard on one command; prints the hook's stdout. $2=1: run_in_background, $3: cwd
+pg(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":sys.argv[3],"tool_input":{"command":sys.argv[1],"run_in_background":sys.argv[2]=="1"}}))' "$1" "${2:-0}" "${3:-/}" | python3 $HOOKS/polling_guard.py; }
+denied(){ pg "$@" | grep -q '"permissionDecision": "deny"'; }
+P="projects/acme%2Fwebapp"
+# commands a session really ran while waiting (the reason this hook exists)
+BLOCKED=(
+  'until ! pgrep -f "pytest -n 4" > /dev/null; do sleep 20; done; sed -n "/short test summary/,$p" /tmp/out.txt'
+  'until grep -qE "=====.*(passed|failed|error)" /tmp/full.txt 2>/dev/null; do sleep 20; done; cat /tmp/full.txt'
+  'until [ -s /tmp/ci3.txt ] && grep -qE "^\[.*\] exit=" /tmp/ci3.txt; do sleep 20; done; tail -12 /tmp/ci3.txt'
+  'for i in $(seq 1 60); do [ -f /tmp/pytest.exit ] && break; command sleep 20; done; echo "exit=$(cat /tmp/pytest.exit)"'
+  'sleep 120; curl -s https://example.invalid/healthz'
+  'while ! curl -fsS http://127.0.0.1:8000/healthz; do sleep 10; done'
+)
+ALLOWED=(
+  'for i in $(seq 1 12); do BODY=$(curl -fsS --max-time 5 http://127.0.0.1:8000/healthz) && break; sleep 5; done; echo "$BODY"'
+  'pytest -n auto tests/ledger'
+  'sleep 5; docker compose ps'
+  'git log --oneline -5 | grep -i sleep'
+  'for f in lint target drift pytest; do echo "== $f"; tail -3 /tmp/$f.txt; done'
+  'until ! pgrep -f "[p]ytest -n 4"; do sleep 20; done  # poll-ok: cutover gate, waiting by hand'
+  "echo 'until ! pgrep -f \"pytest -n 4\"; do sleep 20; done' | python3 hooks/polling_guard.py"
+  $'cat > /tmp/waiter.sh <<\'SH\'\nuntil [ -f /tmp/done ]; do sleep 30; done\nSH\nchmod +x /tmp/waiter.sh'
+)
+CI_BLOCKED=(
+  "glab api \"$P/pipelines/123456\""
+  "glab api $P/pipelines/123456/jobs?per_page=100"
+  "glab api '$P/pipelines?ref=feature/x&per_page=1' | jq '.[0].status'"
+  "glab api \"$P/merge_requests/499/pipelines\""
+  "glab api $P/jobs/987654"
+  "glab api --paginate $P/pipelines/latest"
+  "glab ci status --branch feature/x"
+  "glab ci get --pipeline-id 123"
+  "glab ci list"
+  "git push -q && glab api $P/pipelines/1"
+  "gh run view 123456"
+  "gh run list --branch feature/x"
+  "gh run watch 123456"
+  "gh pr checks 12"
+  "gh api repos/acme/webapp/actions/runs/123456"
+  "gh api repos/acme/webapp/commits/abc123/check-runs"
+)
+CI_ALLOWED=(
+  "glab api \"$P/pipelines?sha=89e92129a3b4c5d6e7f8091a2b3c4d5e6f708192\""
+  "glab api \"$P/pipelines?ref=feature/x&sha=\$SHA\""
+  "glab api $P/jobs/987654/trace | tail -80"
+  "glab api -X POST $P/jobs/987654/retry"
+  "glab api --method POST $P/pipelines/1/cancel"
+  "glab api \"$P/merge_requests/499\""
+  "glab api \"$P/merge_requests?state=opened\""
+  "glab mr create --remove-source-branch --yes -t x -d y"
+  "glab ci trace 987654"
+  "echo 'glab api $P/pipelines/1'"
+  "glab api $P/pipelines/1  # poll-ok: one read after a manual retry"
+  "gh run view 123456 --log-failed"
+  "gh run view --job 42 --log"
+  "gh run rerun 123456 --failed"
+  "gh api repos/acme/webapp/actions/runs?head_sha=89e92129a3b4c5d6e7f8091a2b3c4d5e6f708192"
+  "gh api repos/acme/webapp/actions/jobs/42/logs"
+  "gh pr view 12"
+)
+i=0; for c in "${BLOCKED[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: wait $i denied"; denied "$c" 1; check $? 1 "poll: wait $i in the background passes"; done
+i=0; for c in "${ALLOWED[@]}"; do i=$((i+1)); denied "$c"; check $? 1 "poll: normal work $i passes"; done
+i=0; for c in "${CI_BLOCKED[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: CI status read $i denied"; denied "$c" 1; check $? 1 "poll: CI read $i in the background passes"; done
+i=0; for c in "${CI_ALLOWED[@]}"; do i=$((i+1)); denied "$c"; check $? 1 "poll: CI lookup/log/action $i passes"; done
+pg "${BLOCKED[0]}" | grep -q 'matches the waiting shell'; check $? 0 "poll: pgrep -f self-match is named"
+pg "${BLOCKED[4]}" > $R/pg.out
+grep -q 'jwait' $R/pg.out && grep -q 'run_in_background' $R/pg.out && grep -q 'poll-ok' $R/pg.out; check $? 0 "poll: the message names jwait, run_in_background and the marker"
+echo '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/etc/hosts"}}' | python3 $HOOKS/polling_guard.py > $R/pg2.out; check "$?:$(wc -c < $R/pg2.out | tr -d ' ')" "0:0" "poll: other tools untouched"
+echo 'not json' | python3 $HOOKS/polling_guard.py > $R/pg3.out 2>&1; check "$?:$(wc -c < $R/pg3.out | tr -d ' ')" "0:0" "poll: broken event fails open"
+# configuration: project hint, thresholds, marker, own lists, switch off per repository
+mkdir -p $R/repo/.git $R/repo/.agent-hub $R/other/.git
+echo '{"AGENT_HUB_WAIT_HINT": "CI: make ci-wait PIPELINE=<id> with run_in_background: true", "AGENT_HUB_POLL_MAX_SLEEP": 200}' > $R/repo/.agent-hub/config.json
+pg "glab ci status" 0 $R/repo | grep -q 'make ci-wait PIPELINE'; check $? 0 "poll: the repository's wait hint is in the message"
+pg "glab ci status" 0 $R/other | grep -q 'make ci-wait'; check $? 1 "poll: …and only in that repository"
+denied "sleep 120; ls" 0 $R/repo; check $? 1 "poll: the repository's max sleep (200 s) lets sleep 120 pass"
+denied "sleep 120; ls" 0 $R/other; check $? 0 "poll: …the default (30 s) still denies it elsewhere"
+echo '{"AGENT_HUB_POLL_GUARD": false}' > $R/repo/.agent-hub/config.json
+denied "${BLOCKED[1]}" 0 $R/repo; check $? 1 "poll: switched off in the repository"
+denied "${BLOCKED[1]}" 0 $R/other; check $? 0 "poll: …still on elsewhere"
+echo '{"AGENT_HUB_POLL_ESCAPE": "wait-ok", "AGENT_HUB_CI_STATUS_DENY": ["\\bci-tool\\s+status\\b"], "AGENT_HUB_CI_STATUS_ALLOW": []}' > $R/repo/.agent-hub/config.json
+denied "ci-tool status 12" 0 $R/repo; check $? 0 "poll: own deny list"
+denied "glab ci status" 0 $R/repo; check $? 1 "poll: own deny list replaces the defaults"
+denied "sleep 120  # wait-ok: deliberate" 0 $R/repo; check $? 1 "poll: own escape marker"
+denied "sleep 120  # poll-ok: deliberate" 0 $R/repo; check $? 0 "poll: the default marker no longer applies there"
+( export AGENT_HUB_POLL_GUARD=off; denied 'sleep 120' ); check $? 1 "poll: the environment switches it off"
+python3 $HOOKS/polling_guard.py --defaults | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["AGENT_HUB_CI_STATUS_DENY"] and d["AGENT_HUB_CI_STATUS_ALLOW"]'; check $? 0 "poll: --defaults prints both lists"
+# bypasses: a loop in quotes, text fed to a shell; sleep with a unit; a write with a field; marker and list fallbacks
+BYPASS=(
+  'timeout 600 bash -c "until [ -f /tmp/x ]; do sleep 20; done"'
+  $'bash <<\'EOF\'\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+  $'cat <<\'EOF\' | sh\nuntil [ -f /tmp/done ]; do sleep 30; done\nEOF'
+  "echo 'until [ -f /tmp/done ]; do sleep 30; done' | bash"
+  "printf 'while true; do sleep 60; done' | xargs -0 sh -c"
+  'sleep 5m; ls'
+  'sleep 1h'
+  'sleep 2d && echo done'
+)
+i=0; for c in "${BYPASS[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: bypass $i denied"; done
+denied 'sleep 20s; ls'; check $? 1 "poll: sleep 20s passes"
+denied 'sleep 0.25m; ls'; check $? 1 "poll: sleep 0.25m (15 s) passes"
+denied "glab api $P/merge_requests/1/notes -f body=\"the jobs are green\""; check $? 1 "poll: glab api with a field is a write, not a status read"
+denied "gh api repos/acme/webapp/issues/1/comments -F body=@pipelines.md"; check $? 1 "poll: gh api with a field is a write"
+echo '{"AGENT_HUB_POLL_ESCAPE": "ok!"}' > $R/repo/.agent-hub/config.json
+denied "sleep 120  # ok! deliberate" 0 $R/repo; check $? 1 "poll: an escape word ending in a non-word character works"
+echo '{"AGENT_HUB_CI_STATUS_DENY": ["(unclosed", "[bad"]}' > $R/repo/.agent-hub/config.json
+denied "glab ci status" 0 $R/repo; check $? 0 "poll: an all-invalid deny list falls back to the defaults"
+echo '{"AGENT_HUB_CI_STATUS_DENY": []}' > $R/repo/.agent-hub/config.json
+denied "glab ci status" 0 $R/repo; check $? 1 "poll: a deliberate empty list switches the CI rules off"
+rm $R/repo/.agent-hub/config.json
+
+# every jwait form the hub prints (takeover digest and the hub skill) passes the guard, foreground and background
+python3 - "$B" "$T/../skills/hub/SKILL.md" > $R/jwait-forms.txt <<'PY'
+import importlib.machinery, importlib.util, re, sys
+loader = importlib.machinery.SourceFileLoader("hub_cli", sys.argv[1] + "/hub")
+spec = importlib.util.spec_from_loader("hub_cli", loader); hub = importlib.util.module_from_spec(spec); loader.exec_module(hub)
+forms = [hub.jwait_command("stage-a", "hub-17", None), hub.jwait_command("stage-a", "hub-17", __import__("datetime").datetime(2026, 1, 1, 14, 35))]
+forms += [m for m in re.findall(r"`(jwait [^`]+)`", open(sys.argv[2], encoding="utf-8").read())]
+print("\n".join(dict.fromkeys(forms)))
+PY
+n=$(wc -l < $R/jwait-forms.txt | tr -d ' '); [ "$n" -ge 4 ]; check $? 0 "jwait forms collected from the digest and the skill ($n)"
+i=0; while IFS= read -r f; do i=$((i+1)); for bg in 0 1; do denied "$f" $bg; check $? 1 "jwait form $i passes the guard (background=$bg)"; done; done < $R/jwait-forms.txt
+denied "until grep -q DONE journal.md; do sleep 20; done"; check $? 0 "jwait forms: positive control, a sleep loop is denied"
+# …also with a team's extra wake words (non-ASCII) from AGENT_HUB_JWAIT_MATCH in the digest's pattern
+echo '{"AGENT_HUB_JWAIT_MATCH": "WARTET AUF ANTWORT|RÉPONSE ATTENDUE|@hub (FRAGE|QUESTION)"}' > $R/config.json
+f=$(python3 - "$B" <<'PY'
+import datetime, importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("hub_cli", sys.argv[1] + "/hub")
+spec = importlib.util.spec_from_loader("hub_cli", loader); hub = importlib.util.module_from_spec(spec); loader.exec_module(hub)
+print(hub.jwait_command("stage-a", "hub-17", datetime.datetime(2026, 1, 1, 14, 35)))
+PY
+)
+case "$f" in *"RÉPONSE ATTENDUE"*) check 0 0 "jwait form with extra words: the digest carries them";; *) check 1 0 "jwait form with extra words: the digest carries them ($f)";; esac
+for bg in 0 1; do denied "$f" $bg; check $? 1 "jwait form with extra non-ASCII words passes the guard (background=$bg)"; done
+rm $R/config.json
+
+# ================================================================== context budget
+TR=$R/transcript.jsonl
+usage(){ python3 -c 'import json,sys; print(json.dumps({"type":"assistant","message":{"model":"m","usage":{"input_tokens":int(sys.argv[1]),"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}))' "$1" >> ${2:-$TR}; }
+cb(){ python3 -c 'import json,sys; d={"hook_event_name":sys.argv[1],"session_id":"cb1","transcript_path":sys.argv[2],"tool_name":sys.argv[3],"tool_input":json.loads(sys.argv[4])}; print(json.dumps(d))' "$1" "$TR" "${2:-}" "${3:-null}" | python3 $HOOKS/context_budget.py; }
+usage 100000
+cb UserPromptSubmit > $R/cb0.out; check "$(wc -c < $R/cb0.out | tr -d ' ')" 0 "budget: below the warn threshold, silent"
+usage 320000
+cb UserPromptSubmit | grep -q 'Context budget: 320k'; check $? 0 "budget: warns on crossing 300k (default)"
+cb PostToolUse Bash > $R/cb1.out; check "$(wc -c < $R/cb1.out | tr -d ' ')" 0 "budget: no second warning in the same step"
+usage 352000
+cb PostToolUse Bash | grep -q 'agent-hub:handoff'; check $? 0 "budget: warns again a step later and points at agent-hub:handoff"
+cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 1 "budget: below the block threshold, Agent passes"
+usage 510000
+cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 0 "budget: at 500k Agent is denied"
+cb PreToolUse SendMessage '{"message":"go"}' | grep -q '"deny"'; check $? 0 "budget: SendMessage is denied"
+cb PreToolUse Bash '{"command":"ls"}' | grep -q '"deny"'; check $? 1 "budget: Bash is not gated"
+cb PreToolUse Agent '{"prompt":"take over from /x/HANDOFF-hub-a-2026.md"}' | grep -q '"deny"'; check $? 1 "budget: a handoff path passes"
+cb PreToolUse SendMessage '{"message":"handoff-ok: wrap up"}' | grep -q '"deny"'; check $? 1 "budget: the handoff-ok marker passes"
+echo '{"type":"system","subtype":"compact_boundary","compactMetadata":{"postTokens":40000}}' >> $TR
+cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 1 "budget: after a compact boundary the post-compact size counts"
+usage 510000
+cat > $R/config.json <<'EOF'
+{"AGENT_HUB_CONTEXT_WARN": 600000, "AGENT_HUB_CONTEXT_BLOCK": 700000, "AGENT_HUB_CONTEXT_BLOCK_TOOLS": ["Bash"],
+ "AGENT_HUB_CONTEXT_ESCAPE": "wrap-up-ok", "AGENT_HUB_CONTEXT_TODO": "Write the handoff now.", "AGENT_HUB_STATE_DIR": "@STATEPATH@"}
+EOF
+subst $R/config.json @STATEPATH@ "$R/state"
+cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 1 "budget: own block threshold (700k) and tools (Agent no longer gated)"
+usage 710000
+cb PreToolUse Bash '{"command":"ls"}' | grep -q 'Write the handoff now'; check $? 0 "budget: own gated tool and own todo text"
+cb PreToolUse Bash '{"command":"ls # wrap-up-ok"}' | grep -q '"deny"'; check $? 1 "budget: own escape pattern"
+cb UserPromptSubmit > /dev/null; ls $R/state/context-budget/cb1.json > /dev/null 2>&1; check $? 0 "budget: state in the configured directory"
+AGENT_HUB_CONTEXT_BLOCK_TOOLS="Read, SendMessage" cb PreToolUse SendMessage '{"message":"go"}' | grep -q '"deny"'; check $? 0 "budget: tools as a comma list from the environment"
+echo '{"AGENT_HUB_CONTEXT_BUDGET": "off"}' > $R/config.json
+cb PreToolUse SendMessage '{"message":"go"}' > $R/cb2.out; check "$(wc -c < $R/cb2.out | tr -d ' ')" 0 "budget: switched off"
+rm $R/config.json
+mkdir -p $R/cb1/subagents; usage 520000 $R/cb1/subagents/agent-a1.jsonl; echo '{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":5}}}' >> $TR
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"cb1","agent_id":"a1","transcript_path":sys.argv[1],"tool_name":"Agent","tool_input":{}}))' $TR | python3 $HOOKS/context_budget.py | grep -q '"deny"'; check $? 0 "budget: a subagent is measured by its own transcript"
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"cb1","agent_id":"zz","transcript_path":sys.argv[1],"tool_name":"Agent","tool_input":{}}))' $TR | python3 $HOOKS/context_budget.py > $R/cb3.out; check "$(wc -c < $R/cb3.out | tr -d ' ')" 0 "budget: a subagent without a transcript stays silent"
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"cb1","agent_id":"a1","transcript_path":sys.argv[1]}))' $TR | python3 $HOOKS/context_budget.py | grep -q 'Context budget: 520k'; check $? 0 "budget: a subagent is warned by its own size"
+echo '{"AGENT_HUB_CONTEXT_ESCAPE": "(unclosed"}' > $R/config.json
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"cb1","agent_id":"a1","transcript_path":sys.argv[1],"tool_name":"Agent","tool_input":{"prompt":"handoff-ok"}}))' $TR | python3 $HOOKS/context_budget.py | grep -q '"deny"'; check $? 1 "budget: a broken escape regex falls back to the default (handoff-ok passes)"
+rm $R/config.json
+echo 'garbage' | python3 $HOOKS/context_budget.py > $R/cb4.out 2>&1; check "$?:$(wc -c < $R/cb4.out | tr -d ' ')" "0:0" "budget: broken input fails open"
+
+# ================================================================== delegation dial and subagent rules
+new_home; R=$AGENT_HUB_HOME; export HOME=$R/home; mkdir -p $HOME/.claude/agents $R/proj/.git
+dg(){ python3 -c 'import json,sys; ti={k:v for k,v in (("subagent_type",sys.argv[2]),("model",sys.argv[3])) if v}; ti["prompt"]="x"; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"s1","cwd":sys.argv[4],"tool_name":sys.argv[1],"tool_input":ti}))' "$1" "${2:-}" "${3:-}" "${4:-$R/proj}" | python3 $HOOKS/delegation.py pre-tool; }
+dden(){ dg "$@" | grep -q '"permissionDecision": "deny"'; }
+ss(){ echo "{\"session_id\":\"$1\"}" | python3 $HOOKS/delegation.py ${2:-session-start}; }
+ss s1 > $R/d0.out; check "$(wc -c < $R/d0.out | tr -d ' ')" 0 "dial off (default): nothing injected"
+dden Agent general-purpose; check $? 1 "dial off, no rules: every Agent call passes"
+CLAUDE_CODE_SESSION_ID=s1 $B/delegation show | grep -q 'dial is off'; check $? 0 "show says the dial is off"
+echo '{"AGENT_HUB_DELEGATION": true}' > $R/config.json
+ss s1 | grep -q 'Delegation level 3/5 (BALANCED)'; check $? 0 "dial on: level 3 by default, injected at session start"
+ss s1 prompt > $R/d1.out; check "$(wc -c < $R/d1.out | tr -d ' ')" 0 "prompt: no re-injection while the level is unchanged"
+ss s3 > /dev/null; $B/delegation set 1 --global > /dev/null; ss s3 prompt > $R/d2.out
+grep -q 'Delegation level changed to 1' $R/d2.out && ! ss s3 prompt | grep -q .; check $? 0 "prompt: re-injected once after the level changed elsewhere"
+rm $R/.state/delegation/level
+CLAUDE_CODE_SESSION_ID=s1 $B/delegation set 0 | grep -q 'Delegation level 0/5 (OFF)'; check $? 0 "set 0 for the session prints the new policy"
+ss s1 prompt > $R/d2b.out; check "$(wc -c < $R/d2b.out | tr -d ' ')" 0 "prompt: no re-injection of what set already printed"
+dden Agent general-purpose haiku; check $? 0 "level 0: Agent denied"
+dden Workflow; check $? 0 "level 0: Workflow denied"
+dg Agent | grep -q 'session override'; check $? 0 "level 0: the reason names where the level comes from"
+python3 -c 'import json; print(json.dumps({"hook_event_name":"PreToolUse","session_id":"s2","tool_name":"Agent","tool_input":{}}))' | python3 $HOOKS/delegation.py pre-tool | grep -q deny; check $? 1 "another session keeps the default level"
+CLAUDE_CODE_SESSION_ID=s1 $B/delegation clear | grep -q 'effective level=3'; check $? 0 "clear: back to the default"
+$B/delegation set 1 --global | grep -q 'effective level=1'; check $? 0 "set --global"
+AGENT_HUB_DELEGATION_LEVEL=4 $B/delegation show | grep -q 'level=4 source=env'; check $? 0 "the environment level wins over the global one"
+$B/delegation set 9 > /dev/null 2>&1; check $? 2 "usage: level out of range"
+$B/delegation set 3 > /dev/null 2>&1; check $? 2 "usage: set without a session id and without --global"
+# custom level texts and rules, from config.json
+cat > $R/config.json <<'EOF'
+{"AGENT_HUB_DELEGATION": "on", "AGENT_HUB_DELEGATION_DEFAULT": 2,
+ "AGENT_HUB_DELEGATION_LEVELS": {"1": {"name": "SOLO", "policy": "Mostly alone."}}, "AGENT_HUB_DELEGATION_COMMON": "Common tail.",
+ "AGENT_HUB_DELEGATION_RULES": [{"when": {"level": ["0", "1"], "tool": "Workflow"}, "decision": "deny", "reason": "No workflows at level {level}."}]}
+EOF
+$B/delegation show | grep -q 'Delegation level 1/5 (SOLO). Mostly alone. Common tail.'; check $? 0 "own level text and common tail"
+dden Workflow; check $? 0 "own delegation rule: Workflow denied at level 1"
+dden Agent general-purpose; check $? 1 "own delegation rule: Agent allowed at level 1 (the built-in level-0 rule is replaced)"
+dg Workflow | grep -q 'No workflows at level 1'; check $? 0 "the reason is formatted with the call's fields"
+rm -rf $R/.state; ss s9 | grep -q 'level 2/5'; check $? 0 "AGENT_HUB_DELEGATION_DEFAULT"
+# the example policy (docs/examples/subagent-policy.json): effort rules apply with the dial off too
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["AGENT_HUB_DELEGATION"]="off"; json.dump(d, open(sys.argv[2],"w"))' $EXAMPLE $R/config.json
+printf -- '---\nname: my-helper\neffort: medium\nmodel: opus\n---\nhi\n' > $HOME/.claude/agents/my-helper.md
+printf -- '---\nname: lazy\n---\nhi\n' > $R/proj/.claude-agent.md; mkdir -p $R/proj/.claude/agents; mv $R/proj/.claude-agent.md $R/proj/.claude/agents/lazy.md
+while IFS='|' read -r want tool typ model what; do
+  dden "$tool" "$typ" "$model"; got=$([ $? = 0 ] && echo deny || echo allow)
+  check "$got" "$want" "example policy: $what"
+done <<'EOF'
+allow|Agent|Explore|haiku|any type on haiku
+deny|Agent|fork|haiku|fork is always denied
+deny|Agent|general-purpose|opus|unpinned definition inherits the session effort
+deny|Agent||opus|no type = general-purpose
+allow|Agent|agent-hub:worker-high|opus|plugin worker, explicit model
+allow|Agent|agent-hub:worker-medium|opus|plugin worker at medium
+deny|Agent|agent-hub:worker-high||plugin worker without a model inherits it
+deny|Agent|agent-hub:worker-xhigh|opus|xhigh is not for non-Sonnet models
+allow|Agent|agent-hub:worker-xhigh|sonnet|Sonnet at xhigh
+allow|Agent|agent-hub:worker-high|sonnet|Sonnet at high
+deny|Agent|agent-hub:worker-medium|sonnet|Sonnet never at medium
+deny|Agent|agent-hub:worker-low|sonnet|Sonnet never at low
+allow|Agent|worker-high|opus|plugin worker called without its prefix
+allow|Agent|my-helper||user agent pinning effort and model
+deny|Agent|lazy|opus|project agent without a pinned effort
+allow|Workflow|||the example has no Workflow rule
+EOF
+dg Agent agent-hub:worker-medium sonnet | grep -q 'agent-hub:worker-medium at effort medium'; check $? 0 "example policy: the Sonnet reason names type and effort"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"modle": "x"}, "decision": "deny"}]}' > $R/config.json
+dg Agent general-purpose opus > $R/d3.out 2> $R/d3.err; check "$(wc -c < $R/d3.out | tr -d ' ')" 0 "malformed rules: fail-open, no decision"
+grep -q "unknown field 'modle'" $R/d3.err; check $? 0 "malformed rules: reported on stderr"
+echo '{"AGENT_HUB_EFFORT_RULES": [' > $R/config.json
+dg Agent general-purpose opus > $R/d4.out 2>/dev/null; check "$?:$(wc -c < $R/d4.out | tr -d ' ')" "0:0" "broken config.json: fail-open"
+echo 'not json' | python3 $HOOKS/delegation.py pre-tool > $R/d5.out 2>/dev/null; check "$?:$(wc -c < $R/d5.out | tr -d ' ')" "0:0" "broken hook input: fail-open"
+mkdir -p $R/proj/.agent-hub $R/other/.git; cp $EXAMPLE $R/config.json
+echo '{"AGENT_HUB_EFFORT_RULES": {"opus": "low"}}' > $R/proj/.agent-hub/config.json
+dden Agent general-purpose opus $R/other; check $? 0 "effort rules: the hub home's apply in a repository without its own"
+dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: a repository's rules do not replace the user's (any deny wins)"
+dg Agent agent-hub:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type agent-hub:worker-high). \[AGENT_HUB_EFFORT_RULES (proj/.agent-hub) rule 1\]'; check $? 0 "effort rules: the repository adds a restriction (shorthand), the set and rule are named"
+dden Agent agent-hub:worker-high opus $R/other; check $? 1 "effort rules: …which does not apply outside it"
+dden Agent agent-hub:worker-low opus $R/proj; check $? 1 "effort rules: shorthand allows the listed effort"
+echo '{"AGENT_HUB_EFFORT_RULES": []}' > $R/proj/.agent-hub/config.json
+dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: an empty repository list does not switch the user's off"
+dg Agent general-purpose opus $R/proj | grep -q 'AGENT_HUB_EFFORT_RULES (hub home) rule'; check $? 0 "effort rules: the user's deny names the hub home set"
+dden Task general-purpose opus $R/other; check $? 0 "effort rules: the Task tool is checked like Agent"
+$B/delegation try --cwd $R/other agent-hub:worker-high > $R/try1.out; check $? 1 "delegation try TYPE without a model: deny (model inherited), exit 1"
+grep -q '"model_from": "inherit"' $R/try1.out; check $? 0 "delegation try: prints the call's fields"
+$B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
+rm $R/proj/.agent-hub/config.json
+
+# agent spawn applies AGENT_HUB_EFFORT_RULES (stand-in CLI; a denied spawn never starts)
+export HUB_STAGE=stage-a HUB_TAG=hub-test CLAUDE_BIN=$T/fake_claude.py; W=$R/w; mkdir -p $W; echo "brief" > $W/b.md
+$B/agent spawn --role s1 --cwd $W --model sonnet --effort medium --brief $W/b.md > $R/sp1.out 2>&1; check $? 2 "spawn: Sonnet at medium refused by the example rules"
+grep -qi 'sonnet runs only at high or xhigh' $R/sp1.out; check $? 0 "spawn: …with the rule's reason"
+[ ! -e $R/stage-a/agents/s1 ]; check $? 0 "spawn: nothing was started"
+$B/agent spawn --role s2 --cwd $W --model sonnet --effort xhigh --brief $W/b.md > $R/sp2.out 2>&1; check $? 0 "spawn: Sonnet at xhigh allowed"
+AGENT_HUB_MODEL_MAP=fast=claude-sonnet-x-y $B/agent spawn --role s3 --cwd $W --model fast --effort low --brief $W/b.md > $R/sp3.out 2>&1; check $? 2 "spawn: rules see the id an alias maps to"
+$B/agent spawn --role s4 --cwd $W --model opus --effort xhigh --brief $W/b.md > $R/sp4.out 2>&1; check $? 0 "spawn: other models at any effort (the example only limits Sonnet for spawns)"
+rm $R/config.json
+$B/agent spawn --role s5 --cwd $W --model sonnet --effort low --brief $W/b.md > $R/sp5.out 2>&1; check $? 0 "spawn: no rules configured, nothing refused"
+mkdir -p $W/.git $W/.agent-hub; echo '{"AGENT_HUB_EFFORT_RULES": {"sonnet": "high|xhigh"}}' > $W/.agent-hub/config.json
+$B/agent spawn --role s6 --cwd $W --model sonnet --effort medium --brief $W/b.md > $R/sp6.out 2>&1; check $? 2 "spawn: the agent repository's shorthand refuses Sonnet at medium"
+grep -q 'sonnet runs only at effort high or xhigh (got medium.*AGENT_HUB_EFFORT_RULES (w/.agent-hub) rule 1' $R/sp6.out; check $? 0 "spawn: …naming the rule"
+$B/agent spawn --role s7 --cwd $W --model sonnet --effort high --brief $W/b.md > $R/sp7.out 2>&1; check $? 0 "spawn: …and accepts it at high"
+for r in s2 s4 s5 s7; do $B/agent stop $r > /dev/null 2>&1; done
+
+# ================================================================== plugin agents
+for e in low medium high xhigh; do
+  python3 - "$T/../agents/worker-$e.md" "$e" <<'PY'; check $? 0 "agents/worker-$e.md pins effort $e and no model"
+import sys
+text = open(sys.argv[1], encoding="utf-8").read().split("---")[1]
+fm = dict(l.split(":", 1) for l in text.strip().splitlines())
+assert fm["name"].strip() == "worker-" + sys.argv[2] and fm["effort"].strip() == sys.argv[2] and "model" not in fm
+PY
+done
+exit $fail
