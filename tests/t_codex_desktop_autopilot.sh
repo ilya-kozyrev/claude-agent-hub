@@ -113,6 +113,34 @@ bind(req,'--thread-id',real,ok=False); env['CODEX_THREAD_ID']=real; takeover(han
 assert roles(stage)['session']==other
 print('PASS takeover-before-bind race, late confirmation and repeats preserve chain; later hubs cannot be overwritten')
 
+# Parallel prepares reserve one request. Parallel late bind and takeover converge on the same actual UUID.
+home,stage,handoff=setup('parallel')
+cmd=[str(root/'bin/hub'),'succeed','--stage','stage-a','--handoff',str(handoff),'--force']
+procs=[subprocess.Popen(cmd,env=env,cwd=repo,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(2)]
+for proc in procs: proc.communicate(timeout=10)
+assert sorted(p.returncode for p in procs)==[0,1] and state(stage)['chain']==1
+req=state(stage)['pending']['request_id']; request(req)
+successor_env=dict(env,CODEX_THREAD_ID=real)
+commands=[([str(root/'bin/hub'),'desktop-bind','--stage','stage-a','--request',req,'--thread-id',real],env,repo),
+          ([str(root/'bin/hub'),'takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',str(handoff),'--desktop-request',req],successor_env,actual)]
+procs=[subprocess.Popen(cmd,env=e,cwd=c,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for cmd,e,c in commands]
+for proc in procs:
+    out,err=proc.communicate(timeout=10)
+    assert proc.returncode==0,(out,err)
+assert state(stage)['chain']==1 and state(stage)['pending']['taken_over'] and roles(stage)['session']==real
+print('PASS concurrent prepares and bind/takeover reserve/migrate once under the state lock')
+
+home,stage,handoff=setup('observed-restricted'); prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'workspace-write','writable_roots':[str(home)],'network_access':False})
+takeover(handoff,req,cwd=actual)
+p=state(stage)['pending']
+assert p['requested']['sandbox_policy']['type']=='danger-full-access'
+assert p['observed']['sandbox_policy']['type']=='workspace-write'
+assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+print('PASS explicit writable stage root permits actual workspace policy without claiming requested Full Access')
+
 home,stage,handoff=setup('retry'); prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','unknown result')
 prepare(handoff,'--again'); assert state(stage)['pending']['phase']=='uncertain'
