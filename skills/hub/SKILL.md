@@ -12,8 +12,18 @@ Run the bundled tools through the host's shell tool. Resolve the plugin root fro
 Use that root's `bin/<tool>` when a command is missing or shadowed on PATH. `HUB_BIN` is set in detached workers.
 Template and documentation paths below are relative to this root.
 
-`agent spawn --engine claude|codex` chooses the executor independently of the coordinator. `AGENT_HUB_ENGINE`
-sets its default (normally `claude`; the Codex SessionStart hook selects `codex` for Codex sessions).
+Choose the executor engine before choosing a model. Offer the owner one engine choice during initial stage planning:
+Codex, Claude, or a mixed team, with the coordinator's current host as the default. An existing explicit choice
+already answers this question; otherwise proceed with the host default while awaiting an optional preference.
+Record the choice in the stage's `hub-rules.md` and carry it into briefs and handoffs. A Codex hub defaults to
+Codex executors; a Claude hub defaults to Claude executors. Choose each worker's model and effort within that
+engine. Claude model names in general task-sizing advice apply to Claude workers; using such advice to switch
+engines requires an explicit engine choice from the owner. Reviewer engines may follow an explicitly configured
+review policy.
+
+Pass the chosen engine explicitly with `agent spawn --engine claude|codex`. Without that flag, `AGENT_HUB_ENGINE`
+can supply a configured default; otherwise the launcher detects a Codex host through `CODEX_THREAD_ID` and falls
+back to Claude in an ordinary terminal. Native subagents run in their host; mixed teams use detached executors.
 Codex uses its configured model when `--model` is omitted; pass an actual available model id or an explicit
 `AGENT_HUB_CODEX_MODEL_MAP` alias. Claude aliases stay Claude-only. Read `docs/codex.md` for installation,
 hook trust, full access, and native worker setup. Full access keeps the lock hooks active.

@@ -1,5 +1,10 @@
 # Claude Code and Codex
 
+Workers default to the coordinator's current host: a Codex hub uses Codex workers and a Claude hub uses Claude
+workers. At the initial planning step the hub offers the engine choice once, using that default; an explicit choice
+is preserved in the stage rules, briefs and handoffs. Mixed teams are an explicit choice. Model and effort are
+chosen after the engine, within its available models.
+
 The coordinator and its workers can use different engines. The shared journal, inbox, role registry, question
 register, lock board and handoff files remain the protocol. Select an executor with `agent spawn --engine claude`
 or `--engine codex`; sending, status and stopping use the engine recorded at spawn.
