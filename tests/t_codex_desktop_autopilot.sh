@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT
 python3 - "$ROOT" "$TASK_TMP" <<'PY'
-import json, os, pathlib, shlex, subprocess, sys
+import contextlib, io, json, os, pathlib, shlex, subprocess, sys
 root, tmp = map(pathlib.Path, sys.argv[1:])
 sys.path.insert(0, str(root/'bin'))
 import autopilot as ap
@@ -145,6 +145,85 @@ for proc in procs:
     assert proc.returncode==0,(out,err)
 assert state(stage)['chain']==1 and state(stage)['pending']['taken_over'] and roles(stage)['session']==real
 print('PASS concurrent prepares and bind/takeover reserve/migrate once under the state lock')
+
+# Force the TOCTOU seam: CLI sees no pending request, then desktop reserves another number before CLI locks.
+home,stage,handoff=setup('cli-desktop-race')
+cli_handoff=stage/'HANDOFF-hub-cli.md'
+cli_handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
+original_env=dict(os.environ); os.environ.clear(); os.environ.update(env)
+original_lock,original_load,original_successor=ap.state_lock,ap.load_state,ap.CodexSuccessor
+empty_reads=[]; inserted=[]; launch_attempts=[]
+def observed_load(name):
+    data=original_load(name)
+    if not inserted:
+        assert data['pending'] is None
+        empty_reads.append(name)
+    return data
+@contextlib.contextmanager
+def racing_lock(name):
+    if not inserted:
+        assert empty_reads, 'CLI did not execute the earlier empty precheck'
+        prepare(handoff)  # Actual desktop prepare command uses its own process and the real state mutex.
+        desktop=state(stage)['pending']
+        request(desktop['request_id'])
+        inserted.append((stage/'auto-handoff.json').read_bytes())
+        assert state(stage)['pending']['n']==2 and state(stage)['chain']==1
+    with original_lock(name):
+        yield
+class ForbiddenSuccessor:
+    def __init__(self,*args,**kwargs):
+        launch_attempts.append('CLI successor constructed')
+        raise ap.hc.Failure('CLI launcher reached after desktop insertion')
+ap.load_state,ap.state_lock,ap.CodexSuccessor=observed_load,racing_lock,ForbiddenSuccessor
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        try: ap.succeed('stage-a',1,cli_handoff,None,None,repo,engine='codex',surface='cli',succ=7)
+        except ap.hc.Failure: pass
+        else: raise AssertionError('concurrent desktop request did not block CLI successor')
+    assert empty_reads and inserted
+    assert (stage/'auto-handoff.json').read_bytes()==inserted[0], 'CLI changed reserved desktop state/chain'
+    assert state(stage)['chain']==1 and not launch_attempts and not (stage/'agents').exists()
+finally:
+    ap.load_state,ap.state_lock,ap.CodexSuccessor=original_load,original_lock,original_successor
+    os.environ.clear();os.environ.update(original_env)
+print('PASS CLI empty precheck then different-number Desktop insertion retains exact state/chain and never launches')
+
+# A completed desktop takeover or a later manual owner also wins after CLI's earlier caller/precheck.
+for owner_change in ('desktop-taken-over','manual-later-hub'):
+    home,stage,handoff=setup(owner_change)
+    cli_handoff=stage/'HANDOFF-hub-cli.md'
+    cli_handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
+    original_env=dict(os.environ);os.environ.clear();os.environ.update(env)
+    original_lock,original_load,original_successor=ap.state_lock,ap.load_state,ap.CodexSuccessor
+    empty_reads=[];inserted=[];launch_attempts=[]
+    @contextlib.contextmanager
+    def owner_changed_lock(name):
+        if not inserted:
+            assert empty_reads, 'CLI did not execute the earlier empty precheck'
+            prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
+            env['CODEX_THREAD_ID']=real
+            rollout(real,{'type':'danger-full-access'})
+            takeover(handoff,req,cwd=repo)
+            assert state(stage)['pending']['taken_over'] and roles(stage)['session']==real
+            if owner_change=='manual-later-hub':
+                env['CODEX_THREAD_ID']=other
+                hub('takeover','--stage','stage-a','--session','self','--n','9','--handoff',handoff)
+                assert roles(stage)['session']==other and state(stage)['pending'] is None
+            inserted.append(((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes()))
+        with original_lock(name):
+            yield
+    ap.load_state,ap.state_lock,ap.CodexSuccessor=observed_load,owner_changed_lock,ForbiddenSuccessor
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            try: ap.succeed('stage-a',1,cli_handoff,None,None,repo,engine='codex',surface='cli',succ=7)
+            except ap.hc.Failure: pass
+            else: raise AssertionError('later registered owner did not block stale CLI successor')
+        assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==inserted[0]
+        assert not launch_attempts and not (stage/'agents').exists()
+    finally:
+        ap.load_state,ap.state_lock,ap.CodexSuccessor=original_load,original_lock,original_successor
+        os.environ.clear();os.environ.update(original_env)
+print('PASS completed Desktop proof and later manual owner survive stale CLI reservation without mutation/spawn')
 
 home,stage,handoff=setup('observed-restricted'); prepare(handoff,'--desktop-worktree'); req=state(stage)['pending']['request_id']; request(req)
 env['CODEX_THREAD_ID']=real
