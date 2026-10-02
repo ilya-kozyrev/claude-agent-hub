@@ -9,6 +9,10 @@ has an open `- [ ]` item. First action of the night: keep the machine awake — 
 `request_keep_awake` (`until: "session_idle"`) when the session has it, otherwise `caffeinate -dims -t 36000` in the
 background (macOS).
 
+## Business DoD
+<Source of the agreed result in the plan/brief/register; see skills/hub/SKILL.md, "Planning a stage".>
+Queue items inherit it. Record delivered results against it, with technical evidence separately.
+
 ## Permission matrix
 | Class | What is allowed without the owner |
 |---|---|
