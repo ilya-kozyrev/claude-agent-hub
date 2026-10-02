@@ -384,7 +384,9 @@ writes its handoff and waits for you; anything you type to the hub resets that c
   ([cost and turn limits](../README.md#cost-and-turn-limits)).
 - **Ignoring the permissions mode.** `bypassPermissions` is the default because any other mode silently stalls on the
   first blocked tool. Run agents in their own worktree, say what they must not touch, or set
-  `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
+  `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused. The hub needs
+  bypass too: in `default` and `acceptEdits` it waits for your click on every tool call, and in `auto` the classifier
+  refuses merges and pushes, so an unattended hub stops (README § Install, "Run the hub in bypass mode").
 - **Long waits in the foreground.** A hub that sits in `sleep` or a polling loop fills its context and blocks the chat.
   The waiting tool is `jwait`, run in the background. Agents are the same in reverse: they end when their turn ends, so
   a long command is run in the foreground with a raised timeout, not left in the background.

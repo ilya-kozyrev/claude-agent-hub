@@ -13,7 +13,7 @@ import hubcore as hc
 fake = tmp / 'codex'
 fake.write_text('''#!/usr/bin/env python3
 import json,os,sys,time
-with open(os.environ['FAKE_CODEX_LOG'],'a') as f: f.write(json.dumps({'argv':sys.argv[1:],'env':{k:os.environ.get(k) for k in ['CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','AGENT_SESSION_ID']}})+'\\n')
+with open(os.environ['FAKE_CODEX_LOG'],'a') as f: f.write(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','AGENT_SESSION_ID']}})+'\\n')
 print(json.dumps({'type':'thread.started','thread_id':'22222222-2222-4222-8222-222222222222'}),flush=True)
 print(json.dumps({'type':'turn.started'}),flush=True)
 time.sleep(60)
@@ -50,8 +50,8 @@ def succeed(handoff, cwd, **kwargs):
     with contextlib.redirect_stdout(out):
         rc = ap.succeed('stage-a',1,handoff,None,None,cwd,**kwargs)
     return rc, out.getvalue()
-def stop():
-    subprocess.run([str(root/'bin/agent'),'stop','hub-2','--stage','stage-a'], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+def stop(role="hub-2"):
+    subprocess.run([str(root/'bin/agent'),'stop',role,'--stage','stage-a'], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 home,handoff,cwd = setup('inherit')
 try:
@@ -127,6 +127,50 @@ try:
     assert state(home)['pending']['model'] is None
     print('PASS unspecified Codex model uses CLI config and autonomous full access')
 finally: stop()
+
+# In Git, successors leave the predecessor's disposable worktree and start from main HEAD in a fresh one.
+home,handoff,cwd=setup('worktree')
+repo=home/'repo';repo.mkdir()
+def git(*args):
+    return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True,text=True)
+git('init','-q','-b','main')
+(repo/'tracked.txt').write_text('main checkout\n');git('add','tracked.txt')
+git('-c','user.email=test@example.invalid','-c','user.name=Test','commit','-qm','init')
+predecessor=repo/'.claude/worktrees/previous'
+git('worktree','add','-q','-b','predecessor',str(predecessor))
+(predecessor/'tracked.txt').write_text('predecessor uncommitted\n')
+(repo/'.worktrees/stage-a-hub-2').mkdir(parents=True)
+git('branch','stage-a-hub-2-2')
+try:
+    rc,out=succeed(handoff,predecessor)
+    assert rc==0
+    meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
+    successor=repo/'.worktrees/stage-a-hub-2-3'
+    assert pathlib.Path(meta['cwd']).resolve()==successor.resolve()
+    assert pathlib.Path(calls()[-1]['cwd']).resolve()==successor.resolve()
+    assert state(home)['pending']['cwd']==str(repo.resolve())
+    assert state(home)['pending']['worktree']==str(successor.resolve())
+    assert (successor/'tracked.txt').read_text()=='main checkout\n'
+    assert (predecessor/'tracked.txt').read_text()=='predecessor uncommitted\n'
+    assert 'in the new worktree' in out and str(repo.resolve()) in out
+    print('PASS Codex successor uses fresh worktree from main HEAD, skips collisions and preserves predecessor')
+finally: stop()
+
+# Explicit successor numbering also works for legacy unnumbered hub tags.
+home,handoff,cwd=setup('legacy')
+roles=json.loads((home/'stage-a/roles.json').read_text());roles['roles']['hub']['tag']='hub'
+(home/'stage-a/roles.json').write_text(json.dumps(roles))
+try:
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        rc=ap.succeed('stage-a',25,handoff,None,None,cwd,engine='codex',succ=26,notes=('legacy numbering',))
+    assert rc==0 and state(home)['pending']['n']==26
+    assert ap.pending_number('stage-a',handoff)==26
+    assert 'Hub stage-a #26' in out.getvalue() and 'legacy numbering' in out.getvalue()
+    assert (home/'stage-a/agents/hub-26/meta.json').is_file()
+    ap.on_takeover('stage-a',26,True)
+    assert state(home)['chain']==1 and state(home)['pending']['taken_over']
+    print('PASS Codex preserves legacy hub tag, explicit successor number, numbering note and takeover chain')
+finally: stop('hub-26')
 
 home,handoff,cwd=setup('limit')
 os.environ['AGENT_HUB_AUTO_HANDOFF_CHAIN']='0'

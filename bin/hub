@@ -62,11 +62,12 @@ description, age) and the three ways out, and exits 2; with --allow-live-subagen
 its TODO section.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
-exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` in --cwd with the hub's model and permission mode
-and the prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
+exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
+(`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode and the
+prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
-When the background session cannot start (CLI not logged in, an untrusted directory after one try in the main
-checkout) it starts a headless hub with `agent spawn` instead; bypassPermissions without its accepted disclaimer
+When the background session cannot start (CLI not logged in, the main checkout untrusted) it starts a headless hub
+with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
 becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
 tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it
 ($CLAUDE_CODE_SESSION_ID, else $HUB_TAG; exit 2 otherwise; a sub-agent of the hub shares its session id and passes —
@@ -75,6 +76,9 @@ successor per shift: a second call while one is
 being started or has not taken over is refused with the time to retry and a ready jwait; --again drops the record
 of a successor that did not take over and is not running. The successor's takeover carries --auto-handoff, which keeps the
 chain; any other takeover resets it.
+With --engine codex, succeed starts a detached Codex hub in its own worktree from the main checkout, preserving
+model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
+Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
 reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
 .agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
 available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
@@ -152,15 +156,14 @@ def hub_name(stage: str, n: int) -> str:
     return f"Hub {stage} #{n}"
 
 
-HUB_TAG_RE = re.compile(r"hub-(\d+)")
 HANDOFF_TITLE_RE = re.compile(r'^# Handoff "[^"\n]*#(\d+)" → "[^"\n]*#(\d+)"', re.MULTILINE)
 
 
 def registered_hub(stage: str):
-    """(number, record) of the hub in roles.json, or (None, record-or-None)."""
+    """(number, record) of the hub in roles.json, or (None, record-or-None). The number is read from the tag:
+    `hub-N`, a legacy `хаб-N`, any tag ending in `-N` (hc.hub_number)."""
     rec = hc.roles_load(stage)["roles"].get("hub")
-    m = HUB_TAG_RE.fullmatch((rec or {}).get("tag") or "")
-    return (int(m.group(1)) if m else None), rec
+    return hc.hub_number((rec or {}).get("tag")), rec
 
 
 def handoff_numbers(path):
@@ -174,26 +177,38 @@ def handoff_numbers(path):
 
 
 def takeover_number(stage: str, session: str, cli: str, handoff, notes: list) -> int:
-    """The new hub's number: kept on a re-run, else registered + 1, else the handoff's successor, else 1."""
+    """The new hub's number: kept on a re-run, else next_number()."""
     n, rec = registered_hub(stage)
     if n and (rec.get("session") in (session, cli) or rec.get("cli_session_id") == cli):
         return n
+    return next_number(stage, handoff, notes)
+
+
+def next_number(stage: str, handoff, notes: list, choose: str = "pass --n to choose") -> int:
+    """The next hub's number: registered + 1, else the handoff's successor, else 1 (the larger when both). `hub
+    takeover` registers by it and `hub succeed` names its successor by it, so the name and the takeover agree."""
+    n, _ = registered_hub(stage)
     from_roles = n + 1 if n else None
     _, from_handoff = handoff_numbers(handoff) if handoff else (None, None)
     if from_roles and from_handoff and from_roles != from_handoff:
         notes.append(f"roles say hub-{n} (next #{from_roles}), the handoff names #{from_handoff} — taking "
-                     f"#{max(from_roles, from_handoff)}; pass --n to choose")
+                     f"#{max(from_roles, from_handoff)}; {choose}")
     return max(x for x in (from_roles, from_handoff, 1) if x)
 
 
-def handoff_number(stage: str) -> int:
+def handoff_number(stage: str, handoff=None, choose: str = "pass --n") -> int:
+    """The current hub's number: registered, else the outgoing number of `handoff` (the one it wrote), else a guess —
+    the successor named by the stage's latest handoff (the one this hub took over by)."""
     n, _ = registered_hub(stage)
     if n:
         return n
+    out, _ = handoff_numbers(handoff) if handoff else (None, None)
+    if out:
+        return out
     _, succ = handoff_numbers(latest("HANDOFF-hub-*.md", stage))
     if succ:
         return succ
-    raise hc.UsageError(f"no hub registered in stage {stage} (roles `hub`) and no handoff to count from — pass --n")
+    raise hc.UsageError(f"no hub registered in stage {stage} (roles `hub`) and no handoff to count from — {choose}")
 
 
 def coordinator_dir(stage: str) -> Path:
@@ -567,7 +582,9 @@ def cmd_takeover(a) -> int:
     if handoff is not None and not handoff.is_file():
         raise hc.UsageError(f"--handoff {handoff}: no such file")
     notes = []
-    n = a.n or takeover_number(stage, session, cli, handoff, notes)
+    # the successor `hub succeed` started takes the number it was started under (its name, the jwait it is awaited by)
+    n = (a.n or (autopilot.pending_number(stage, handoff) if a.auto_handoff else None)
+         or takeover_number(stage, session, cli, handoff, notes))
     tag = f"hub-{n}"
     name = a.name or hub_name(stage, n)
 
@@ -913,7 +930,7 @@ def check_caller(stage: str, n: int) -> None:
     if sid and rec and sid not in (rec.get("session"), rec.get("cli_session_id")):
         raise hc.UsageError(f"this session ({sid[:8]}) is not the hub of stage {stage} (hub-{n}: "
                             f"{rec.get('title') or rec.get('session')}) — only the registered hub hands over")
-    if tag and not sid and tag != f"hub-{n}":
+    if tag and not sid and tag not in (f"hub-{n}", rec.get("tag")):
         raise hc.UsageError(f"HUB_TAG {tag} is not the hub of stage {stage} (hub-{n}) — only the registered hub hands over")
 
 
@@ -924,19 +941,32 @@ def cmd_succeed(a) -> int:
     if not (autopilot.enabled() or a.force or a.dry_run):
         raise hc.UsageError("autopilot is off (AGENT_HUB_AUTO_HANDOFF in the hub home's config.json): a hub starts no "
                             "background session unasked. The owner, at a terminal, may pass --force")
-    n = handoff_number(stage)
+    if a.fallback:
+        # the handoff the pending successor was started from: the numbers come out as they did then
+        handoff = (autopilot.load_state(stage).get("pending") or {}).get("handoff")
+    elif not a.handoff:
+        raise hc.UsageError("--handoff is required (the draft `hub handoff` wrote, TODOs filled)")
+    else:
+        handoff = Path(a.handoff).expanduser().resolve()
+        if not handoff.is_file():
+            raise hc.UsageError(f"--handoff {handoff}: no such file")
+    # this hub's number (the handoff's outgoing one wins over a guess) and its successor's, from the function the
+    # successor's takeover numbers by
+    # `hub succeed` has no --n: the numbers are chosen in the handoff's title (`hub handoff --n N` writes it)
+    choose = "write the handoff with `hub handoff --stage {} --n <your number>` and pass it as --handoff".format(stage)
+    n, notes = handoff_number(stage, handoff, choose), []
+    succ = next_number(stage, handoff, notes, "correct the numbers in the handoff's title to choose")
+    if succ <= n:
+        notes.append(f"the handoff names #{succ} as the successor of hub-{n} — taking #{n + 1}")
+        succ = n + 1
     check_caller(stage, n)
     if a.fallback:
-        return autopilot.fallback(stage, n, a.why)
-    if not a.handoff:
-        raise hc.UsageError("--handoff is required (the draft `hub handoff` wrote, TODOs filled)")
-    handoff = Path(a.handoff).expanduser().resolve()
-    if not handoff.is_file():
-        raise hc.UsageError(f"--handoff {handoff}: no such file")
+        return autopilot.fallback(stage, n, a.why, succ)
     cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
-    return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again, a.engine)
+    return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
+                             engine=a.engine, succ=succ, notes=tuple(notes))
 
 
 # ---------------------------------------------------------------- reviewer

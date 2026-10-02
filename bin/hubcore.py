@@ -966,6 +966,16 @@ def roles_load(stage: str) -> dict:
     return data
 
 
+# The hub's number in its roles tag: "hub-26", a legacy "хаб-25" (hubs registered by hand before the plugin), any tag
+# that ends in "-<n>".
+HUB_NUMBER_RE = re.compile(r".+-(\d+)")
+
+
+def hub_number(tag) -> Optional[int]:
+    m = HUB_NUMBER_RE.fullmatch(tag.strip()) if isinstance(tag, str) else None
+    return int(m.group(1)) if m else None
+
+
 def roles_save(stage: str, data: dict) -> None:
     atomic_write(roles_path(stage), json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 

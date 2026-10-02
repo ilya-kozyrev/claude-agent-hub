@@ -107,7 +107,9 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   default; unsupported effort values are refused before launch.
   `AGENT_HUB_SUCCESSOR_ENGINE` selects a hub-wide successor engine; `--engine` overrides it. The chain limit,
   reservations and takeover checks prevent duplicate launches. Reach the successor through `agent send` and the shared registers;
-  the Claude Desktop/Remote Control phone workflow stays Claude-specific.
+  in Git, it starts from the main checkout in a fresh named worktree so archiving the old coordinator cannot remove its directory.
+  Outside Git it keeps the supplied directory.
+  The Claude Desktop/Remote Control phone workflow stays Claude-specific.
 - Night queue files and permissions work with both engines. The optional Claude Desktop scheduled nudge and
   Claude outgoing-message budget remain platform-specific; they are not installed as Codex scheduled tasks.
 
