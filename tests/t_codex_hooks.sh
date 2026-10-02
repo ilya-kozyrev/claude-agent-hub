@@ -155,6 +155,68 @@ class CodexHooks(unittest.TestCase):
         (profile / 'reviewer.toml').write_text('model="gpt-6-sol"\nmodel_reasoning_effort="low"\n')
         self.assertTrue(self.denied(self.hook('delegation.py', 'spawn_agent', {'agent_type': 'reviewer'}, args=('pre-tool',))))
 
+    def test_standalone_workers_enforce_pinned_effort(self):
+        self.config(AGENT_HUB_EFFORT_RULES={'gpt-*': 'high'})
+        agents = self.cwd / '.codex' / 'agents'
+        agents.mkdir(parents=True)
+        for effort in ('high', 'medium'):
+            source = ROOT / 'skills/setup/resources/codex-agents' / f'worker-{effort}.toml'
+            (agents / source.name).write_text(source.read_text())
+        # Standalone worker pins effort, while the explicit spawn supplies its model.
+        high = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'worker-high', 'model': 'gpt-6-sol'}, args=('pre-tool',))
+        self.assertFalse(self.denied(high))
+        medium = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'worker-medium', 'model': 'gpt-6-sol'}, args=('pre-tool',))
+        self.assertTrue(self.denied(medium))
+        overridden = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'worker-medium', 'model': 'gpt-6-sol',
+                                                            'reasoning_effort': 'high'}, args=('pre-tool',))
+        self.assertTrue(self.denied(overridden), 'custom file effort overrides explicit spawn effort')
+
+    def test_standalone_name_source_and_project_precedence(self):
+        self.config(AGENT_HUB_EFFORT_RULES={'gpt-*': 'high'})
+        user = self.home / '.codex' / 'agents'
+        project = self.cwd / '.codex' / 'agents'
+        user.mkdir(parents=True)
+        project.mkdir(parents=True)
+        def role(name, effort, model='gpt-6-sol'):
+            return f'name="{name}"\ndescription="fixture"\ndeveloper_instructions="fixture"\nmodel="{model}"\nmodel_reasoning_effort="{effort}"\n'
+        (user / 'arbitrary.toml').write_text(role('named_worker', 'medium'))
+        (project / 'different-filename.toml').write_text(role('named_worker', 'high'))
+        (project / 'broken-unrelated.toml').write_text('not a = TOML[')
+        (project / 'named_worker.toml').write_text(role('other_worker', 'medium'))
+        out = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'named_worker'}, args=('pre-tool',))
+        self.assertFalse(self.denied(out))
+        (project / 'different-filename.toml').unlink()
+        out = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'named_worker'}, args=('pre-tool',))
+        self.assertTrue(self.denied(out), 'the user role is used only after project role disappears')
+        self.config(AGENT_HUB_EFFORT_RULES={'gpt-6-sol': 'high'})
+        out = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'other_worker', 'model': 'gpt-6-luna',
+                                                     'reasoning_effort': 'high'}, args=('pre-tool',))
+        self.assertTrue(self.denied(out), 'role definition overrides explicit model and effort')
+
+    def test_standalone_roles_skip_unrelated_ancestors(self):
+        self.config(AGENT_HUB_EFFORT_RULES={'gpt-*': 'high'})
+        # Without a Git root, only cwd is a project layer, never arbitrary ancestors.
+        (self.cwd / '.git').rmdir()
+        outer = self.home / 'outside'
+        self.cwd = outer / 'nested'
+        self.cwd.mkdir(parents=True)
+        agents = outer / '.codex' / 'agents'
+        agents.mkdir(parents=True)
+        (agents / 'not-in-this-project.toml').write_text('name="foreign"\ndescription="fixture"\ndeveloper_instructions="fixture"\nmodel_reasoning_effort="low"\n')
+        out = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'foreign', 'model': 'gpt-6-sol',
+                                                     'reasoning_effort': 'high'}, args=('pre-tool',))
+        self.assertFalse(self.denied(out))
+
+    def test_explicit_legacy_mapping_remains_supported(self):
+        self.config(AGENT_HUB_EFFORT_RULES={'gpt-*': 'high'})
+        directory = self.cwd / '.codex'
+        (directory / 'agents').mkdir(parents=True)
+        (directory / 'mapped.toml').write_text('model="gpt-6-sol"\nmodel_reasoning_effort="high"\n')
+        (directory / 'config.toml').write_text('[agents.compat]\nconfig_file="mapped.toml"\n')
+        (directory / 'agents/compat.toml').write_text('name="compat"\ndescription="fixture"\ndeveloper_instructions="fixture"\nmodel="gpt-6-sol"\nmodel_reasoning_effort="medium"\n')
+        out = self.hook('delegation.py', 'spawn_agent', {'agent_type': 'compat'}, args=('pre-tool',))
+        self.assertFalse(self.denied(out))
+
     def test_bash_guard_remains_active_in_bypass(self):
         denied = self.hook('polling_guard.py', 'Bash', {'command': 'sleep 120'})
         self.assertTrue(self.denied(denied))

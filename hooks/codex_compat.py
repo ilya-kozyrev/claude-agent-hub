@@ -25,8 +25,10 @@ def policy_tool(name):
 def agent_call(tool, args, cwd, level):
     """Read Codex role config, never a similarly named Claude agent definition.
 
-    Explicit spawn arguments take precedence. Unknown or inline session overrides stay
-    inherited rather than claiming a configured effort that cannot be observed by hooks.
+    Custom file model/effort override explicit spawn values, per native role semantics.
+    Unknown or inline session overrides stay inherited rather than claiming a configured
+    effort that cannot be observed by hooks. Explicit legacy config_file declarations
+    remain supported; standalone discovery is used when no such declaration is present.
     """
     try:
         import tomllib
@@ -36,16 +38,34 @@ def agent_call(tool, args, cwd, level):
     definition = {}
     found = False
     if tomllib is not None:
-        paths = [Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"]
+        user_dir = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
         directory = Path(cwd or os.getcwd()).resolve()
         # Project config precedence runs from the repository root toward cwd.
         chain = [directory, *directory.parents]
+        project_found = False
         for i, item in enumerate(chain):
             if (item / ".git").exists():
                 chain = chain[:i + 1]
+                project_found = True
                 break
-        paths += [p / ".codex" / "config.toml" for p in reversed(chain)]
-        for path in paths:
+        if not project_found:
+            chain = [directory]  # no repository: never inspect unrelated ancestors
+        dirs = [user_dir, *[p / ".codex" for p in reversed(chain)]]
+        mapped_profile = None
+        standalone = None
+        for directory in dirs:
+            # Scan only immediate TOML files in the role directory. The declared name,
+            # not a filename supplied by the tool, identifies a native custom role.
+            for profile in sorted((directory / "agents").glob("*.toml")):
+                try:
+                    candidate = tomllib.loads(profile.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue  # an unrelated broken role must not disable this guard
+                if candidate.get("name") == typ and all(isinstance(candidate.get(k), str)
+                                                         for k in ("description", "developer_instructions")):
+                    standalone = candidate
+                    break
+            path = directory / "config.toml"
             if not path.is_file():
                 continue
             config = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -57,11 +77,18 @@ def agent_call(tool, args, cwd, level):
                 profile = Path(filename).expanduser()
                 if not profile.is_absolute():
                     profile = path.parent / profile
-                definition = tomllib.loads(profile.read_text(encoding="utf-8"))
-                found = True
-    model = str(args.get("model") or definition.get("model") or "inherit").strip().lower()
-    effort = str(args.get("reasoning_effort") or definition.get("model_reasoning_effort") or "inherit")
-    source = "param" if args.get("model") else "definition" if definition.get("model") else "inherit"
+                mapped_profile = profile
+        if mapped_profile is not None:
+            # Compatibility convention: retain explicit legacy mappings over discovery.
+            # Native docs do not specify collisions between these two authoring formats.
+            definition = tomllib.loads(mapped_profile.read_text(encoding="utf-8"))
+            found = True
+        elif standalone is not None:
+            definition = standalone
+            found = True
+    model = str(definition.get("model") or args.get("model") or "inherit").strip().lower()
+    effort = str(definition.get("model_reasoning_effort") or args.get("reasoning_effort") or "inherit")
+    source = "definition" if definition.get("model") else "param" if args.get("model") else "inherit"
     return {"tool": policy_tool(tool), "level": "off" if level is None else str(level),
             "subagent_type": typ, "defined": "true" if found else "false", "model": model,
             "model_from": source, "effort": effort}
