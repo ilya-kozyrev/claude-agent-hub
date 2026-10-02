@@ -90,7 +90,7 @@ needed. See [non-interactive Codex](https://learn.chatgpt.com/docs/non-interacti
 `--permission-mode bypassPermissions` is the detached default for both engines. Claude receives that mode;
 Codex receives `--dangerously-bypass-approvals-and-sandbox`, equivalent to no approval prompts and
 `danger-full-access`. Approval policy `never` alone does not grant full filesystem access.
-This applies to spawn, resume and the Codex autopilot successor. The lock hooks remain enabled in full access.
+This applies to spawn, resume and the Codex CLI autopilot successor. The lock hooks remain enabled in full access.
 See [Codex CLI options](https://learn.chatgpt.com/docs/cli/reference).
 
 Hook trust is a separate control. Detached Codex workers explicitly load the bundled Codex hooks and default
@@ -135,7 +135,7 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
 - `agent-top --once`, `--json` and `--widget` work with both event streams. Codex values absent from its stream are
   shown as unavailable rather than inferred. A host that can preview local HTML may open the widget file;
   otherwise the skill returns the text snapshot. No Claude live artifact is required.
-- Codex autopilot (`hub succeed --engine codex`) starts a detached Codex successor. It inherits the actual
+- Codex console autopilot (`hub succeed --engine codex --surface cli`, or automatic console detection) starts a detached Codex successor. It inherits the actual
   rollout model, reasoning effort and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
   workspace policy fields include network access, writable roots and temporary-directory exclusions; unknown
   policy fields are refused explicitly instead of discarded. An unspecified model
@@ -152,3 +152,58 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
 
 Only commands observed by enabled, trusted hooks can be guarded. External terminal commands and commands that
 match no configured rule remain outside the lock board's enforcement. The files remain local to one person and machine.
+
+
+## Desktop autopilot
+
+`hub succeed --engine codex --surface auto` detects an actual app hub through both
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` and `CODEX_APP_TOOLS_PIPE_PATH`, excluding detached
+`AGENT_ROLE` workers. `CODEX_THREAD_ID` alone identifies a Codex session, not a desktop surface. Detached children
+strip app attribution/transport markers. `--surface cli` and `--headless` keep the ordinary detached launch,
+model/effort/sandbox inheritance and fresh CLI worktree rules. `--surface desktop` prepares a request without
+calling a CLI or accessing any app socket. It never silently falls back to CLI.
+
+The current **app agent** executes this procedure automatically after preparing the handoff:
+
+1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file>`. Keep its request token.
+   The command reserves one successor/chain count and writes its takeover brief. Preparation is not launch success.
+2. Call native `list_projects`. Find the unique saved local project whose path, normalized to its Git main
+   checkout (including realpath/symlinks), matches the request's `project_root`. Use the returned projectId/path;
+   if there is no unique match, report the failure and keep the predecessor. Never hardcode a project ID.
+3. Run `hub desktop-request --stage <S> --request <token> --project-id <returned ID> --project-path <returned path>`.
+   Its JSON has `create_thread` arguments and `already_dispatched`. Only when false, pass `create_thread` to
+   the supported native `create_thread` tool. Dispatch is reserved before this call; a repeated command returns
+   true and must not create another thread. The request uses the saved project, a managed worktree in Git, actual
+   `model`/`thinking` fields when known, and the project's default branch. `--branch <existing branch>` on succeed
+   supplies startingState only for an explicit user branch request. No branch is invented or created.
+4. Confirm native output with `hub desktop-bind --stage <S> --request <token> --project-id <returned ID>` plus
+   `--thread-id <actual threadId>` and/or `--client-thread-id <clientThreadId>`. Client IDs are opaque (for example
+   `client-new-thread:…`), stored separately, and cannot become registry identities. If only a client ID returns,
+   keep the request pending. Supported app observations or the successor's own registration can supply the actual
+   ID. `list_threads` alone is not readiness proof: a newly running task may not appear there yet. Never use a
+   client ID with a thread API, or invent an operation/host/thread ID. No operation API is called without a returned ID.
+5. Continue the printed `jwait` in the shell harness, preserving its execution session and exit status. The successor
+   runs its brief's `hub takeover --session self --auto-handoff --desktop-request <token>` from its actual cwd.
+   Its own CODEX_THREAD_ID, main project, persisted rollout settings and stage-home write access are validated
+   before role/lock migration. Takeover reconciles actual identity/cwd and retains the original chain count.
+   Confirm `hub desktop-status --stage <S> --request <token> --verified` (exit 0) before stopping the predecessor.
+   Status shows requested and observed model/effort/sandbox/approval separately. Report preservation only from
+   observed data. Bind/takeover can arrive in either order; repeats retain the same identity/count. A later hub
+   invalidates the request, so stale confirmations/takeovers cannot replace it.
+
+The supported create_thread/handoff_thread schemas have **no sandbox or approval setting**. Requested policy is
+carried in the brief/state, not smuggled into API arguments. Desktop defaults/UI determine actual policy. Full
+Access cannot be promised by these APIs, and approval `never` is not Full Access. A successor with unknown rollout
+policy, read-only access, or a workspace sandbox that excludes the stage home fails honestly before migration;
+the predecessor stays active. If policy permits the home, status records the actual policy even when it differs
+from requested. The protocol changes no global settings or installations and grants no broader access to other hubs.
+
+On native error, run `hub desktop-fail --stage <S> --request <token> --why <reason>`. Unknown results retain an
+uncertain reservation: inspect supported app evidence or await self-registration; do not create another successor.
+Only confirmed failure **before any thread was created** permits `--no-thread-created`; this resets dispatch on the
+same request. `hub succeed … --again --surface desktop` prints that same request without increasing the chain.
+Once any client/actual ID was recorded, a no-create assertion is rejected. Desktop reservations survive timeouts
+and owner chain resets; they are not automatically dropped while an app thread might still exist.
+
+Successor briefs work the finite handoff queue first. `jwait` runs only while outstanding work or external events
+remain; an empty/completed queue journals DONE and finishes without an unconditional nine-minute wait.

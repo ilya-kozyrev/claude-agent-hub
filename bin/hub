@@ -76,7 +76,9 @@ successor per shift: a second call while one is
 being started or has not taken over is refused with the time to retry and a ready jwait; --again drops the record
 of a successor that did not take over and is not running. The successor's takeover carries --auto-handoff, which keeps the
 chain; any other takeover resets it.
-With --engine codex, succeed starts a detached Codex hub in its own worktree from the main checkout, preserving
+With --engine codex, --surface auto prepares a native desktop request in an actual app hub; the current app agent
+executes native list_projects/create_thread and desktop-request/bind/fail/status. Actual takeover verifies its own
+identity/cwd and observed policy; APIs cannot set Full Access. --surface cli or --headless starts a detached Codex hub in its own worktree from the main checkout, preserving
 model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
 Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
 reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
@@ -567,6 +569,26 @@ def cmd_start(a) -> int:
 
 
 def cmd_takeover(a) -> int:
+    # Serialize role migration with launch/bind and other takeovers. Desktop validation precedes locks/roles/journal.
+    with autopilot.state_lock(hc.check_stage(a.stage)):
+        request = getattr(a, "desktop_request", None)
+        pending = autopilot.load_state(a.stage).get("pending") or {}
+        if a.auto_handoff and pending.get("surface") == "desktop" and not request:
+            raise hc.UsageError("desktop automatic takeover requires --desktop-request from its brief")
+        if request:
+            if a.n is not None and a.n != pending.get("n"):
+                raise hc.UsageError("desktop takeover number must match the reserved successor")
+            if not a.auto_handoff:
+                raise hc.UsageError("--desktop-request requires --auto-handoff")
+            if not a.dry_run:
+                autopilot.desktop_preflight(a.stage, request, resolve_self(a.session), a.handoff)
+        rc = _cmd_takeover(a)
+        if request and not a.dry_run and rc == 0:
+            autopilot.desktop_complete(a.stage, request)
+        return rc
+
+
+def _cmd_takeover(a) -> int:
     stage = hc.check_stage(a.stage)
     starting = getattr(a, "start", False)
     if not (hc.root() / stage).is_dir() and not (starting and a.dry_run):
@@ -735,7 +757,15 @@ def cmd_takeover(a) -> int:
             data = hc.roles_load(stage)
             data["roles"]["hub"]["engine"] = engines.selected()
             hc.roles_save(stage, data)
-        autopilot.on_takeover(stage, n, a.auto_handoff)  # the automatic successor keeps the chain; anyone else resets it
+        if getattr(a, "desktop_request", None):
+            with hc.roles_lock(stage):
+                data = hc.roles_load(stage)
+                pend = autopilot.load_state(stage)["pending"]
+                data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
+                                           cwd=pend["cwd"], observed=pend["observed"])
+                hc.roles_save(stage, data)
+        else:
+            autopilot.on_takeover(stage, n, a.auto_handoff, locked=True)  # the automatic successor keeps the chain; anyone else resets it
     print()
     print(digest(stage, n, name, handoff, plan.done, notes))
     return 0
@@ -966,7 +996,7 @@ def cmd_succeed(a) -> int:
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
-                             engine=a.engine, succ=succ, notes=tuple(notes))
+                             engine=a.engine, succ=succ, notes=tuple(notes), surface=a.surface, branch=a.branch)
 
 
 # ---------------------------------------------------------------- reviewer
@@ -1038,6 +1068,7 @@ def main(argv: list) -> int:
     t.add_argument("--auto-handoff", action="store_true",
                    help="this is the successor `hub succeed` started (its prompt gives the command): keeps the chain of "
                         "automatic handoffs, which any other takeover resets")
+    t.add_argument("--desktop-request", help="reservation token in the desktop successor brief")
     t.add_argument("--dry-run", action="store_true")
     h = sub.add_parser("handoff", help="write a handoff draft")
     h.add_argument("--stage", required=True)
@@ -1054,6 +1085,9 @@ def main(argv: list) -> int:
                                               "else default)")
     sc.add_argument("--cwd", help="the successor's working directory (default: here)")
     sc.add_argument("--engine", choices=engines.ENGINES, help="successor engine (default: current host)")
+    sc.add_argument("--surface", choices=("auto", "desktop", "cli"), default="auto",
+                    help="Codex launch surface: actual app hub -> desktop request; console/worker -> CLI")
+    sc.add_argument("--branch", help="desktop worktree starting branch, only when explicitly requested and existing")
     sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn) right away")
     sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
                                                             "and start a headless one")
@@ -1062,6 +1096,21 @@ def main(argv: list) -> int:
                                                          "drop its record and start a new one")
     sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand)")
     sc.add_argument("--dry-run", action="store_true")
+    dr = sub.add_parser("desktop-request", help="reserve native dispatch and print create_thread args for a saved project")
+    db = sub.add_parser("desktop-bind", help="confirm native client/actual identity without claiming takeover")
+    df = sub.add_parser("desktop-fail", help="record native failure without an invisible CLI fallback")
+    ds = sub.add_parser("desktop-status", help="show requested/observed identity and verified takeover")
+    ds.add_argument("--verified", action="store_true", help="exit 1 until the actual takeover verifies")
+    for dp in (dr, db, df, ds):
+        dp.add_argument("--stage", required=True)
+        dp.add_argument("--request", required=True)
+    dr.add_argument("--project-id", required=True)
+    dr.add_argument("--project-path", required=True)
+    db.add_argument("--project-id")
+    db.add_argument("--thread-id")
+    db.add_argument("--client-thread-id")
+    df.add_argument("--why", required=True)
+    df.add_argument("--no-thread-created", action="store_true", help="confirmed failure before any thread creation")
     r = sub.add_parser("reviewer", help="choose the reviewer for a change and print how to start it")
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
     r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
@@ -1077,7 +1126,11 @@ def main(argv: list) -> int:
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
     a = p.parse_args(argv)
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
-            "reviewer": cmd_reviewer, "home": cmd_home}[a.cmd](a)
+            "reviewer": cmd_reviewer, "home": cmd_home,
+            "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
+            "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),
+            "desktop-bind": lambda a: autopilot.desktop_bind(hc.check_stage(a.stage), a.request, a.thread_id, a.client_thread_id, a.project_id),
+            "desktop-fail": lambda a: autopilot.desktop_fail(hc.check_stage(a.stage), a.request, a.why, a.no_thread_created)}[a.cmd](a)
 
 
 if __name__ == "__main__":
