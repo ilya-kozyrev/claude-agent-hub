@@ -82,7 +82,14 @@ R=$S/aphome; export AGENT_HUB_HOME=$R CLAUDE_BIN=$T/fake_claude_bg.py FAKE_BG_LO
   AGENT_HUB_SUCCESSOR_TIMEOUT=2 CLAUDE_SESSIONS_DIR=$(mktemp -d)
 $B/hub start --stage stage-a --session 11111111-1111-4111-8111-111111111111 > /dev/null 2>&1
 H=$R/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md; printf '# Handoff\n\n## 0. First steps\n1. x\n' > $H
-HUB_TAG=hub-1 AGENT_SESSION_ID=old-hub-id $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --permission-mode default > $S/succ.out 2>&1
+# AGENT_SESSION_ID is now a real caller identity: a stale id must be refused, while the registered id
+# is accepted and then removed from the successor's environment.
+HUB_TAG=hub-1 AGENT_SESSION_ID=old-hub-id $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --permission-mode default > $S/stale-succ.out 2>&1
+check $? 2 "successor: stale inherited AGENT_SESSION_ID is refused"
+grep -q 'this session (old-hub-) is not the hub of stage stage-a' $S/stale-succ.out
+check $? 0 "…the refusal identifies the stale caller"
+HUB_TAG=hub-1 AGENT_SESSION_ID=11111111-1111-4111-8111-111111111111 $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --permission-mode default > $S/succ.out 2>&1
+check $? 0 "successor: the registered AGENT_SESSION_ID is accepted"
 python3 - $S/bg.log $R <<'PY' > $S/bg.chk
 import json, sys
 c = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
