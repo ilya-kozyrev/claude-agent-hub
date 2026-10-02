@@ -95,7 +95,14 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
 - `agent-top --once`, `--json` and `--widget` work with both event streams. Codex values absent from its stream are
   shown as unavailable rather than inferred. A host that can preview local HTML may open the widget file;
   otherwise the skill returns the text snapshot. No Claude live artifact is required.
-- Codex autopilot starts a detached Codex successor. Reach it through `agent send` and the shared registers;
+- Codex autopilot (`hub succeed --engine codex`) starts a detached Codex successor. It inherits the actual
+  rollout model and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
+  workspace policy fields include network access, writable roots and temporary-directory exclusions; unknown
+  policy fields are refused explicitly instead of discarded. An unspecified model
+  stays with the CLI configuration. Interactive approval policies become `never` for unattended successors: denied
+  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model and sandbox policy.
+  `AGENT_HUB_SUCCESSOR_ENGINE` selects a hub-wide successor engine; `--engine` overrides it. The chain limit,
+  reservations and takeover checks prevent duplicate launches. Reach the successor through `agent send` and the shared registers;
   the Claude Desktop/Remote Control phone workflow stays Claude-specific.
 - Night queue files and permissions work with both engines. The optional Claude Desktop scheduled nudge and
   Claude outgoing-message budget remain platform-specific; they are not installed as Codex scheduled tasks.
