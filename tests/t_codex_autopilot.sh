@@ -112,6 +112,8 @@ ap.codex_rollouts.INDEX.checked=None
 home,handoff,cwd=setup('dry')
 rc,out=succeed(handoff,cwd,dry_run=True)
 assert rc==0 and 'exec --json' in out and 'sandbox_mode=' in out and 'fixture-codex-model' in out
+assert '--engine codex' in out and '--worktree' not in out
+assert str(home/'stage-a/coordinator/work/hub-2-takeover-brief.md') in out
 assert not (home/'stage-a/auto-handoff.json').exists()
 assert not (home/'stage-a/coordinator/work/hub-2-takeover-brief.md').exists()
 print('PASS representative dry run writes no reservation or brief')
@@ -141,6 +143,15 @@ git('worktree','add','-q','-b','predecessor',str(predecessor))
 (predecessor/'tracked.txt').write_text('predecessor uncommitted\n')
 (repo/'.worktrees/stage-a-hub-2').mkdir(parents=True)
 git('branch','stage-a-hub-2-2')
+before_calls=len(calls());before_refs=git('show-ref').stdout
+rc,dry=succeed(handoff,predecessor,dry_run=True)
+assert rc==0 and '--cwd '+str(repo.resolve()) in dry and '--worktree stage-a-hub-2-3' in dry
+assert '--engine codex' in dry and str(home/'stage-a/coordinator/work/hub-2-takeover-brief.md') in dry
+assert len(calls())==before_calls and git('show-ref').stdout==before_refs
+assert not (repo/'.worktrees/stage-a-hub-2-3').exists()
+assert not (home/'stage-a/auto-handoff.json').exists()
+assert not (home/'stage-a/coordinator/work/hub-2-takeover-brief.md').exists()
+print('PASS Codex dry run names actual spawn/root/fresh worktree without creating a branch, brief or process')
 try:
     rc,out=succeed(handoff,predecessor)
     assert rc==0

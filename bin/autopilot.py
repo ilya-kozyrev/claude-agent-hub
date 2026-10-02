@@ -664,6 +664,14 @@ The owner may be away; they reach you through `ask` and `agent send hub-{self.su
                 raise hc.Failure(f"the Codex successor did not start: {tail(res.stderr or res.stdout, 400)}")
         return {"role": role, "brief": str(brief), "worktree": str(self.worktree or "")}
 
+    def dry_spawn_argv(self):
+        """The actual launcher command, with a prospective brief path and worktree; no filesystem writes."""
+        if self.root:
+            self.wt_name = free_worktree_name(self.root, self.rc_name)
+            self.worktree = self.root / ".worktrees" / self.wt_name
+        brief = hc.work_dir(self.stage) / f"hub-{self.succ}-takeover-brief.md"
+        return self.argv(brief)
+
     def dry_argv(self):
         meta = {"cwd": str(self.cwd), "model": self.cli_model, "sandbox": self.mode,
                 "approval_policy": self.approval, "sandbox_policy": self.sandbox_policy, "effort": self.effort}
@@ -938,8 +946,10 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if dry_run:
         print(f"[plan] auto-handoff {s.k}/{limit}: start \"{s.title}\" from {s.cwd}"
               + (" in a new worktree" if s.root else "") + ":\n  "
-              + " ".join(shlex.quote(x) for x in (s.dry_argv() if engine == "codex"
+              + " ".join(shlex.quote(x) for x in (s.dry_spawn_argv() if engine == "codex"
                                                  else [s.claude] + s.bg_argv(mode))))
+        if engine == "codex":
+            print("\nCodex exec policy preview:\n  " + " ".join(shlex.quote(x) for x in s.dry_argv()))
         return 0
     if engine == "codex":
         why = "the Codex engine uses a detached successor"
