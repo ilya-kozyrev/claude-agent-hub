@@ -1055,7 +1055,7 @@ def _release(stage: str, succ: int, k: int) -> None:
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
             headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
             succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None,
-            replace: bool = False, force: bool = False, surface="auto", branch=None) -> int:
+            replace: bool = False, force: bool = False, surface="auto", branch=None, desktop_worktree=False) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
     retry = (load_state(stage).get("pending") or {}) if again or replace else {}
@@ -1072,8 +1072,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         surface = "desktop" if engine == "codex" and engines.codex_desktop() else "cli"
     if surface == "desktop" and engine != "codex":
         raise hc.UsageError("desktop surface requires --engine codex")
-    if branch and surface != "desktop":
-        raise hc.UsageError("--branch is only supported for desktop requests")
+    if (branch or desktop_worktree) and surface != "desktop":
+        raise hc.UsageError("--branch/--desktop-worktree are only supported for desktop requests")
     # A desktop retry reuses its reservation, including an uncertain native launch. Never spawn a fallback.
     existing = load_state(stage).get("pending") or {}
     if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
@@ -1122,7 +1122,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         raise hc.UsageError(f"--model {model!r}: {problem}")
     if surface == "desktop":
         return prepare_desktop(stage, n, succ, handoff, cwd, model, effort, sandbox_policy,
-                               context.get("approval_policy"), branch, dry_run)
+                               context.get("approval_policy"), branch, dry_run, desktop_worktree)
     if again and not dry_run:
         drop_dead(stage, n, cwd, succ)
     replaced = ""
@@ -1238,14 +1238,16 @@ def desktop_report(stage, pend):
             "On ALARM inspect this same request; keep predecessor active and never create another thread for an uncertain result.")
 
 
-def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run):
+def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False):
     root = main_checkout(cwd) or cwd.resolve()
     if branch:
         res = subprocess.run(['git', '-C', str(root), 'show-ref', '--verify', '--quiet', f'refs/heads/{branch}'],
                              capture_output=True, env=hc.git_env())
         if res.returncode:
             raise hc.UsageError('--branch must name an existing branch explicitly requested by the user')
-    environment = {'type': 'worktree'} if main_checkout(root) else {'type': 'local'}
+    if (desktop_worktree or branch) and not main_checkout(root):
+        raise hc.UsageError('desktop worktree/branch requires a Git project')
+    environment = {'type': 'worktree'} if desktop_worktree or branch else {'type': 'local'}
     if branch:
         environment['startingState'] = {'type': 'branch', 'branchName': branch}
     requested = {'model': model, 'effort': effort, 'sandbox_policy': policy, 'approval_policy': approval}
