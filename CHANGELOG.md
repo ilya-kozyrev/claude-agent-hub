@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **The autopilot successor starts in its own worktree, from the main checkout.** `hub succeed` starts `claude --bg`
+  from the main checkout of the hub's directory with `--worktree <stage>-hub-<n>` (`<main checkout>/.claude/worktrees/`,
+  branch `worktree-<stage>-hub-<n>`), the way a Claude Desktop session does; the headless fallback runs
+  `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n>`. Before, the successor started in the hub's own
+  directory — for a hub in a Desktop session, that session's worktree, which Desktop removes when it archives the
+  session, taking the live hub's directory with it. A taken name gets `-2`, `-3`… (`claude --bg --worktree` with a
+  taken name joins the existing worktree instead of failing, launch modes E26). The journal line names the root and the
+  worktree. An untrusted main checkout now falls back to the headless hub instead of retrying elsewhere. Outside git:
+  unchanged, in the hub's directory.
+- **Legacy hub tags count.** The hub's number is read from any roles tag ending in `-N` (`hub-N`, a legacy `хаб-N`).
+  Before, `хаб-25` read as no number, so `hub succeed` took the successor number of the latest handoff (26) as its own,
+  named its successor #27 while the takeover registered #26, and the chain was reset as a takeover by hand. `hub succeed`
+  now takes its number from the registry, else from the outgoing number of `--handoff`; the successor's number comes
+  from the function `hub takeover` numbers by; and a takeover with `--auto-handoff` takes the pending successor's number.
+- Tests: `tests/lib.sh` also unsets `AGENT_SESSION_ID`, so the suite passes when run from an `agent spawn` session.
+
 ## 0.7.0 — 2026-10-01
 
 The hub's files move out of `~/.claude`, which Claude Code protects, and where they live becomes a setting. The

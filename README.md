@@ -610,16 +610,26 @@ hub:
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
    `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, its Remote Control link and
    `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
+   The successor starts the way a Claude Desktop session does: from the repository's main checkout, in a new worktree
+   of its own (`--worktree <stage>-hub-<n+1>` → `<main checkout>/.claude/worktrees/<stage>-hub-<n+1>` on branch
+   `worktree-<stage>-hub-<n+1>`, from the main checkout's HEAD; a taken name gets `-2`, `-3`…), never in the hub's
+   own directory — that may be a Desktop session's worktree, removed when the session is archived. Outside git it
+   starts in the hub's directory. Nothing removes the worktree: `claude rm <id>` does once the session is done.
 3. When the line arrives the old hub tells you the successor's name and link in one line and stops. It releases
    nothing: the successor's `hub takeover` moves the locks.
 4. Fallbacks, each journaled with its reason: bypass mode without the accepted disclaimer → `auto` (`acceptEdits` for
-   Haiku); an untrusted directory → the repository's main checkout, once; the CLI not logged in, or still untrusted →
-   a headless hub (`agent spawn`, in its permission mode: `bypassPermissions` unless `AGENT_HUB_PERMISSION_MODE` says
+   Haiku); the CLI not logged in, or the main checkout not trusted by it →
+   a headless hub (`agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>`, in its permission mode: `bypassPermissions` unless `AGENT_HUB_PERMISSION_MODE` says
    otherwise — a `claude -p` hub has nobody to approve a prompt); no takeover by the deadline → `hub succeed --fallback` journals the session's log
    tail, stops it and starts the headless hub. You talk to a headless hub through `ask` and `agent send`.
 5. At most `AGENT_HUB_AUTO_HANDOFF_CHAIN` automatic handoffs in a row (default 10). At the limit the hub writes its
    handoff, starts no successor and waits for you. Your own prompt in the hub's session, or a takeover you start by
    hand (without the `--auto-handoff` the successor's command carries), resets the count.
+
+The numbers: the hub's own is its roles tag's (`hub-N`, a legacy `хаб-N`, any tag ending in `-N`), else the outgoing
+number of the handoff given to `hub succeed`; the successor's comes from the function `hub takeover` numbers by, and the
+successor's `hub takeover --auto-handoff` takes the number it was started under — so its name, its start line (the
+`jwait` match) and the chain agree.
 
 Past the block threshold the hub's Bash passes only when every command of the line is `hub handoff`, `hub succeed`,
 `jlog` or `jwait` (output redirected only to `/dev/null`, a descriptor or a HANDOFF file), and Write/Edit only on a
@@ -637,7 +647,7 @@ directory); the background one does not inherit `AGENT_SESSION_ID` (a headless h
 `--session self` name the old hub.
 
 Requirements: a logged-in standalone `claude` CLI (`claude auth login` — Claude Desktop's login does not reach
-`claude --bg`), the project directory trusted by the CLI (run `claude` there once and accept the prompt), and for a
+`claude --bg`), the repository's main checkout trusted by the CLI (run `claude` there once and accept the prompt), and for a
 successor in bypass mode a one-time `claude --dangerously-skip-permissions` in a terminal. How to reach the successor:
 [Getting started](docs/getting-started.md#leave-the-hub-running).
 
