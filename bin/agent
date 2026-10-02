@@ -392,11 +392,20 @@ def cmd_spawn(a) -> int:
         raise hc.UsageError(denied)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     sandbox = None
+    policy = None
     if engine == "codex":
-        sandbox = engines.permission_policy(a.permission_mode, a.sandbox, cwd)
+        if a.sandbox_policy:
+            policy = engines.sandbox_policy(a.sandbox_policy)
+            sandbox = policy["type"]
+            if a.sandbox and a.sandbox != sandbox:
+                raise hc.UsageError("--sandbox and --sandbox-policy type disagree")
+            if a.permission_mode and engines.permission_policy(a.permission_mode, cwd=cwd) != sandbox:
+                raise hc.UsageError("--permission-mode and --sandbox-policy type disagree")
+        else:
+            sandbox = engines.permission_policy(a.permission_mode, a.sandbox, cwd)
         engines.hook_args(cwd)
-    elif a.sandbox:
-        raise hc.UsageError("--sandbox is only supported by the Codex engine")
+    elif a.sandbox or a.sandbox_policy:
+        raise hc.UsageError("--sandbox and --sandbox-policy are only supported by the Codex engine")
     else:
         bg_wait_ceiling(cwd)  # a bad value fails before any directory or process exists
     if not brief.is_file():
@@ -442,6 +451,8 @@ def cmd_spawn(a) -> int:
     meta["engine"] = engine
     if engine == "codex":
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
+        if policy:
+            meta["sandbox_policy"] = policy
     if wt:
         meta["worktree"] = wt
     prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, engine=engine, role=a.role, tag=tag, report=report,
@@ -751,6 +762,7 @@ def main(argv: list) -> int:
     s.add_argument("--cwd", required=True)
     s.add_argument("--engine", choices=engines.ENGINES, help="AGENT_HUB_ENGINE, detected Codex host, else claude")
     s.add_argument("--sandbox", choices=engines.SANDBOXES, help="Codex sandbox; approval prompts remain disabled")
+    s.add_argument("--sandbox-policy", help="Codex rollout sandbox JSON; preserve supported roots/network/temp restrictions")
     s.add_argument("--model", help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
                    "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
     s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")

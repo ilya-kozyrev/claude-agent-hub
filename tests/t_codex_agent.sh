@@ -14,10 +14,10 @@ else:sys.exit('agent did not finish')
 PY
 }
 FAKE_CODEX_HOLD=2 spawn worker --model gpt-fixture > "$AGENT_HUB_HOME/spawn.out"; check $? 0 'Codex detached spawn'
-"$B/agent" status worker | rg -q 'ALIVE'; check $? 0 'generated session ID does not break liveness'
+"$B/agent" status worker | grep -Eq 'ALIVE'; check $? 0 'generated session ID does not break liveness'
 "$B/agent" send worker 'queued control' >/dev/null; check $? 0 'alive Codex inbox'
 wait_done worker; check $? 0 'Codex process exits'
-"$B/agent" status worker | rg -q 'finished \(success.*unread inbox messages 1'; check $? 0 'Codex success + unread messages'
+"$B/agent" status worker | grep -Eq 'finished \(success.*unread inbox messages 1'; check $? 0 'Codex success + unread messages'
 SID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$AGENT_HUB_HOME/stage-a/agents/worker/meta.json")
 "$B/agent" send worker 'resume control' >/dev/null; check $? 0 'resume Codex'
 wait_done worker
@@ -59,8 +59,8 @@ FAKE_CODEX=die spawn rejected >/dev/null 2>&1; check $? 1 'CLI rejection fails s
 FAKE_CODEX=hang AGENT_INIT_TIMEOUT=1 spawn hanging >/dev/null 2>&1; check $? 1 'init deadline kills hanging CLI'
 FAKE_CODEX=error spawn errored >/dev/null; check $? 0 'started thread recorded before API failure'
 wait_done errored
-"$B/agent" status errored | rg -q 'finished \(error, error'; check $? 0 'API failure reported as error'
-rg -q 'EXIT errored: error' "$(journal stage-a)"; check $? 0 'API failure wakes journal waiter'
+"$B/agent" status errored | grep -Eq 'finished \(error, error'; check $? 0 'API failure reported as error'
+grep -Eq 'EXIT errored: error' "$(journal stage-a)"; check $? 0 'API failure wakes journal waiter'
 spawn badmode --permission-mode auto >/dev/null 2>&1; check $? 2 'unsupported interactive permission mode refused'
 spawn both --sandbox read-only --permission-mode bypassPermissions >/dev/null 2>&1; check $? 2 'conflicting policy rejected'
 spawn alias --model opus >/dev/null 2>&1; check $? 2 'Claude aliases not silently used for Codex'
@@ -68,4 +68,25 @@ AGENT_HUB_CODEX_MODEL_MAP='judge=gpt-fixture' spawn mapped --model judge >/dev/n
 wait_done mapped
 CODEX_THREAD_ID=22222222-2222-2222-2222-222222222222 AGENT_HUB_ENGINE=codex "$B/lock" take main-merge --until +1h --why identity >/dev/null; check $? 0 'Codex owns locks under actual thread ID'
 CODEX_THREAD_ID=22222222-2222-2222-2222-222222222222 AGENT_HUB_ENGINE=codex "$B/lock" release main-merge >/dev/null; check $? 0 'Codex releases its own lock'
+
+POLICY='{"type":"workspace-write","network_access":false,"exclude_tmpdir_env_var":true,"exclude_slash_tmp":true,"writable_roots":["/tmp/preserved-root"]}'
+spawn policy --sandbox-policy "$POLICY" >/dev/null; check $? 0 'structured sandbox policy'
+wait_done policy
+"$B/agent" send policy 'same restrictions' >/dev/null; check $? 0 'structured sandbox resume'
+wait_done policy
+python3 - "$W" <<'PY2'
+import json,sys
+from pathlib import Path
+for row in [json.loads(l) for l in (Path(sys.argv[1])/'codex-argv.jsonl').read_text().splitlines()][-2:]:
+ assert 'sandbox_workspace_write.network_access=false' in row
+ assert 'sandbox_workspace_write.exclude_tmpdir_env_var=true' in row
+ assert 'sandbox_workspace_write.exclude_slash_tmp=true' in row
+ assert any(x.startswith('sandbox_workspace_write.writable_roots=') and '/tmp/preserved-root' in x for x in row)
+ assert '--dangerously-bypass-approvals-and-sandbox' not in row
+PY2
+check $? 0 'network/temp/root policy preserved on spawn and resume'
+spawn unknown --sandbox-policy '{"type":"externalSandbox"}' >/dev/null 2>&1; check $? 2 'unsupported sandbox type refused'
+spawn nested --sandbox-policy '{"type":"workspace-write","writable_roots":[{"root":"/tmp","excluded_subpaths":["secret"]}]}' >/dev/null 2>&1; check $? 2 'nested restrictions never silently flattened'
+spawn invalid --sandbox-policy '["read-only"]' >/dev/null 2>&1; check $? 2 'policy must be an object'
+
 exit $fail

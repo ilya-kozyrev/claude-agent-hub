@@ -74,6 +74,30 @@ def permission_policy(mode=None, sandbox=None, cwd=None):
     return mapping[mode]
 
 
+def sandbox_policy(raw):
+    """Validate a rollout sandbox without silently discarding restrictions."""
+    try:
+        policy = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except (ValueError, TypeError):
+        raise hc.UsageError("--sandbox-policy must be a JSON object") from None
+    if not isinstance(policy, dict) or policy.get("type") not in SANDBOXES:
+        raise hc.UsageError("--sandbox-policy needs a supported sandbox type")
+    keys = {"type"}
+    if policy["type"] == "workspace-write":
+        keys |= {"network_access", "writable_roots", "exclude_tmpdir_env_var", "exclude_slash_tmp"}
+    unsupported = set(policy) - keys
+    if unsupported:
+        raise hc.UsageError("cannot preserve sandbox restrictions: unsupported fields " + ", ".join(sorted(unsupported)))
+    for key in keys - {"type", "writable_roots"}:
+        if key in policy and not isinstance(policy[key], bool):
+            raise hc.UsageError(f"sandbox policy {key} must be boolean")
+    if "writable_roots" in policy:
+        roots = policy["writable_roots"]
+        if not isinstance(roots, list) or any(not isinstance(p, str) or not Path(p).is_absolute() for p in roots):
+            raise hc.UsageError("sandbox writable_roots must be absolute paths; nested root restrictions cannot be flattened")
+    return policy
+
+
 def toml_value(value):
     """A CLI config override is TOML, not JSON; quote keys as well as values."""
     if isinstance(value, dict):
@@ -124,7 +148,12 @@ def codex_argv(meta, prompt, resume=False):
         # exec resume has no --sandbox/--add-dir flags; overrides work on both paths.
         args += ["-c", "sandbox_mode=" + json.dumps(sandbox), "-c", 'approval_policy="never"']
         if sandbox == "workspace-write":
-            args += ["-c", "sandbox_workspace_write.writable_roots=" + toml_value([str(hc.root())])]
+            policy = meta.get("sandbox_policy") or {}
+            roots = list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())]))
+            args += ["-c", "sandbox_workspace_write.writable_roots=" + toml_value(roots)]
+            for key in ("network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"):
+                if key in policy:
+                    args += ["-c", f"sandbox_workspace_write.{key}=" + toml_value(policy[key])]
     args += hook_args(meta["cwd"])
     return args + [prompt]
 
