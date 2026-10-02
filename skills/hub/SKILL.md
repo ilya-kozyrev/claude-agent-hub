@@ -232,7 +232,7 @@ This recipe applies to Claude and Codex, in the console and app.
    approved plan with `ask plan --stage <S> "<plan in one line>"` (`agent spawn` warns when the stage has none).
 5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification
    and stop/permission conditions separate. Later executors and hub shifts carry the same result through handoffs;
-   they choose details independently and raise only new business-material ambiguity.
+   they choose details independently and raise only new ambiguity that materially changes the business result.
 
 For an owner who is not technical, one question is mandatory: "How will you open the result, and where should it live?",
 with a recommendation. For something that runs in a browser, recommend a static site (for example GitHub Pages),
