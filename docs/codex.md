@@ -33,6 +33,20 @@ Codex's SessionStart hook selects the Codex engine for that session. In a plain 
 untrusted, pass `--engine codex` or set `AGENT_HUB_ENGINE=codex`. The general default remains `claude`.
 Use the installed plugin's `bin/` directory explicitly if a command is absent or shadowed on PATH.
 
+### Terminal monitor and older installations
+
+Plugin installation does not replace personal commands or wrappers in `~/.local/bin`, or upgrade an already
+running `agent-top`. A wrapper that searches only the Claude cache can keep launching 0.7.x after installing
+Codex support. That monitor does not understand Codex process tokens or JSON events: a living Codex worker can
+appear dead, with zero turns and an empty feed. Run the new installed plugin's `bin/agent-top` directly, or update
+your terminal PATH/symlinks to that directory, then quit and restart the old monitor.
+
+For a version-resolving personal wrapper, search both `~/.claude/plugins/cache/*/agent-hub/*/bin` and
+`~/.codex/plugins/cache/*/agent-hub/*/bin` (honour `CLAUDE_CONFIG_DIR` / `CODEX_HOME` overrides). Compare the numeric
+version component, not the full path, and use the newest shared runtime. The runtime supports both engines;
+choosing its installation directory does not choose the worker engine. Check the selected monitor with
+`<installed-plugin>/bin/agent-top --json --agent <role> --feed 10`, using the same hub home and stage as the UI.
+
 ## Spawn, message and resume
 
 ```sh
@@ -47,6 +61,12 @@ For Codex, leaving out `--model` uses `AGENT_HUB_CODEX_DEFAULT_MODEL` if configu
 model. Pass an available model id when you need a pin; `AGENT_HUB_CODEX_MODEL_MAP` provides explicit aliases.
 The plugin does not silently translate Claude model aliases into GPT ids. `CODEX_BIN` chooses the executable.
 Choose an effort supported by the selected model with `--effort`.
+
+Before a stage's first detached launch for a CLI/model, check the selected CLI with `codex --version` and
+`codex debug models` (substitute `CODEX_BIN` when configured). The desktop app and standalone CLI can have different
+model availability. Ordinary implementation uses an available Sol-family model, or the owner's explicit choice.
+An unavailable Sol version calls for a CLI compatibility check or an available Sol peer, with the fallback reported;
+Astra needs a task-based judgement reason. A model startup error alone does not justify that model class change.
 
 Codex launches with `codex exec --json`; its `thread.started` event supplies the actual thread id saved in
 `meta.json`. A message to a finished worker uses `codex exec resume` with that id. A message to a running worker

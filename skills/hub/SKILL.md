@@ -251,6 +251,13 @@ code** before acting on it — a review is a colleague's opinion. Classes, the c
 - Model and effort: choose per agent. Claude supports `opus|sonnet|haiku|fable` aliases and optional
   `AGENT_HUB_MODEL_MAP` pins. Codex supports available model ids and optional `AGENT_HUB_CODEX_MODEL_MAP` aliases;
   omit the model to use `AGENT_HUB_CODEX_DEFAULT_MODEL` or the CLI configuration. Choose effort supported by that model.
+  Before the first detached Codex launch for a selected CLI/model in a stage, check that CLI's `--version` and
+  `debug models` catalog (use `CODEX_BIN` when configured), including its configured default when omitting `--model`.
+  Desktop model availability does not establish standalone CLI availability. Ordinary implementation uses an
+  available Sol-family model, subject to the owner's explicit model choice. Resolve an unavailable Sol version by
+  checking CLI compatibility or selecting an available Sol peer and reporting the fallback. Reserve Astra for a
+  task whose judgement needs justify it, stating the reason before launch; a startup/model error is a compatibility
+  issue rather than a reason to raise the task's model class. Keep the chosen engine through this recovery.
   `AGENT_HUB_PERMISSION_MODE=bypassPermissions` is the headless default: Claude uses its bypass mode, Codex uses
   `--dangerously-bypass-approvals-and-sandbox`. For Codex read-only review, pass `--sandbox read-only` instead.
   Codex hook trust is separate: see `docs/codex.md`; read the returned errors when a restricted operation fails.
