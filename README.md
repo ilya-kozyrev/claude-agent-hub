@@ -1,13 +1,15 @@
 # agent-hub
 
-A Claude Code plugin for running long, parallel work with **one hub session and many headless agents**.
+A Claude Code and Codex plugin for running long, parallel work with **one hub session and many headless agents**.
 
-The hub is your interactive Claude Code session. It writes a brief, starts a detached `claude -p` agent for it, and
-goes back to planning. Agents report through a shared **journal**, take messages through an **inbox**, ask the owner
-through a **question register**, and respect **locks** on shared resources such as merging to main. When the hub's
-context fills up, it writes a **handoff** and a fresh hub takes over — the agents keep running. With **autopilot**
-on, the hub does that by itself: it starts its successor as a background session you can reach from your phone.
-`agent-top` shows all of it at a glance, in the terminal or as a chat widget.
+The hub is your interactive Claude Code or Codex session. It writes a brief and starts detached workers with
+`agent spawn --engine claude|codex`. Agents report through a shared **journal**, take messages through an **inbox**,
+ask the owner through a **question register**, and respect **locks** on shared resources such as merging to main.
+When the hub's context fills up, it writes a **handoff** and a fresh hub takes over — the agents keep running.
+With **autopilot** on, the hub starts its successor automatically: Claude supports its background Remote Control
+workflow; Codex starts a detached Codex successor. `agent-top` shows both engines in the terminal or as a chat widget.
+
+Codex installation, full access, hook trust and native worker definitions: [Codex support](docs/codex.md).
 
 Everything is plain files under one directory and a handful of small Python CLIs. No server, no database.
 
@@ -55,7 +57,7 @@ links below); `—` means the docs do not say.
 | **`claude -p --resume` by hand** | Yes: your own process; the conversation is stored and `--resume <id>` continues it [5][6] | Yes through cross-session messaging (v2.1.224+): a `-p` worker takes messages unattended if its `--settings` set `crossSessionInbound: accept`; not in `--bare` mode. Otherwise resume it with a new prompt [6][7] | `--session-id <uuid>` [5] | What you build: stdout, stream-json, files [6] | — | Wherever Claude Code runs [10]; `--max-turns`, `--max-budget-usd` [5] |
 | **Background sessions** (`claude --bg`, agent view) | Yes: a supervisor process runs them after you close the terminal or start another session [8] | Yes: reply from agent view or `claude attach <id>`; reachable by cross-session messaging [7][8] | A short ID printed at start (`claude logs / attach / stop <id>`) [5][8] | Its own conversation; each session moves into its own worktree before editing; results go to you, not to another session [2][8] | — | Research preview [2][8] |
 | **Agent teams** | No: the team config is removed when the session ends; `/resume` does not restore in-process teammates; one team per session [9] | The lead, the teammates and you; a team is not shared across sessions [9] | Names chosen by the lead; session IDs sit in runtime team config you must not edit [9] | A shared task list (`~/.claude/tasks/<team>/`) and JSON mailboxes [9] | Task claiming uses file locking; nothing for external resources, and teammates must own different files [9] | Experimental, off by default; split panes need tmux or iTerm2 [9] |
-| **agent-hub headless agents** | Yes: detached `claude -p` in its own process group; survives the hub closing, compacting or handing over | Yes: `agent send` writes its inbox while it runs and resumes it after it exits | Yes: `--session-id`, kept in `meta.json` | Files: brief, inbox, journal, reports, question register | A lock board enforced by a hook: merges to protected branches and the commands you list | macOS and Linux; a third-party plugin, MIT |
+| **agent-hub headless agents** | Yes: detached `claude -p` or `codex exec` in its own process group; survives the hub closing, compacting or handing over | Yes: `agent send` writes its inbox while it runs and resumes it after it exits | Yes: Claude `--session-id` or the Codex thread id, kept in `meta.json` | Files: brief, inbox, journal, reports, question register | A lock board enforced by a hook: merges to protected branches and the commands you list | macOS and Linux; a third-party plugin, MIT |
 
 Sources, Claude Code documentation read on 2026-10-01:
 [1] [Subagents](https://code.claude.com/docs/en/sub-agents) ·
@@ -81,8 +83,8 @@ everyone but the holder. If a sub-agent, a background session or `claude -p` cov
 ```mermaid
 flowchart LR
     owner(["Owner"])
-    hub["Hub session<br/>(interactive Claude Code)"]
-    subgraph agents["Headless agents — claude -p, detached"]
+    hub["Hub session<br/>(Claude Code or Codex)"]
+    subgraph agents["Headless agents — Claude Code or Codex, detached"]
         a1["builder"]
         a2["reviewer"]
         a3["migrator"]
@@ -100,7 +102,7 @@ flowchart LR
     hub -->|"agent spawn: writes"| brief
     hub -->|"agent send (alive): appends"| inbox
     hub -->|"agent spawn / send (gone): starts or resumes"| agents
-    agents -->|"stream-json output"| log
+    agents -->|"JSON event output"| log
     agents -->|"reads after each step"| inbox
     agents -->|"jlog: DONE / BLOCKED / QUESTION"| journal
     hub -->|"jlog, roles broadcast"| journal
@@ -117,7 +119,7 @@ flowchart LR
 
 | Tool | What it does |
 |---|---|
-| `agent spawn / status / send / stop` | Start a detached `claude -p` agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
+| `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. |
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
@@ -167,14 +169,27 @@ The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` pro
 
 ## Install
 
-**Platform.** macOS and Linux, Python 3.10+ (standard library only), the `claude` CLI on `PATH`. Windows is not
+**Platform.** macOS and Linux, Python 3.10+ (standard library only), the selected `claude` or `codex` CLI on `PATH`. Windows is not
 supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself does run natively on Windows
 ([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
+
+**Claude Code:**
 
 ```text
 /plugin marketplace add ilya-kozyrev/claude-agent-hub
 /plugin install agent-hub@claude-agent-hub
 ```
+
+**Codex, from a local checkout:**
+
+```sh
+codex plugin marketplace add /absolute/path/to/claude-agent-hub
+codex plugin add agent-hub@agent-hub-codex
+```
+
+Review and trust its hooks before starting an interactive Codex hub. The explicit Codex manifest selects
+`hooks/codex-hooks.json` and packages the same five skills. Full access and hook trust are separate settings;
+[Codex support](docs/codex.md) explains detached defaults and restricted reviewers.
 
 The order: install, then your first message `/agent-hub:hub …` in the repository (see [Quickstart](#quickstart)), then
 [`agent-hub:setup`](#after-install-run-agent-hubsetup-in-each-repository) once per repository.
@@ -183,6 +198,10 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
 > nobody to approve a prompt, and any other mode silently stalls on the first blocked tool. Treat every agent as a
 > process with your user's rights — say in its brief what it must not touch, run it in a worktree or sandbox, or set
 > `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
+
+For Codex, `bypassPermissions` maps to `--dangerously-bypass-approvals-and-sandbox` (full access and no approval
+prompts). `--sandbox read-only` or `workspace-write` chooses a restricted worker instead. Detached Codex runs also
+use the separately configured hook-trust policy; hooks stay enabled. See [Codex permissions](docs/codex.md#full-access-and-hook-trust).
 
 ### What installing changes
 
@@ -196,7 +215,8 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
   `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
   first on `PATH` or remove the old tool.
 - **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
-  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name); four pinned-effort worker subagents.
+  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name); four pinned-effort Claude worker subagents.
+  Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
 - **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
   delegation dial and subagent rules — are described in their own section):
   - `board_locks` (before every Bash call) runs in every Claude Code session on the machine, but acts only on merges
@@ -214,7 +234,7 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
 
 ### After install: run `agent-hub:setup` in each repository
 
-Ask Claude to use the `agent-hub:setup` skill in the repository's checkout. A new, empty project may skip it for now:
+Ask your coordinator to use the `agent-hub:setup` skill in the repository's checkout. A new, empty project may skip it for now:
 the hub offers it when it is needed. It looks at the repository, then asks one round of numbered questions with a
 recommended answer for each: which branches are protected, which environments two sessions must not change at once,
 which commands touch each. It writes `.agent-hub/lock-rules.json` and `.agent-hub/config.json` and proves the rules
@@ -318,7 +338,7 @@ sequenceDiagram
     autonumber
     participant H as Hub session
     participant F as Files (brief, inbox, journal, log)
-    participant A as Agent (claude -p)
+    participant A as Agent (Claude or Codex)
     H->>F: write brief.md
     H->>A: agent spawn --role builder --brief …
     Note over A: detached, own process group,<br/>fixed session id, bin/ on PATH
@@ -330,7 +350,7 @@ sequenceDiagram
     A->>F: jlog "DONE work/TAG-REPORT.md"
     Note over A: turn ends = process exits
     F-->>H: jwait exits with the DONE line
-    H->>A: agent send builder "one more thing" (process gone → claude --resume, unread inbox replayed)
+    H->>A: agent send builder "one more thing" (process gone → recorded engine resume, unread inbox replayed)
     A->>F: jlog "DONE …"
     H->>A: agent stop builder (SIGTERM → SIGKILL, role retired)
 ```
@@ -475,6 +495,11 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. Hub-wide. |
 | `AGENT_HUB_MODEL_MAP` | none | Opt-in pin of aliases to model ids (without it an alias follows the CLI, which resolves it to its latest model), e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). A model id may use letters, digits and `. _ : @ [ ] / -` only (a Bedrock id or an ARN is fine); a pair outside that is reported and left out. |
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
+| `AGENT_HUB_ENGINE` | `claude` | Default executor engine (`claude` or `codex`); Codex SessionStart selects `codex` for that host. |
+| `CODEX_BIN` | `codex` on PATH | Codex executable for detached workers. |
+| `AGENT_HUB_CODEX_DEFAULT_MODEL` | CLI configured model | Optional Codex model pin when spawn omits `--model`. |
+| `AGENT_HUB_CODEX_MODEL_MAP` | none | Explicit Codex model aliases; Claude aliases are not translated automatically. |
+| `AGENT_HUB_CODEX_HOOK_TRUST` | `bypass` | Detached Codex hook trust policy: bypass runs all enabled hooks without persisted review; `reviewed` requires Codex trust. |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes. `lock rules init` writes it into `.agent-hub/config.json`. |
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub takeover` takes the hub repository's main-merge as if `--take-main-merge` were given. Without it, a free main-merge of a configured hub repository is reported in the digest. |
@@ -721,11 +746,14 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 
 ## Limitations
 
+Codex-specific setup, trust requirements and platform differences are in [Codex support](docs/codex.md).
+The Claude-specific facilities below apply when the selected host/engine is Claude.
+
 - The `"project"` home is shared by the worktrees of an ordinary clone; the worktrees of a bare repository each get
   their own.
 - macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
   itself runs natively on Windows. Python 3.10+, standard library only.
-- The `claude` CLI must be on `PATH` (or set `CLAUDE_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
+- The selected CLI must be on `PATH` (or set `CLAUDE_BIN` / `CODEX_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
   is newer. Model aliases follow the CLI: with Claude Code older than 2.1.285 they resolve to older models.
 - Headless agents run with `bypassPermissions` by default. Give every agent a brief that says what it must not
   touch, or set `AGENT_HUB_PERMISSION_MODE`.
@@ -740,7 +768,7 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 - One machine, one person: the files are local and the locks are advisory `flock`s plus a hook, not a distributed lock
   service. Two people cannot share a hub home (see [Team use](#team-use)).
 - Locks guard only what the hook recognises: merges and pushes to protected branches, and the commands your
-  `lock-rules.json` lists. A command run outside Claude Code, or one no rule matches, is not stopped.
+  `lock-rules.json` lists. A command run outside enabled, trusted host hooks, or one no rule matches, is not stopped.
 - The turn limit of a brief is an instruction to the agent, not something agent-hub enforces. Cost and plan limits are
   Claude Code's, shared with your interactive session.
 - Optional modules need macOS and Claude Desktop: the night nudge (waking a silent hub at night needs Claude Desktop's

@@ -1,0 +1,7 @@
+name = "worker-xhigh"
+description = "Bounded worker pinned to xhigh reasoning effort; choose an available model per spawn."
+model_reasoning_effort = "xhigh"
+developer_instructions = """
+Execute the brief, verify the requested result, and stop at its completion criterion or call budget.
+Report results, evidence and remaining blockers concisely. Commit owned work before a long test or wait when the brief asks for code changes.
+"""

@@ -1,0 +1,24 @@
+{
+  "name": "agent-hub",
+  "version": "0.7.0",
+  "description": "Coordinate detached Claude Code and Codex agents through shared briefs, inboxes, journals, owner questions, locks and handoffs.",
+  "author": {
+    "name": "Ilya Kozyrev",
+    "url": "https://github.com/ilya-kozyrev"
+  },
+  "homepage": "https://github.com/ilya-kozyrev/claude-agent-hub",
+  "repository": "https://github.com/ilya-kozyrev/claude-agent-hub",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "headless",
+    "orchestration",
+    "multi-agent",
+    "journal",
+    "handoff",
+    "locks",
+    "coordination"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json"
+}
