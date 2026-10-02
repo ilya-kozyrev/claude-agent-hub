@@ -335,6 +335,14 @@ J | grep -q "chain reset"; check $? 1 "legacy tag: no chain reset"
 legacy 'hub'
 $B/hub succeed --stage stage-a --handoff $H25 --cwd $W --model opus > /dev/null 2>&1
 check "$(call --bg argv | grep -c -- '--remote-control stage-a-hub-26 '):$(J | grep -c '\[hub-25\] auto-handoff 1/10')" "1:1" "no number in the tag: --handoff's outgoing #25 wins over the guess"
+# …and when that successor never takes over, --fallback stops it and starts the headless hub (the numberless tag is the
+# old hub's, not a successor that registered meanwhile)
+$B/hub succeed --stage stage-a --fallback > $R/lgf.out 2>&1; rc=$?
+check "$rc:$(call stop count):$(pending kind):$(pending role)" "0:1:headless:hub-26" "no number in the tag: --fallback stops the bg hub-26 and starts the headless one"
+# a hint for choosing the numbers that `hub succeed` can follow (it has no --n)
+legacy 'hub'; rm -f $R/stage-a/coordinator/HANDOFF-*.md; printf '# no title\n' > $R/plain.md
+$B/hub succeed --stage stage-a --handoff $R/plain.md --cwd $W --model opus > $R/nn.out 2>&1
+check "$?:$(grep -c 'pass --n' $R/nn.out):$(grep -c 'hub handoff --stage stage-a --n <your number>' $R/nn.out)" "2:0:1" "no number anywhere: hub succeed points at hub handoff --n, not at its own (absent) --n"
 # the pending successor's takeover takes the number it was started under, whatever the registry says by then
 setup
 python3 -c 'import json,sys; json.dump({"chain":1,"pending":{"n":7,"kind":"bg","id":"bg-x","k":1,"handoff":sys.argv[2],"at":"2026-10-02T11:00:00+00:00"}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json "$H"

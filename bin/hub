@@ -180,7 +180,7 @@ def takeover_number(stage: str, session: str, cli: str, handoff, notes: list) ->
     return next_number(stage, handoff, notes)
 
 
-def next_number(stage: str, handoff, notes: list) -> int:
+def next_number(stage: str, handoff, notes: list, choose: str = "pass --n to choose") -> int:
     """The next hub's number: registered + 1, else the handoff's successor, else 1 (the larger when both). `hub
     takeover` registers by it and `hub succeed` names its successor by it, so the name and the takeover agree."""
     n, _ = registered_hub(stage)
@@ -188,11 +188,11 @@ def next_number(stage: str, handoff, notes: list) -> int:
     _, from_handoff = handoff_numbers(handoff) if handoff else (None, None)
     if from_roles and from_handoff and from_roles != from_handoff:
         notes.append(f"roles say hub-{n} (next #{from_roles}), the handoff names #{from_handoff} — taking "
-                     f"#{max(from_roles, from_handoff)}; pass --n to choose")
+                     f"#{max(from_roles, from_handoff)}; {choose}")
     return max(x for x in (from_roles, from_handoff, 1) if x)
 
 
-def handoff_number(stage: str, handoff=None) -> int:
+def handoff_number(stage: str, handoff=None, choose: str = "pass --n") -> int:
     """The current hub's number: registered, else the outgoing number of `handoff` (the one it wrote), else a guess —
     the successor named by the stage's latest handoff (the one this hub took over by)."""
     n, _ = registered_hub(stage)
@@ -204,7 +204,7 @@ def handoff_number(stage: str, handoff=None) -> int:
     _, succ = handoff_numbers(latest("HANDOFF-hub-*.md", stage))
     if succ:
         return succ
-    raise hc.UsageError(f"no hub registered in stage {stage} (roles `hub`) and no handoff to count from — pass --n")
+    raise hc.UsageError(f"no hub registered in stage {stage} (roles `hub`) and no handoff to count from — {choose}")
 
 
 def coordinator_dir(stage: str) -> Path:
@@ -944,8 +944,10 @@ def cmd_succeed(a) -> int:
             raise hc.UsageError(f"--handoff {handoff}: no such file")
     # this hub's number (the handoff's outgoing one wins over a guess) and its successor's, from the function the
     # successor's takeover numbers by
-    n, notes = handoff_number(stage, handoff), []
-    succ = next_number(stage, handoff, notes)
+    # `hub succeed` has no --n: the numbers are chosen in the handoff's title (`hub handoff --n N` writes it)
+    choose = "write the handoff with `hub handoff --stage {} --n <your number>` and pass it as --handoff".format(stage)
+    n, notes = handoff_number(stage, handoff, choose), []
+    succ = next_number(stage, handoff, notes, "correct the numbers in the handoff's title to choose")
     if succ <= n:
         notes.append(f"the handoff names #{succ} as the successor of hub-{n} — taking #{n + 1}")
         succ = n + 1

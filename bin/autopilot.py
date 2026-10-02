@@ -554,11 +554,9 @@ def free_worktree_name(root: Path, base: str) -> str:
         return any(subprocess.run(["git", "-C", str(root), "show-ref", "--verify", "--quiet", f"refs/heads/{b}"],
                                   capture_output=True, env=hc.git_env()).returncode == 0
                    for b in (f"worktree-{name}", name))
-    name = base
-    for i in range(2, 100):
+    for name in [base] + [f"{base}-{i}" for i in range(2, 100)]:
         if not taken(name):
             return name
-        name = f"{base}-{i}"
     raise Start(f"no free worktree name {base}-2 … {base}-99 under {root}")
 
 
@@ -845,7 +843,8 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
     with state_lock(stage):
         # the successor may have registered while its logs were read: then it is taking over — do not stop it
         rec = hc.roles_load(stage)["roles"].get("hub") or {}
-        if hc.hub_number(rec.get("tag")) != n:
+        num = hc.hub_number(rec.get("tag"))  # a tag with no number (`hub`) is the old hub's: a takeover tags `hub-N`
+        if num is not None and num != n:
             data = load_state(stage)
             if (data.get("pending") or {}).get("kind") == "falling-back":
                 data["pending"] = bg
