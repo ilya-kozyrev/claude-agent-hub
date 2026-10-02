@@ -882,6 +882,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             succ: Optional[int] = None, notes: tuple = (), surface="auto", branch=None, desktop_worktree=False) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
+    predecessor = hc.roles_load(stage)["roles"].get("hub") or {}
+    caller_sid = hc.session_id()
     retry = (load_state(stage).get("pending") or {}) if again else {}
     if retry.get("n") != succ or retry.get("taken_over"):
         retry = {}
@@ -952,6 +954,16 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     with state_lock(stage):
         data = load_state(stage)
         pend = data.get("pending") or {}
+        # Desktop may reserve a different successor after the earlier precheck but before this mutex.
+        if pend.get("surface") == "desktop" and not pend.get("taken_over"):
+            raise hc.Failure("unfinished desktop request already reserved; retain it instead of launching CLI")
+        current = hc.roles_load(stage)["roles"].get("hub") or {}
+        number = hc.hub_number(current.get("tag"))
+        if (not current or current.get("session") != predecessor.get("session")
+                or current.get("cli_session_id") != predecessor.get("cli_session_id")
+                or number is not None and number != n
+                or caller_sid and caller_sid not in (current.get("session"), current.get("cli_session_id"))):
+            raise hc.Failure("the registered predecessor changed before reservation; no successor launched")
         if blocking(pend, succ) and not dry_run:
             raise hc.Failure(f"a successor hub-{succ} is already {'being started' if pend.get('kind') in IN_PROGRESS else 'started'} "
                              f"({pend.get('kind')} {pend.get('id') or pend.get('role') or ''}, at {pend.get('at', '?')[11:16]}): "
