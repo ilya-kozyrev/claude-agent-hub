@@ -35,7 +35,9 @@ import sys
 import time
 from pathlib import Path
 
-PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+from codex_compat import agent_call as codex_agent_call, native_tool, policy_tool
+
+PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "bin"))
 try:
     import hubcore as hc  # noqa: E402
@@ -128,6 +130,10 @@ def policy(level: int) -> str:
         text = entry
     common = hc.setting("AGENT_HUB_DELEGATION_COMMON")
     common = BUILTIN_COMMON if common is None else common
+    if os.environ.get("AGENT_HUB_ENGINE") == "codex" and level == 0:
+        text = ("Do everything yourself. No subagents or background sessions for your own work. "
+                "Supported spawn_agent/resume_agent tool calls are blocked by the hook; shell-launched "
+                "sessions and specialized runtime paths are outside this tool guard.")
     return f"Delegation level {level}/5 ({name}). {text} {common}".strip()
 
 
@@ -156,7 +162,9 @@ def emit(event: str, **fields) -> None:
 def decide(tool: str, tool_input: dict, cwd, session_id) -> str | None:
     """The deny reason for one Agent/Task/Workflow call, or None."""
     level, source = resolve(session_id) if enabled() else (None, "dial off")
-    call = sr.agent_call(tool, tool_input, cwd, level)
+    native = native_tool(tool)
+    call = (codex_agent_call(tool, tool_input, cwd, level) if native in ("spawn_agent", "resume_agent")
+            else sr.agent_call(tool, tool_input, cwd, level))
     call["source"] = source
     if level is not None:
         rules = hc.setting_json("AGENT_HUB_DELEGATION_RULES", None)
@@ -164,7 +172,7 @@ def decide(tool: str, tool_input: dict, cwd, session_id) -> str | None:
         res = sr.evaluate(DEFAULT_DELEGATION_RULES if rules is None else rules, call, label)
         if res and res[0] == "deny":
             return sr.deny_reason(res, label)
-    if tool in ("Agent", "Task"):
+    if tool in ("Agent", "Task") or native == "spawn_agent":
         return sr.check_effort(call, cwd)
     return None
 
@@ -207,7 +215,7 @@ def main(argv: list) -> int:
             data = hook_input()
             hc.use_cwd(data.get("cwd"))
             tool = data.get("tool_name")
-            if tool in ("Agent", "Task", "Workflow"):
+            if policy_tool(tool) in ("Agent", "Task", "Workflow"):
                 reason = decide(tool, data.get("tool_input") or {}, data.get("cwd"), data.get("session_id"))
                 if reason:
                     emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=reason)
@@ -215,7 +223,7 @@ def main(argv: list) -> int:
             pass
         return 0
 
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    sid = hc.session_id()
     off_note = "" if enabled() else ("\n(the delegation dial is off: no policy is injected and level rules do not "
                                      "apply; set AGENT_HUB_DELEGATION to on in the hub home's config.json)")
 
@@ -234,7 +242,8 @@ def main(argv: list) -> int:
             scope = "global default"
         else:
             if not sid:
-                print("CLAUDE_CODE_SESSION_ID is not set; use --global", file=sys.stderr)
+                print("No session id is set (CLAUDE_CODE_SESSION_ID/CODEX_THREAD_ID/AGENT_SESSION_ID); use --global",
+                      file=sys.stderr)
                 return 2
             write(state_root() / "sessions" / sid, f"{n}\n")
             scope = f"session {sid}"

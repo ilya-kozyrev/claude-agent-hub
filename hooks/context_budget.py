@@ -44,13 +44,15 @@ import sys
 import time
 from pathlib import Path
 
+from codex_compat import patch_paths, policy_tool
+
 CHUNK = 1 << 20
 MAX_SCAN = 64 << 20  # give up (silently) after reading this much from the tail
 PRUNE_AFTER_DAYS = 14
 DEFAULTS = {"warn": 300_000, "step": 50_000, "block": 500_000}
 DEFAULT_TOOLS = ["Agent", "Task", "SendMessage"]
 DEFAULT_ESCAPE = r"HANDOFF-[^\s/\\'\"`]*\.md|handoff-ok"
-AUTOPILOT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit")
+AUTOPILOT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit", "apply_patch")
 AUTOPILOT_FILE = re.compile(r"(?:^|/)HANDOFF-[^/\s]*\.md$")
 SEPARATORS = (";", "&&", "||", "|", "&")
 DEFAULT_TODO = ("What to do: write a handoff with the agent-hub:handoff skill (the plugin's "
@@ -110,7 +112,7 @@ def handover_command(command) -> bool:
 
 
 def hubcore():
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     sys.path.insert(0, os.path.join(root, "bin"))
     import hubcore as hc  # noqa: E402
 
@@ -123,7 +125,7 @@ def fmt(n: int) -> str:
 
 def classify(line: bytes, skip_sidechain: bool):
     """('usage', n) | ('compact', n) | None for one JSONL line."""
-    if b'"assistant"' not in line and b"compact_boundary" not in line:
+    if not any(t in line for t in (b'"assistant"', b"compact_boundary", b'"event_msg"', b'"compacted"')):
         return None
     try:
         o = json.loads(line)
@@ -131,6 +133,25 @@ def classify(line: bytes, skip_sidechain: bool):
         return None
     if not isinstance(o, dict):
         return None
+    if o.get("type") == "compacted":
+        # Codex does not expose a stable post-compact count here. Zero resets the
+        # warning buckets until the next model request publishes fresh usage.
+        return ("compact", 0)
+    if o.get("type") == "event_msg":
+        payload = o.get("payload") or {}
+        if payload.get("type") == "context_compacted":
+            return ("compact", 0)
+        if payload.get("type") != "token_count":
+            return None
+        usage = (payload.get("info") or {}).get("last_token_usage")
+        if not isinstance(usage, dict):
+            return None  # accumulated totals or rate-limit updates are not context
+        # Codex input_tokens already includes cached tokens, output_tokens includes
+        # reasoning tokens. Do not add their component counters a second time.
+        n = usage.get("total_tokens")
+        if n is None:
+            n = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+        return ("usage", int(n)) if isinstance(n, (int, float)) and n >= 0 else None
     if o.get("type") == "system" and o.get("subtype") == "compact_boundary":
         post = (o.get("compactMetadata") or {}).get("postTokens")
         return ("compact", int(post)) if isinstance(post, (int, float)) else ("compact", 0)
@@ -146,8 +167,8 @@ def classify(line: bytes, skip_sidechain: bool):
     return ("usage", n) if n > 0 else None
 
 
-def context_tokens(path: Path, skip_sidechain: bool):
-    """Scan the JSONL backwards; the first qualifying record from the end decides."""
+def transcript_lines(path: Path):
+    """Bounded reverse iterator; a long rollout never gets loaded into memory whole."""
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         pos = f.tell()
@@ -165,9 +186,35 @@ def context_tokens(path: Path, skip_sidechain: bool):
             for line in reversed(body):
                 if not line.strip():
                     continue
-                r = classify(line, skip_sidechain)
-                if r:
-                    return r[1]
+                yield line
+
+
+def context_tokens(path: Path, skip_sidechain: bool):
+    """Scan the JSONL backwards; the first qualifying record from the end decides."""
+    for line in transcript_lines(path):
+        r = classify(line, skip_sidechain)
+        if r:
+            return r[1]
+    return None
+
+
+def context_window(path: Path):
+    """The latest Codex window, falling back to session metadata when present."""
+    for line in transcript_lines(path):
+        if b"model_context_window" not in line and b"context_window" not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        payload = record.get("payload") or {}
+        window = None
+        if record.get("type") == "event_msg" and payload.get("type") == "token_count":
+            window = (payload.get("info") or {}).get("model_context_window")
+        elif record.get("type") in ("session_meta", "turn_context"):
+            window = payload.get("context_window") or payload.get("model_context_window")
+        if isinstance(window, (int, float)) and window > 0:
+            return int(window)
     return None
 
 
@@ -241,26 +288,29 @@ def main() -> None:
     tools = hc.setting_json("AGENT_HUB_CONTEXT_BLOCK_TOOLS", DEFAULT_TOOLS)
     if isinstance(tools, str):  # "Agent,SendMessage"
         tools = [t.strip() for t in tools.split(",") if t.strip()]
-    tool = data.get("tool_name")
+    raw_tool = data.get("tool_name")
+    tool = policy_tool(raw_tool)
     sid = str(data.get("session_id") or "")
     hub_stage = None
-    if event == "PreToolUse" and tool not in (tools or []):
+    if event == "PreToolUse" and tool not in (tools or []) and raw_tool not in (tools or []):
         # gated only for a stage hub with autopilot on: the cheap registry lookup before any transcript read
         if not (auto and tool in AUTOPILOT_TOOLS):
             return
         hub_stage = ap.hub_stage_of(sid)
         if not hub_stage:
             return
-    warn = hc.int_setting("AGENT_HUB_CONTEXT_WARN", DEFAULTS["warn"])
-    block = hc.int_setting("AGENT_HUB_CONTEXT_BLOCK", DEFAULTS["block"])
-    step = hc.int_setting("AGENT_HUB_CONTEXT_WARN_STEP", DEFAULTS["step"])
-
     path, skip_side, key = resolve_transcript(data)
     if path is None or not path.is_file():
         return
     tokens = context_tokens(path, skip_side)
     if tokens is None:
         return
+    window = context_window(path)
+    defaults = ({"warn": max(1, int(window * .60)), "block": max(1, int(window * .85)),
+                 "step": max(1, int(window * .10))} if window else DEFAULTS)
+    warn = hc.int_setting("AGENT_HUB_CONTEXT_WARN", defaults["warn"])
+    block = hc.int_setting("AGENT_HUB_CONTEXT_BLOCK", defaults["block"])
+    step = hc.int_setting("AGENT_HUB_CONTEXT_WARN_STEP", defaults["step"])
     todo = hc.setting("AGENT_HUB_CONTEXT_TODO") or DEFAULT_TODO
     escape_src = hc.setting("AGENT_HUB_CONTEXT_ESCAPE") or DEFAULT_ESCAPE
     try:
@@ -284,6 +334,9 @@ def main() -> None:
             tin = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
             if tool == "Bash":
                 passes = handover_command(tin.get("command"))
+            elif tool == "apply_patch":
+                paths = patch_paths(tin.get("command"))
+                passes = bool(paths) and all(AUTOPILOT_FILE.search(p) for p in paths)
             elif tool in AUTOPILOT_TOOLS:
                 passes = bool(AUTOPILOT_FILE.search(str(tin.get("file_path") or tin.get("notebook_path") or "")))
             else:

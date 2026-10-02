@@ -130,7 +130,7 @@ DEFAULT_HINT = ("  • CI — your CI's own blocking wait in the background (e.g
 
 
 def hubcore():
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     sys.path.insert(0, os.path.join(root, "bin"))
     import hubcore as hc  # noqa: E402
 

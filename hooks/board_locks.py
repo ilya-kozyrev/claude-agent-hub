@@ -47,7 +47,7 @@ _PUNCT = set(";&|()<>")
 
 
 def plugin_bin() -> str:
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     return os.path.join(root, "bin")
 
 

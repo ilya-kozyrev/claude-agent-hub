@@ -1,0 +1,101 @@
+{
+  "description": "agent-hub Codex lifecycle and supported local-tool guards. Tool hooks do not cover hosted tools or write_stdin input.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/questions.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" session-start",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/path_shadow.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/board_locks.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/polling_guard.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/handoff_size.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "^(Agent|Task|Workflow|spawn_agent|resume_agent|collaboration[._]+spawn_agent|collaboration[._]+resume_agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" pre-tool",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" prompt",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
