@@ -83,6 +83,9 @@ takeover(handoff,req,ok=False,cwd=actual); assert roles(stage)['session']==old
 env['CODEX_THREAD_ID']=old
 bind(req,'--thread-id',real,'--project-id','saved-project'); bind(req,'--thread-id',real)
 bind(req,'--thread-id',other,ok=False); bind('stale-token','--thread-id',real,ok=False)
+saved=state(stage)
+hub('succeed','--stage','stage-a','--fallback','--force',ok=False)
+assert state(stage)==saved
 assert state(stage)['chain']==1 and not state(stage)['pending'].get('taken_over')
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','cannot claim failure','--no-thread-created',ok=False)
 print('PASS client IDs never become sessions; bind is repeatable and rejects stale/conflicting identity')

@@ -1483,6 +1483,8 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
             print(f"auto-handoff: no successor of hub-{n} pending (pending: "
                   f"{'hub-' + str(pend['n']) if pend.get('n') else 'none'}) — nothing to fall back from")
             return 1
+        if pend.get("surface") == "desktop":
+            raise hc.UsageError("desktop request cannot fall back to a hidden CLI; use desktop-status/bind/fail on the same request")
         if pend.get("taken_over"):
             print(f"hub-{pend.get('n')} already took over at {pend['taken_over'][:16]} — nothing to fall back from")
             return 0
