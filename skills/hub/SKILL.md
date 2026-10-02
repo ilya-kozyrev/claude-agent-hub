@@ -176,7 +176,7 @@ This recipe applies to Claude and Codex, in the console and app.
    scope or result, obtain owner agreement first. Honor an explicit request to approve the plan before starting.
 5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification
    and stop/permission conditions separate. Later executors and hub shifts carry the same result through handoffs;
-   they choose details independently and raise only new business-material ambiguity.
+   they choose details independently and raise only new ambiguity that materially changes the business result.
 
 Completion is judged against the agreed business result. Reports state what users actually received and how that
 matches the result, with executor-owned technical evidence separately. Green CI alone does not prove business

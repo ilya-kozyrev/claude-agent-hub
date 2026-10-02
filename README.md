@@ -252,7 +252,7 @@ that is a complete setup. Commit `.agent-hub/`: it is the team's shared conventi
 ### Recommended companion: grilling
 
 Before autonomous work the hub establishes a short Business DoD: the result users will receive. A clear request
-already supplies it; otherwise the hub clarifies business-material ambiguity with the `grilling` skill from
+already supplies it; otherwise the hub clarifies ambiguity that materially changes the business result with the `grilling` skill from
 [mattpocock/skills](https://github.com/mattpocock/skills) (MIT): rounds of numbered questions, each with a recommended
 answer, stopping once the business result is clear. The [hub recipe](skills/hub/SKILL.md#planning-a-stage-agree-the-business-result-before-autonomous-work)
 limits the companion's exhaustive method for this workflow; implementation details belong to autopilot.

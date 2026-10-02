@@ -16,10 +16,11 @@ do the long work. **Agents** are detached Claude or Codex sessions that do it, o
 
 ```mermaid
 flowchart TB
-    s1(["1 · You: open a Claude Code session in your repo and describe the idea"])
+    s1(["1 · You: open a hub session in your repo and describe the idea"])
     s2["2 · Hub: clarifies the business result if needed"]
     s3["3 · Hub: proposes a plan and one brief per agent"]
-    s3q{"New business scope or approval requested?"}
+    s3q{"Agreement needed?"}
+    owner["You: agree the result or review the requested plan"]
     s4["4 · Hub: starts the agents (agent spawn)"]
     s5["5 · Agents: work in their own checkouts · Hub: waits in the background (jwait)"]
     s6["6 · Agent asks a question → Hub brings it to you → you answer → Hub relays it"]
@@ -30,8 +31,10 @@ flowchart TB
     s11["11 · Hub: writes a handoff when its context fills up — the next session takes over"]
 
     s1 --> s2 --> s3 --> s3q
-    s3q -- "owner agrees or changes it" --> s3
-    s3q -- "clear authorized result" --> s4 --> s5 --> s8 --> s9
+    s3q -- "yes" --> owner
+    owner -- "approved" --> s4
+    owner -- "changes" --> s3
+    s3q -- "already authorized" --> s4 --> s5 --> s8 --> s9
     s5 -. "sometimes" .-> s6 -.-> s5
     s5 -. "any time" .-> s7
     s9 -- "fixes" --> s5
@@ -42,8 +45,8 @@ flowchart TB
     classDef hub fill:#fef3c7,stroke:#b45309,color:#3b2005
     classDef agents fill:#dcfce7,stroke:#15803d,color:#05300f
     classDef mixed fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class s1,s3q,s7,s9,s10 you
-    class s2,s3,s4,s11 hub
+    class s1,owner,s7,s9,s10 you
+    class s2,s3,s3q,s4,s11 hub
     class s5,s8 agents
     class s6 mixed
 ```
@@ -193,7 +196,7 @@ Go.
 An agent that needs a decision writes `@hub QUESTION …` and ends its turn with `BLOCKED`. The hub wakes up.
 
 - **Hub:** checks the register first. If you already decided the matter, it applies the answer with `agent send` and
-  never bothers you. It settles facts and implementation choices itself. New business-material ambiguity goes
+  never bothers you. It settles facts and implementation choices itself. New ambiguity that materially changes the business result goes
   to you and the register (`ask add --default … --due …`); work without that blocker proceeds.
 - **You see:** one question, with the default action and the deadline.
 - **You do:** answer in a sentence.
