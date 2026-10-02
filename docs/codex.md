@@ -96,11 +96,12 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   shown as unavailable rather than inferred. A host that can preview local HTML may open the widget file;
   otherwise the skill returns the text snapshot. No Claude live artifact is required.
 - Codex autopilot (`hub succeed --engine codex`) starts a detached Codex successor. It inherits the actual
-  rollout model and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
+  rollout model, reasoning effort and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
   workspace policy fields include network access, writable roots and temporary-directory exclusions; unknown
   policy fields are refused explicitly instead of discarded. An unspecified model
   stays with the CLI configuration. Interactive approval policies become `never` for unattended successors: denied
-  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model and sandbox policy.
+  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model, effort and sandbox policy. An absent effort stays with the launcher
+  default; unsupported effort values are refused before launch.
   `AGENT_HUB_SUCCESSOR_ENGINE` selects a hub-wide successor engine; `--engine` overrides it. The chain limit,
   reservations and takeover checks prevent duplicate launches. Reach the successor through `agent send` and the shared registers;
   the Claude Desktop/Remote Control phone workflow stays Claude-specific.

@@ -250,7 +250,7 @@ def codex_context() -> dict:
         try:
             meta = json.loads((hc.root() / hc.check_stage(stage) / "agents" / role / "meta.json").read_text())
             if meta.get("engine") == "codex" and meta.get("session_id") == hc.session_id():
-                return {"model": meta.get("model"), "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
+                return {"model": meta.get("model"), "effort": meta.get("effort"), "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
                         "approval_policy": meta.get("approval_policy", "never")}
         except (OSError, ValueError, hc.Failure):
             pass
@@ -560,12 +560,13 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
 
 class CodexSuccessor(Successor):
     """Detached successor without a Claude login check or Remote Control fallback."""
-    def __init__(self, stage, n, handoff, model, mode, cwd, k, limit, approval="never", sandbox_policy=None):
+    def __init__(self, stage, n, handoff, model, mode, cwd, k, limit, approval="never", sandbox_policy=None, effort=None):
         self.stage, self.n, self.handoff, self.model, self.mode, self.cwd = stage, n, handoff, model, mode, cwd
         self.k, self.limit, self.succ = k, limit, n + 1
         self.tag, self.title = f"hub-{n}", f"Hub {stage} #{n + 1}"
         self.notes, self.env, self.approval = [], child_env(), approval
         self.sandbox_policy = sandbox_policy or {"type": mode}
+        self.effort = effort
         self.codex = engines.codex_bin(cwd)
         self.cli_model = engines.model_map(cwd).get(model, model) if model else None
 
@@ -599,6 +600,8 @@ The owner may be away; they reach you through `ask` and `agent send hub-{self.su
                 "--sandbox-policy", json.dumps(self.sandbox_policy, separators=(",", ":"))]
         if self.model:
             argv += ["--model", self.model]
+        if self.effort:
+            argv += ["--effort", self.effort]
         return argv
 
     def start_headless(self, why):
@@ -614,7 +617,7 @@ The owner may be away; they reach you through `ask` and `agent send hub-{self.su
 
     def dry_argv(self):
         meta = {"cwd": str(self.cwd), "model": self.cli_model, "sandbox": self.mode,
-                "approval_policy": self.approval, "sandbox_policy": self.sandbox_policy}
+                "approval_policy": self.approval, "sandbox_policy": self.sandbox_policy, "effort": self.effort}
         return engines.codex_argv(meta, self.brief_text())
 
 
@@ -796,13 +799,18 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if retry.get("n") != succ or retry.get("taken_over"):
         retry = {}
     engine = engines.selected(engine or hc.setting("AGENT_HUB_SUCCESSOR_ENGINE") or retry.get("engine"), cwd)
-    approval, sandbox_policy = "never", None
+    approval, sandbox_policy, effort = "never", None, None
     if engine == "codex":
         context = codex_context()
         if retry.get("engine") == "codex":
-            context = dict(context, model=retry.get("model"),
+            context = dict(context, model=retry.get("model"), effort=retry.get("effort"),
                            sandbox_policy=retry.get("sandbox_policy") or {"type": retry.get("mode")},
                            approval_policy=retry.get("approval_policy", "never"))
+        effort = context.get("effort")
+        if effort is None and retry.get("engine") != "codex":
+            effort = os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
+        if effort is not None and effort not in engines.CODEX_EFFORTS:
+            raise hc.UsageError(f"unsupported inherited Codex effort {effort!r}")
         model = codex_model(model, context, cwd)
         problem = engines.model_problem(model, cwd) if model else None
         explicit_mode = mode or configured_mode()
@@ -839,7 +847,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if not at_limit and not dry_run:
             data["chain"] = k
             data["pending"] = {"n": succ, "kind": "starting", "at": started, "handoff": str(handoff),
-                               "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy}
+                               "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}
             save_state(stage, data)
     if at_limit:
         line = (f"auto-handoff chain limit {limit} reached — waiting for the owner; handoff {handoff}. "
@@ -849,7 +857,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         print(line + "\nTell the owner one line (the handoff path) and stop; the owner starts the next hub.")
         return 3
     try:
-        s = (CodexSuccessor(stage, n, handoff, model, mode, cwd, k, limit, approval, sandbox_policy) if engine == "codex"
+        s = (CodexSuccessor(stage, n, handoff, model, mode, cwd, k, limit, approval, sandbox_policy, effort) if engine == "codex"
              else Successor(stage, n, handoff, model, mode, cwd, k, limit))
         if engine == "codex" and context.get("approval_policy") not in (None, "never"):
             s.notes.append(f"inherited sandbox {mode}; approval policy {context['approval_policy']} becomes never "
@@ -885,10 +893,10 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
                                   "headless hub (agent spawn)")
     _record(stage, succ, {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
                           "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
-                          "approval_policy": approval, "sandbox_policy": sandbox_policy})  # a new phase: a fresh start budget
+                          "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort})  # a new phase: a fresh start budget
     got = headless_or_owner(stage, s, why)
     pend = {"n": succ, "kind": "headless", "at": started, "handoff": str(handoff), "model": model, "k": k,
-            "why": why, "cwd": str(s.cwd), "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, **got}
+            "why": why, "cwd": str(s.cwd), "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort, **got}
     _record(stage, succ, pend)
     report(stage, s, pend, takeover_timeout())
     return 0

@@ -28,7 +28,7 @@ os.environ.update(CODEX_BIN=str(fake), CLAUDE_BIN=str(tmp/'missing-claude'), COD
 (tmp/'codex-home/sessions').mkdir(parents=True)
 rollout = tmp/'codex-home/sessions/rollout-test.jsonl'
 rollout.write_text(json.dumps({'type':'session_meta','payload':{'id':os.environ['CODEX_THREAD_ID']}})+'\n'+
-                   json.dumps({'type':'turn_context','payload':{'model':'fixture-codex-model',
+                   json.dumps({'type':'turn_context','payload':{'model':'fixture-codex-model','effort':'xhigh',
                        'approval_policy':'on-request','sandbox_policy':{'type':'workspace-write','network_access':False,
                        'writable_roots':[str(tmp/'allowed')],'exclude_tmpdir_env_var':True,'exclude_slash_tmp':True}}})+'\n')
 
@@ -59,9 +59,17 @@ try:
     assert rc == 0 and 'Codex shell execution harness' in out
     meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
     assert meta['engine']=='codex' and meta['model']=='fixture-codex-model' and meta['sandbox']=='workspace-write'
+    assert meta['effort']=='xhigh' and state(home)['pending']['effort']=='xhigh'
     assert meta['session_id']=='22222222-2222-4222-8222-222222222222'
+    original_sid=os.environ['CODEX_THREAD_ID']
+    os.environ.update(CODEX_THREAD_ID=meta['session_id'],AGENT_ROLE='hub-2',HUB_STAGE='stage-a')
+    assert ap.codex_context()['effort']=='xhigh'  # No worker rollout exists: use its actual launch metadata.
+    os.environ['CODEX_THREAD_ID']=original_sid
+    os.environ.pop('AGENT_ROLE');os.environ.pop('HUB_STAGE')
+
     argv=calls()[-1]['argv']
     assert 'sandbox_mode="workspace-write"' in argv and 'approval_policy="never"' in argv
+    assert 'model_reasoning_effort="xhigh"' in argv
     assert 'sandbox_workspace_write.network_access=false' in argv
     assert 'sandbox_workspace_write.exclude_tmpdir_env_var=true' in argv
     assert 'sandbox_workspace_write.exclude_slash_tmp=true' in argv
@@ -91,6 +99,8 @@ try:
     assert rc==0 and state(home)['chain']==1
     meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
     assert meta['sandbox']=='workspace-write' and meta['model']=='fixture-codex-model'
+    assert meta['effort']=='xhigh' and state(home)['pending']['effort']=='xhigh'
+    assert 'model_reasoning_effort="xhigh"' in calls()[-1]['argv']
     assert meta['sandbox_policy']['network_access'] is False
     assert meta['sandbox_policy']['exclude_slash_tmp'] is True
     assert '--dangerously-bypass-approvals-and-sandbox' not in calls()[-1]['argv']
@@ -113,6 +123,7 @@ try:
     assert rc==0
     argv=calls()[-1]['argv']
     assert '-m' not in argv and '--dangerously-bypass-approvals-and-sandbox' in argv
+    assert state(home)['pending']['effort'] is None
     assert state(home)['pending']['model'] is None
     print('PASS unspecified Codex model uses CLI config and autonomous full access')
 finally: stop()
@@ -145,6 +156,16 @@ else: raise AssertionError('unsupported nested restriction accepted')
 assert len(calls())==before and not (home/'stage-a/auto-handoff.json').exists()
 ap.codex_context=original_context
 print('PASS unsupported nested restriction fails before reservation or subprocess')
+
+home,handoff,cwd=setup('unknown-effort')
+ap.codex_context=lambda: {'effort':'invalid-effort','sandbox_policy':{'type':'read-only'}}
+before=len(calls())
+try: succeed(handoff,cwd)
+except hc.UsageError as e: assert 'unsupported inherited Codex effort' in str(e)
+else: raise AssertionError('invalid effort accepted')
+assert len(calls())==before and not (home/'stage-a/auto-handoff.json').exists()
+ap.codex_context=original_context
+print('PASS unsupported inherited effort fails before reservation or subprocess')
 
 home,handoff,cwd=setup('taken-over')
 real=ap.CodexSuccessor
