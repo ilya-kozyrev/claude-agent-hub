@@ -3,7 +3,7 @@
 # reset by a manual takeover and by an owner prompt, and the context budget hook's autopilot messages at warn and block.
 # The CLI is tests/fake_claude_bg.py: no real `claude --bg` is ever started.
 . "$(dirname "$0")/lib.sh"
-unset CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
+unset PLUGIN_ROOT CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on
 # the effort of the hub running `hub succeed` (the Bash tool's $CLAUDE_EFFORT): the successor's, unless something says otherwise
 export CLAUDE_EFFORT=high
