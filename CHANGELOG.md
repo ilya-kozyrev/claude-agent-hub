@@ -19,6 +19,8 @@ tags number the chain correctly.
   named its successor #27 while the takeover registered #26, and the chain was reset as a takeover by hand. `hub succeed`
   now takes its number from the registry, else from the outgoing number of `--handoff`; the successor's number comes
   from the function `hub takeover` numbers by; and a takeover with `--auto-handoff` takes the pending successor's number.
+- Docs: the hub itself must run in bypass mode, not only its agents — `auto` refuses merges and pushes, `default` and
+  `acceptEdits` wait on every tool call (README § Install, getting-started "Ignoring the permissions mode").
 - Tests: `tests/lib.sh` also unsets `AGENT_SESSION_ID`, so the suite passes when run from an `agent spawn` session.
 
 ## 0.7.0 — 2026-10-01

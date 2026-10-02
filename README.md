@@ -183,6 +183,14 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
 > nobody to approve a prompt, and any other mode silently stalls on the first blocked tool. Treat every agent as a
 > process with your user's rights — say in its brief what it must not touch, run it in a worktree or sandbox, or set
 > `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
+>
+> **Run the hub in bypass mode too** (start it with `claude --dangerously-skip-permissions`). The plugin
+> is built for a hub that works while nobody watches it, and only `bypassPermissions` lets it: in `default` and
+> `acceptEdits` every `agent`, `jlog` or `gh` call waits for your click; in `auto` the classifier refuses actions that
+> leave the machine or touch shared branches — a hub in `auto` had its `gh pr merge` refused and stopped until the
+> owner restarted it in bypass. Other modes work only with you at the keyboard approving each step. The autopilot
+> successor inherits the mode (`AGENT_HUB_SUCCESSOR_PERMISSION_MODE`); bypass needs its disclaimer accepted once in a
+> terminal (`claude --dangerously-skip-permissions`), otherwise the successor falls back to `auto`.
 
 ### What installing changes
 
