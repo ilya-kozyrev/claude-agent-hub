@@ -98,6 +98,7 @@ still running; succeed: 3 chain limit reached.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import importlib.machinery
 import importlib.util
@@ -569,8 +570,17 @@ def cmd_start(a) -> int:
 
 
 def cmd_takeover(a) -> int:
+    try:
+        return locked_takeover(a)
+    except OSError as e:
+        if getattr(a, "desktop_request", None):
+            raise hc.Failure(f"desktop stage-home access/takeover failed: {e}; takeover is not verified") from None
+        raise
+
+
+def locked_takeover(a) -> int:
     # Serialize role migration with launch/bind and other takeovers. Desktop validation precedes locks/roles/journal.
-    with autopilot.state_lock(hc.check_stage(a.stage)):
+    with contextlib.nullcontext() if a.dry_run else autopilot.state_lock(hc.check_stage(a.stage)):
         request = getattr(a, "desktop_request", None)
         pending = autopilot.load_state(a.stage).get("pending") or {}
         if a.auto_handoff and pending.get("surface") == "desktop" and not request:
