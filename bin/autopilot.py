@@ -149,7 +149,9 @@ def save_state(stage: str, data: dict) -> None:
 
 
 def state_lock(stage: str) -> hc.Flock:
-    return hc.Flock(hc.root() / hc.check_stage(stage) / ".auto-handoff.lock")
+    # Locking must not create an unknown stage or require write access to a read-only stage directory.
+    # All launch/bind/takeover paths use this shared mutex in the writable hub home.
+    return hc.Flock(hc.root() / f".auto-handoff-{hc.check_stage(stage)}.lock")
 
 
 def reset_chain(stage: str, why: str) -> bool:
@@ -1074,12 +1076,13 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         raise hc.UsageError("--branch is only supported for desktop requests")
     # A desktop retry reuses its reservation, including an uncertain native launch. Never spawn a fallback.
     existing = load_state(stage).get("pending") or {}
-    if existing.get("surface") == "desktop" and existing.get("n") == succ:
+    if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
         if existing.get("taken_over"):
             raise hc.Failure("desktop successor already took over")
         if not again:
             raise hc.Failure("desktop request already reserved; use --again to inspect/retry the same request")
-        if surface != "desktop" or Path(existing["handoff"]).resolve() != handoff.resolve():
+        if (surface != "desktop" or existing.get("n") != succ
+                or Path(existing["handoff"]).resolve() != handoff.resolve()):
             raise hc.Failure("retry must keep the same desktop surface and handoff")
         desktop_report(stage, existing)
         return 0
@@ -1229,7 +1232,7 @@ def desktop_report(stage, pend):
           "retains the reservation; use --no-thread-created only for confirmed rejection before creation. "
           "--again reuses the request and never silently starts a CLI.\n"
           "Continue the takeover waiter through the shell execution harness:\n  "
-          + jwait_command(stage, pend['n'], pend['at'][11:19], takeover_timeout())
+          + jwait_command(stage, pend['n'], pend['at'][:16], takeover_timeout())
           + f"\nAfter the start line verify `{tool('hub')} desktop-status --stage {stage} --request {req} --verified` "
             "before stopping; exit 0 requires the actual thread/cwd, observed policy and completed takeover. "
             "On ALARM inspect this same request; keep predecessor active and never create another thread for an uncertain result.")
@@ -1255,7 +1258,8 @@ def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approva
         current = hc.roles_load(stage)['roles'].get('hub') or {}
         if current.get('session') != hc.session_id():
             raise hc.Failure('the registered predecessor changed; no desktop request prepared')
-        if blocking(old, succ) or old.get('taken_over') and old.get('n') == succ:
+        if (old.get('surface') == 'desktop' and not old.get('taken_over')
+                or blocking(old, succ) or old.get('taken_over') and old.get('n') == succ):
             raise hc.Failure('successor already reserved or took over')
         if data['chain'] >= limit:
             print(f'auto-handoff chain limit {limit} reached; no desktop request prepared')
