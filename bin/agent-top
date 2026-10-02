@@ -277,6 +277,7 @@ class LogState:
         self.engine = "claude"
         self.codex_turns = self.codex_run_turns = 0
         self.usage_tokens = self.ctx_source = self.context_window = self.codex_rate_limits = None
+        self.usage_scope = None
         self.rollout = codex_rollouts.Normalizer()
 
     @property
@@ -354,9 +355,11 @@ class LogState:
         if isinstance(usage, dict):
             if ev.get("codex_usage_scope") == "session":
                 self.usage_tokens = dict(usage)
+                self.usage_scope = "session"
             else:
                 self.usage_tokens = {key: num((self.usage_tokens or {}).get(key)) + num(value)
                                      for key, value in usage.items()}
+                self.usage_scope = "logged_runs"
         if isinstance(ev.get("context_tokens"), int):
             # Codex's total input usage sums every model call. Only the most
             # recent call's input size is comparable to Claude's context metric.
@@ -716,7 +719,7 @@ class Collector:
             "turns": ls.turns, "run_turns": ls.run_turns, "sub_turns": ls.sub_turns, "turns_approx": ls.truncated,
             "ctx_tokens": ls.ctx or None,
             "ctx_source": ls.ctx_source, "context_window": ls.context_window,
-            "usage_tokens": ls.usage_tokens, "codex_rate_limits": ls.codex_rate_limits,
+            "usage_tokens": ls.usage_tokens, "usage_scope": ls.usage_scope, "codex_rate_limits": ls.codex_rate_limits,
             "turns_kind": "user" if ls.engine == "codex" else "model",
             "cost_usd": None if ls.cost_sum is None else round(ls.cost_sum, 4),
             "result": None if not res else {"subtype": res.get("subtype"), "is_error": bool(res.get("is_error")),
@@ -781,7 +784,7 @@ class Collector:
             "turns": ls.turns, "run_turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated,
             "ctx_tokens": ls.ctx or None,
             "ctx_source": ls.ctx_source, "context_window": ls.context_window,
-            "usage_tokens": ls.usage_tokens, "codex_rate_limits": ls.codex_rate_limits,
+            "usage_tokens": ls.usage_tokens, "usage_scope": ls.usage_scope, "codex_rate_limits": ls.codex_rate_limits,
             "turns_kind": "user" if ls.engine == "codex" else "model",
             "cost_usd": None,
             "result": None if status is None else {"subtype": status, "is_error": state == "error", "num_turns": None,

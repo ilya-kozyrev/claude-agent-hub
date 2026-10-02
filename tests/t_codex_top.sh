@@ -114,6 +114,8 @@ assert agents['done']['turns'] == 1, 'items are not user turns'
 assert agents['done']['ctx_tokens'] is None and agents['done']['cost_usd'] is None
 assert agents['done']['model_id'] is None, 'CLI does not report the resolved model'
 assert agents['done']['usage_tokens']['input_tokens'] == 23000
+assert agents['done']['usage_scope'] == 'logged_runs'
+assert agents['failed']['result']['text'] == 'fixture failure'
 assert agents['done']['result']['text'] == 'DONE: all checks passed'
 assert agents['hub']['kind'] == 'session' and agents['hub']['state'] == 'done'
 assert agents['hub/aaaaaaa']['state'] == 'done' and agents['hub/ccccccc']['state'] == 'error'
@@ -122,6 +124,7 @@ assert child['state'] == 'live' and child['turns'] == 1, 'copied completion excl
 assert child['last_text'] == 'OWN MESSAGE' and child['model_id'] == 'gpt-6-sol'
 assert child['ctx_tokens'] == 17000 and child['usage_tokens']['input_tokens'] == 310000
 assert child['ctx_source'] == 'last_input_tokens' and child['context_window'] == 200000
+assert child['usage_scope'] == 'session'
 assert child['action'] is None, 'native tool result closes its matching call'
 assert not any('ddddddd' in role for role in agents), 'unregistered parent ignored'
 
@@ -156,6 +159,10 @@ feed = top.Feed(livelog)
 feed.update()
 assert all('INHERITED' not in i.text for i in feed.items)
 assert any(i.kind == 'tool' and i.tool == 'exec_command' for i in feed.items)
+# Malformed optional usage records cannot crash a view or invent context.
+norm = top.codex_rollouts.Normalizer()
+assert norm.events(event('event_msg', {'type': 'token_count', 'info': {'last_token_usage': 'bad'}}))[0]['context_tokens'] is None
+assert norm.events(event('event_msg', {'type': 'error', 'message': 'retrying'})) == [], 'recoverable error is not terminal'
 view = subprocess.run([str(binpath / 'agent-top'), '--once', '--agent', 'hub', '--width', '120'], capture_output=True, text=True, check=True).stdout
 assert 'native Codex session; read-only' in view and 'input usage' in view
 widget = subprocess.run([str(binpath / 'agent-top'), '--widget'], capture_output=True, text=True, check=True).stdout

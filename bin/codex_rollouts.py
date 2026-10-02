@@ -119,7 +119,8 @@ class Normalizer:
                 info = payload.get("info")
                 if not isinstance(info, dict):
                     return []
-                last = info.get("last_token_usage") or {}
+                last = info.get("last_token_usage")
+                last = last if isinstance(last, dict) else {}
                 return [record("codex_usage", codex_usage=info.get("total_token_usage"),
                                context_tokens=last.get("input_tokens"), context_window=info.get("model_context_window"),
                                codex_usage_scope="session", codex_rate_limits=payload.get("rate_limits"))]
