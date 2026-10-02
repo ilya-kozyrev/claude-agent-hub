@@ -1240,6 +1240,11 @@ Written by session "{name}" ({me_id}, TODO model).{goal_line}
 
 **Headline.** TODO: one or two sentences — what matters most right now and whose word is behind it (quote + id in `ask`).
 
+## Business DoD
+TODO: brief agreed user/business result and its source (plan, brief or register; hub skill, "Planning a stage").
+Carry the result and owner-supplied constraints forward; choose implementation details independently.
+Report progress against it with technical evidence separately.
+
 ## 0. First steps for the successor
 1. Name your session "{succ}"; `hub takeover --stage {stage} --session <your full session id> --handoff {out}` —
    locks ({', '.join(r['kind'] for r in held) or 'none held'}), `coordinator:` in night-queue, `roles set hub`, a journal

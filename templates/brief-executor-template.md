@@ -11,14 +11,19 @@ brief-executor-advanced.md. -->
 ## Decisions already made — do not reopen
 <One line each, from `ask search <topic words>`; or "none on record (ask search <words>)".>
 
+## Business DoD
+<Agreed user/business result or its source in the plan/register; inherit it without reopening.
+See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints and detailed specs.>
+
 ## Steps
 1. <Step> — done when <a check: a command, a number, a test>.
 2. <…>
 
-## Verification
+## Technical verification
 <What proves it works: the tests to run, and one check that would fail if the change were wrong.>
 
 ## Stop
+Report the delivered result against the Business DoD, with technical evidence separately.
 <Where to stop: e.g. "push the branch and open a PR; do not merge". What not to touch.> At most <N> turns.
 Commit work in progress before long test runs. List the processes you started in the background (servers, watchers)
 in your report and stop them before DONE.

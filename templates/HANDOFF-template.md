@@ -6,6 +6,11 @@
 
 Shift journal: `journal-<YYYY-MM-DD>.md`. Written by session "<title>" (<model>).
 
+## Business DoD
+<Agreed result/source from the plan, brief or register; see skills/hub/SKILL.md, "Planning a stage".>
+Carry this result and owner-supplied constraints forward; choose implementation details independently.
+Report progress against it with technical evidence separately.
+
 ## 0. First steps for the successor
 <!-- 3–6 steps, each a command or a file: `ask list --stage <stage>`, `lock list`, the expected version of each
      environment, which background waits are running and where their output goes. -->
