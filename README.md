@@ -251,9 +251,12 @@ that is a complete setup. Commit `.agent-hub/`: it is the team's shared conventi
 
 ### Recommended companion: grilling
 
-The hub settles open decisions with you before it writes any brief. It does that best with the `grilling` skill from
+Before autonomous work the hub establishes a short Business DoD: the result users will receive. A clear request
+already supplies it; otherwise the hub clarifies ambiguity that materially changes the business result with the `grilling` skill from
 [mattpocock/skills](https://github.com/mattpocock/skills) (MIT): rounds of numbered questions, each with a recommended
-answer, until nothing is left assumed. agent-hub does not bundle it; install it next to this plugin:
+answer, stopping once the business result is clear. The [hub recipe](skills/hub/SKILL.md#planning-a-stage-agree-the-business-result-before-autonomous-work)
+limits the companion's exhaustive method for this workflow; implementation details belong to autopilot.
+agent-hub does not bundle it; install it next to this plugin:
 
 ```text
 /plugin marketplace add mattpocock/skills
@@ -304,7 +307,8 @@ agent stop builder
 in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
 branch is merged, `git worktree remove <path>`.
 
-The brief template is short: why, decisions already made, steps with a check for "done", verification, where to stop and
+The brief template is short: why, decisions already made, inherited Business DoD, steps with a check for "done",
+technical verification, where to stop and
 a turn limit. `agent spawn` appends a footer that tells the agent how to talk back: `jlog "DONE <report path>"` when
 finished, `jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
 The footer names `jlog` as `"$HUB_BIN/jlog"`, and the agent starts with the plugin's `bin/` first on its `PATH` and in
