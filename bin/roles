@@ -201,7 +201,7 @@ def cmd_broadcast(stage, a) -> int:
         raise hc.UsageError("empty text")
     with hc.roles_lock(stage):
         data = hc.roles_load(stage)
-        sender = a.from_ or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        sender = a.from_ or hc.session_id()
         if not sender:
             raise hc.UsageError("unknown sender: pass --from <role> or run it from your own session")
         from_role, from_sid = resolve(data, sender)

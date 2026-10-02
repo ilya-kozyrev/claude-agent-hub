@@ -53,6 +53,8 @@ HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
                 "AGENT_HUB_BG_WAIT_CEILING_MS")
+PROJECT_KEYS += ("AGENT_HUB_ENGINE", "CODEX_BIN", "AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_CODEX_DEFAULT_MODEL",
+                 "AGENT_HUB_CODEX_PERMISSION_MODE", "AGENT_HUB_CODEX_HOOK_TRUST")
 # Yes/no settings: a JSON boolean is accepted for them (read with truthy()).
 BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending.
@@ -79,11 +81,13 @@ BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DEL
 # permission mode.
 HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",
                   "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
+HUB_WIDE_KEYS += ("AGENT_HUB_SUCCESSOR_ENGINE",)
 BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
              "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
+JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP",)
 
 
 # ---------------------------------------------------------------- the hub home
@@ -980,12 +984,19 @@ def role_for_session(stage: str, sid: str) -> Optional[tuple]:
     return None
 
 
+def session_id() -> str:
+    """Identity of the current host session, also usable from detached workers."""
+    if os.environ.get("AGENT_HUB_ENGINE") == "codex" or os.environ.get("CODEX_THREAD_ID"):
+        return os.environ.get("CODEX_THREAD_ID", "").strip() or os.environ.get("AGENT_SESSION_ID", "").strip()
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or os.environ.get("AGENT_SESSION_ID", "").strip()
+
+
 def caller_tag(stage: str) -> Optional[str]:
     """HUB_TAG, else the registry tag of this session ($CLAUDE_CODE_SESSION_ID)."""
     if os.environ.get("HUB_TAG"):
         return os.environ["HUB_TAG"].strip()
     try:
-        hit = role_for_session(stage, os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
+        hit = role_for_session(stage, session_id())
     except Failure:
         return None
     if hit:
