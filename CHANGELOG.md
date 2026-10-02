@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — 2026-10-02
+
+Autopilot fixes: the successor hub no longer lives in a directory that can disappear under it, and legacy `хаб-N`
+tags number the chain correctly.
 
 - **The autopilot successor starts in its own worktree, from the main checkout.** `hub succeed` starts `claude --bg`
   from the main checkout of the hub's directory with `--worktree <stage>-hub-<n>` (`<main checkout>/.claude/worktrees/`,
