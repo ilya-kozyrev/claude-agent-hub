@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT
 python3 - "$ROOT" "$TASK_TMP" <<'PY'
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, shlex, subprocess, sys
 root, tmp = map(pathlib.Path, sys.argv[1:])
 sys.path.insert(0, str(root/'bin'))
 import autopilot as ap
@@ -59,11 +59,24 @@ assert p['surface']=='desktop' and p['kind']=='desktop' and p['phase']=='prepare
 assert state(stage)['chain']==1 and not (stage/'agents').exists()
 assert 'prepared' in r.stdout and 'Full Access' in r.stdout and 'list_projects' in r.stdout
 assert roles(stage)['session']==old
-hub('desktop-status','--stage','stage-a','--request',req,'--verified',ok=False)
+# Execute the printed waiter, including its since format, against the actual journal seam.
+waiter=next(line.strip() for line in r.stdout.splitlines() if line.strip().startswith(str(root/'bin/jwait')))
+assert '--since '+p['at'][:16] in waiter
+subprocess.run([str(root/'bin/jlog'),'--stage','stage-a','--tag','hub-2','start: waiter-control'],env=env,check=True,capture_output=True)
+w=subprocess.run(shlex.split(waiter),env=env,cwd=repo,capture_output=True,text=True,timeout=5)
+assert w.returncode==0 and 'start: waiter-control' in w.stdout,(w.returncode,w.stdout,w.stderr)
+hub('desktop-status' ,'--stage','stage-a','--request',req,'--verified',ok=False)
 print('PASS app markers prepare a desktop request without launching a CLI or changing hub identity')
 prepare(handoff, '--again'); assert state(stage)['pending']['request_id']==req and state(stage)['chain']==1
 hub('succeed','--stage','stage-a','--handoff',handoff,'--force',ok=False)
 assert state(stage)['chain']==1
+# Changing the named successor/handoff or surface cannot replace an unfinished desktop reservation.
+alternate=stage/'HANDOFF-hub-alternate.md'
+alternate.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
+saved=state(stage)
+for extra in ([], ['--again'], ['--surface','cli']):
+    hub('succeed','--stage','stage-a','--handoff',alternate,'--force',*extra,ok=False)
+    assert state(stage)==saved and not (stage/'agents').exists()
 request(req,path=tmp,ok=False); assert state(stage)['pending']['phase']=='prepared'
 payload=json.loads(request(req).stdout)
 args=payload['create_thread']
