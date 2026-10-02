@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — 2026-10-02
+
+Autopilot fixes: the successor hub no longer lives in a directory that can disappear under it, and legacy `хаб-N`
+tags number the chain correctly.
 
 - **The autopilot successor starts in its own worktree, from the main checkout.** `hub succeed` starts `claude --bg`
   from the main checkout of the hub's directory with `--worktree <stage>-hub-<n>` (`<main checkout>/.claude/worktrees/`,
@@ -16,6 +19,8 @@
   named its successor #27 while the takeover registered #26, and the chain was reset as a takeover by hand. `hub succeed`
   now takes its number from the registry, else from the outgoing number of `--handoff`; the successor's number comes
   from the function `hub takeover` numbers by; and a takeover with `--auto-handoff` takes the pending successor's number.
+- Docs: the hub itself must run in bypass mode, not only its agents — `auto` refuses merges and pushes, `default` and
+  `acceptEdits` wait on every tool call (README § Install, getting-started "Ignoring the permissions mode").
 - Tests: `tests/lib.sh` also unsets `AGENT_SESSION_ID`, so the suite passes when run from an `agent spawn` session.
 
 ## 0.7.0 — 2026-10-01
