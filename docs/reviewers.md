@@ -100,6 +100,12 @@ tends to read the code the way it was written. Pick `AGENT_HUB_REVIEW_MODEL` (an
 different from the model your executors write with, or list a reviewer skill that runs another vendor's model.
 *Why:* a weaker or identical reader returns a confident summary of the diff, which reads like agreement.
 
+For Sol-authored work, prefer Claude Opus/Fable at high when its quota permits, then Codex Astra at high. Do not
+substitute an older Sol merely to change the model id. Reviewer engines are independent of the implementation
+engine. Put limited reviewers first with a trusted `check`, followed by the fallback; the built-in Codex agent
+reviewer uses `gpt-6-astra` rather than inheriting a Sol implementation default. `AGENT_HUB_REVIEW_MODEL` and explicit
+entries still override that default. Check actual CLI model availability before launching the printed command.
+
 ## The brief
 
 `${CLAUDE_PLUGIN_ROOT}/templates/brief-review.md` is a self-contained review brief: what changed and why, the diff

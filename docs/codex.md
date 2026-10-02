@@ -5,6 +5,12 @@ workers. At the initial planning step the hub offers the engine choice once, usi
 is preserved in the stage rules, briefs and handoffs. Mixed teams are an explicit choice. Model and effort are
 chosen after the engine, within its available models.
 
+Review is a separate engine/model choice. For Sol-authored code, prefer a high-effort Claude Opus/Fable reviewer
+when its limits allow; otherwise use an available Codex Astra at high. An older Sol is not the default reviewer
+for Sol. Configure `AGENT_HUB_REVIEWERS` in that priority order with trusted availability checks; explicit reviewer
+entries take precedence. The built-in Codex reviewer defaults to Astra and does not inherit the implementation
+model from `AGENT_HUB_CODEX_DEFAULT_MODEL` or the CLI configuration. See [reviewer selection](reviewers.md).
+
 The coordinator and its workers can use different engines. The shared journal, inbox, role registry, question
 register, lock board and handoff files remain the protocol. Select an executor with `agent spawn --engine claude`
 or `--engine codex`; sending, status and stopping use the engine recorded at spawn.
@@ -46,6 +52,12 @@ For a version-resolving personal wrapper, search both `~/.claude/plugins/cache/*
 version component, not the full path, and use the newest shared runtime. The runtime supports both engines;
 choosing its installation directory does not choose the worker engine. Check the selected monitor with
 `<installed-plugin>/bin/agent-top --json --agent <role> --feed 10`, using the same hub home and stage as the UI.
+
+The header labels Claude and Codex usage separately. Codex account limits come from the newest timestamped
+observations in the last 256 KB of up to 32 recently modified local rollouts, refreshed every 30 seconds. These
+are logged snapshots, without a network request or model call; the summary shows observation age and reset time.
+Window labels use the reported duration (including plans with only a weekly window). Missing data is omitted,
+not shown as zero, and separate `limit_id` buckets remain separate in the header and JSON `codex_limits` field.
 
 ## Spawn, message and resume
 

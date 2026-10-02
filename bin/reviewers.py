@@ -102,7 +102,9 @@ class Loaded:
 
 def _review_defaults(cwd=None, engine="claude") -> tuple:
     """(model, effort) of an `agent` reviewer that names none: AGENT_HUB_REVIEW_MODEL / _EFFORT, else opus / high."""
-    default_model = DEFAULT_MODEL if engine == "claude" else hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd)
+    # Review is judgement work. Do not inherit a Sol implementation default or
+    # the standalone CLI's ordinary-work model for a Codex reviewer.
+    default_model = DEFAULT_MODEL if engine == "claude" else "gpt-6-astra"
     model = (hc.setting("AGENT_HUB_REVIEW_MODEL", cwd=cwd) or default_model or "").strip() or None
     effort = (hc.setting("AGENT_HUB_REVIEW_EFFORT", cwd=cwd) or DEFAULT_EFFORT).strip()
     problem = (hc.model_problem(model, cwd) if engine == "claude" else engines.model_problem(model, cwd)) if model else None

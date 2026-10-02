@@ -218,12 +218,21 @@ line with the reason, and `ask decided` (*Planning a stage*).
 
 ### Reviews
 
+For Sol-authored code, choose a judgement reviewer: Claude Opus/Fable at high effort when its limits allow,
+otherwise an available Codex Astra at high. A different or older Sol is not the default reviewer for Sol.
+Reviewer engine choice is separate from the implementation engine; this review policy can select Claude for a
+Codex implementation. Check the chosen engine's available models and limits before launch, record the reviewer
+choice in stage rules and its brief, and honour the owner's explicit reviewer policy. For a Claude author,
+use its configured independent Fable or Codex reviewer. One reviewer is sufficient.
+
 `hub reviewer --for <class>` walks the configured reviewers (`AGENT_HUB_REVIEWERS`, default one ordinary `agent
 spawn`) and prints the first that is available now and exactly how to start it: an `agent spawn --role review-… --brief
 <BRIEF>` line, or "load skill `<skill>`" for a reviewer skill the user plugged in. Write the brief from
 `<plugin-root>/templates/brief-review.md`, start the reviewer as printed, and **verify each finding against the
 code** before acting on it — a review is a colleague's opinion. Classes, the config, the skill reviewer contract:
 `<plugin-root>/docs/reviewers.md`.
+Configure the list in this order with availability checks for limited reviewers; if a legacy entry selects a
+Sol reviewer for Sol-authored work, bring that entry into line with the approved policy before using its command.
 
 ## Executors
 

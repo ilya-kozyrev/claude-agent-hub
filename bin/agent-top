@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
+import codex_limits  # noqa: E402
 import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
 from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as _line_ts,  # noqa: E402
                        live_sessions, loads as _loads, parse_ts, process_table, read_json)
@@ -634,6 +635,7 @@ class Collector:
         self.logs, self.journal_cache = {}, {}
         self.subs = subagents.Finder(lambda log: self.log_state(log).last_user_ts)
         self.ext = External()
+        self.codex_limits = codex_limits.Reader()
         self.feed = None
 
     # -- agents
@@ -673,7 +675,8 @@ class Collector:
         return {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
                 "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles,
                 "questions": self.ext.poll(stages, wait=wait_ext),
-                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None)}
+                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
+                "codex_limits": self.codex_limits.snapshot()}
 
     def _agent(self, stage: str, meta_path: Path, registry: dict, table, now: float):
         meta = read_json(meta_path)
@@ -939,12 +942,21 @@ def header_row(snap: dict, width: int, view_label: str) -> Row:
     # optional pieces, dropped from the end when the terminal is narrow
     opt = [(f"{'/'.join(snap['stages']) or '—'} ", "head"), (f"· locks {locks} ", "head"),
            (f"· questions {q_open}" + (f" (overdue {q_over})" if q_over else "") + " ", "head_err" if q_over else "head")]
+    claude_limit, codex_limit = [], []
     lim = snap.get("limits")
     if lim and isinstance(lim["info"], dict):
         w = lim["info"].get("unifiedWindows") or {}
         parts = [f"{lab} {pct(w[k])}" for k, lab in (("five_hour", "5h"), ("seven_day", "7d")) if isinstance(w.get(k), dict)]
         if parts:
-            opt.append(("· limit " + " ".join(parts) + " ", "head"))
+            claude_limit.append(("· Claude " + " ".join(parts) + " ", "head"))
+    for lid, record in sorted(snap.get("codex_limits", {}).items()):
+        parts = [f"{w['label']} {w['used_percent']:g}%" for w in codex_limits.windows(record["info"])]
+        if parts:
+            label = "Codex" if lid == "codex" else f"Codex {one_line(lid)}"
+            codex_limit.append((f"· {label} " + " ".join(parts) + " ", "head"))
+    # Account usage remains visible before stage/lock/question details in a
+    # narrow terminal; all values remain available on the summary screen.
+    opt = codex_limit + claude_limit + opt
     clock = dt.datetime.fromtimestamp(snap["now"], hc.TZ).strftime("%H:%M:%S") + " "
     while opt and sum(dispw(t) for t, _ in bits + opt) + dispw(clock) > width:
         opt.pop()
@@ -1224,7 +1236,7 @@ def summary_rows(snap: dict, width: int) -> list:
                               width, "norm" if r["role"] == "hub" else "dim", "   ", "     ", 2)
     lim = snap.get("limits")
     if lim and isinstance(lim["info"], dict):
-        rows += [R(("", "norm")), R(("Plan limits (latest rate_limit event in the logs)", "bold_u"))]
+        rows += [R(("", "norm")), R(("Claude plan limits (latest rate_limit event in the logs)", "bold_u"))]
         for k, lab in (("five_hour", "5 hours"), ("seven_day", "week")):
             w = (lim["info"].get("unifiedWindows") or {}).get(k)
             if isinstance(w, dict):
@@ -1232,6 +1244,19 @@ def summary_rows(snap: dict, width: int) -> list:
                 rows.append(R((f"  {lab}: {pct(w)}"
                                + (f", resets {dt.datetime.fromtimestamp(reset, hc.TZ):%m-%d %H:%M}" if isinstance(reset, (int, float)) else "")
                                + f"  (from the agents' logs; the freshest log was updated {fmt_age(snap['now'] - lim['seen_at'])} ago)", "norm")))
+    for lid, record in sorted(snap.get("codex_limits", {}).items()):
+        label = "Codex" if lid == "codex" else f"Codex {one_line(lid)}"
+        rows += [R(("", "norm")), R((f"{label} limits (used; latest logged snapshot)", "bold_u"))]
+        for w in codex_limits.windows(record["info"]):
+            reset_text = ""
+            if w["resets_at"] is not None:
+                try:
+                    reset_text = f", resets {dt.datetime.fromtimestamp(w['resets_at'], hc.TZ):%m-%d %H:%M}"
+                except (ValueError, OSError, OverflowError):
+                    pass
+            rows += wrap_rows(f"{w['label']}: {w['used_percent']:g}% used{reset_text}"
+                              + f"  (observed {fmt_age(max(0, snap['now'] - record['seen_at']))} ago)",
+                              width, "norm", "  ", "    ")
     return rows
 
 
@@ -1361,6 +1386,7 @@ def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> 
     agents = [{k: v for k, v in a.items() if not k.startswith("_")} for a in snap["agents"]]
     out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "counts": snap["counts"], "agents": agents,
            "roles": snap["roles"], "locks": snap["locks"], "questions": snap["questions"], "limits": snap["limits"],
+           "codex_limits": snap.get("codex_limits", {}),
            "journal_tail": [{"stage": s, "time": hh, "tag": t, "text": x} for s, hh, t, x in coll.journal(snap["stages"], 0)[-20:]]}
     if agent:
         a = find_agent(snap, agent)
