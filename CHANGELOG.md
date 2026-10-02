@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0 — unreleased
+
+- Support Claude Code and Codex coordinators and detached executors in one file protocol.
+  Select `--engine`; raw Codex JSONL, assigned thread IDs, resume, inbox replay and process-group stop are supported.
+- Port unattended full access: `bypassPermissions` maps to Codex approval/sandbox bypass;
+  restricted workers retain their sandbox, network and temporary-directory settings on resume.
+  Hook trust is a separate explicit policy; full access retains the bundled guards.
+- Add Codex plugin packaging, native worker configuration resources, shared skills and installation guidance.
+- Port lifecycle guards, apply_patch handoff checks, context-window budgets, monitoring and headless autopilot.
+  Keep cumulative usage separate from context size and do not invent costs or model metadata.
+- Add lifecycle/permission/installation controls and Linux/macOS CI.
+
 ## 0.7.1 — 2026-10-02
 
 Autopilot fixes: the successor hub no longer lives in a directory that can disappear under it, and legacy `хаб-N`

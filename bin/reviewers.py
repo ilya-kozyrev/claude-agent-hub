@@ -36,10 +36,11 @@ from pathlib import Path
 from typing import Optional
 
 import hubcore as hc
+import engines
 
 SETTING = "AGENT_HUB_REVIEWERS"
 KINDS = ("agent", "skill")
-FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for")
+FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for", "engine")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")                       # name, change class: 64 at most
 SKILL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?")  # skill, plugin:skill
 SHOWN = 30  # characters of a rejected key or value that are echoed back: enough to find it, too few to carry text
@@ -65,12 +66,16 @@ class Entry:
         self.skill = raw.get("skill")
         self.model = raw.get("model")
         self.effort = raw.get("effort")
+        self.engine = raw.get("engine") or engines.selected()
+        self.explicit_engine = "engine" in raw
         self.check = raw.get("check")
         self.until = raw.get("until")
         self.classes = raw.get("for")
 
     def as_dict(self) -> dict:
         out = {"name": self.name, "kind": self.kind}
+        if self.kind == "agent" and (self.explicit_engine or self.engine == "codex"):
+            out["engine"] = self.engine
         for key, value in (("skill", self.skill), ("model", self.model), ("effort", self.effort),
                            ("check", self.check), ("until", self.until), ("for", self.classes)):
             if value:
@@ -95,15 +100,19 @@ class Loaded:
 
 # ---------------------------------------------------------------- reading the list
 
-def _review_defaults(cwd=None) -> tuple:
+def _review_defaults(cwd=None, engine="claude") -> tuple:
     """(model, effort) of an `agent` reviewer that names none: AGENT_HUB_REVIEW_MODEL / _EFFORT, else opus / high."""
-    model = (hc.setting("AGENT_HUB_REVIEW_MODEL", cwd=cwd) or DEFAULT_MODEL).strip()
+    # Review is judgement work. Do not inherit a Sol implementation default or
+    # the standalone CLI's ordinary-work model for a Codex reviewer.
+    default_model = DEFAULT_MODEL if engine == "claude" else "gpt-6-astra"
+    model = (hc.setting("AGENT_HUB_REVIEW_MODEL", cwd=cwd) or default_model or "").strip() or None
     effort = (hc.setting("AGENT_HUB_REVIEW_EFFORT", cwd=cwd) or DEFAULT_EFFORT).strip()
-    problem = hc.model_problem(model, cwd)
+    problem = (hc.model_problem(model, cwd) if engine == "claude" else engines.model_problem(model, cwd)) if model else None
     if problem:
         hc.warn(f"AGENT_HUB_REVIEW_MODEL={show(model)}: {problem}; using {DEFAULT_MODEL}")
-        model = DEFAULT_MODEL
-    if effort not in hc.EFFORTS:
+        model = default_model
+    efforts = hc.EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
+    if effort not in efforts:
         hc.warn(f"AGENT_HUB_REVIEW_EFFORT={show(effort)}: one of {', '.join(hc.EFFORTS)}; using {DEFAULT_EFFORT}")
         effort = DEFAULT_EFFORT
     return model, effort
@@ -130,17 +139,20 @@ def _validate(item, seen: set, cwd=None) -> dict:
         if not isinstance(item.get("skill"), str) or not SKILL_RE.fullmatch(item["skill"]):
             raise ValueError("kind skill needs `skill`, the skill's name (letters, digits, '.', '_', '-', and one ':' "
                              "for plugin:skill)")
-        for field in ("model", "effort"):
+        for field in ("model", "effort", "engine"):
             if field in item:
                 raise ValueError(f"`{field}` is for kind agent")
     else:
+        engine = item.get("engine") or engines.selected(cwd=cwd)
+        if engine not in engines.ENGINES:
+            raise ValueError("`engine` must be claude or codex")
         if "skill" in item:
             raise ValueError("`skill` is for kind skill")
         if "model" in item:
-            problem = hc.model_problem(item["model"], cwd)
+            problem = hc.model_problem(item["model"], cwd) if engine == "claude" else engines.model_problem(item["model"], cwd)
             if problem:
                 raise ValueError(f"`model` must be {problem}")
-        if "effort" in item and item["effort"] not in hc.EFFORTS:
+        if "effort" in item and item["effort"] not in (hc.EFFORTS if engine == "claude" else engines.CODEX_EFFORTS):
             raise ValueError(f"`effort` must be one of {', '.join(hc.EFFORTS)}")
     if "check" in item and (not isinstance(item["check"], str) or not item["check"].strip()):
         raise ValueError("`check` must be a non-empty shell command")
@@ -192,9 +204,9 @@ def load(cwd=None) -> Loaded:
             problems.append(f"{SETTING}: no valid entry; using the built-in default (one `agent` reviewer)")
     if not entries:
         entries, origin = [Entry(1, {"name": "agent", "kind": "agent"})], "default"
-    model, effort = _review_defaults(cwd)
     for e in entries:
         if e.kind == "agent":
+            model, effort = _review_defaults(cwd, e.engine)
             e.model, e.effort = e.model or model, e.effort or effort
     return Loaded(entries, problems, origin)
 
@@ -304,7 +316,10 @@ def start_line(entry: Entry) -> str:
         return (f"load skill `{entry.skill}`; give it the brief file, the repository, the base sha and the head ref "
                 "(the skill reviewer contract: docs/reviewers.md)")
     effort = "" if "haiku" in (entry.model or "") else f" --effort {shlex.quote(entry.effort)}"
-    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd <REPO> --model {shlex.quote(entry.model)}"
+    engine = f" --engine {entry.engine}" if entry.explicit_engine or entry.engine == "codex" else ""
+    sandbox = " --sandbox read-only" if entry.engine == "codex" else ""
+    model = f" --model {shlex.quote(entry.model)}" if entry.model else ""
+    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd <REPO>{engine}{sandbox}{model}"
             f"{effort} --brief <BRIEF>")
 
 

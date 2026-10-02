@@ -127,10 +127,18 @@ transcript."""
 
 DEFAULT_HINT = ("  • CI — your CI's own blocking wait in the background (e.g. `gh run watch <id> --exit-status`);\n"
                 "    a pipeline lookup by commit sha and job logs are allowed in the foreground;\n")
+CODEX_INSTEAD = """Instead:
+  • tests, builds, or a CI blocking wait — use exec_command with a short yield_time_ms. If it returns a session_id,
+    use write_stdin to wait for that command's completion and exit code;
+  • journal lines, a script's output, or a deadline — run one jwait through exec_command, then wait on its session_id.
+    Do not replace it with a sleep or process-name polling loop.
+{hint}
+If the wait is deliberate, add the comment `# {escape}: <reason>` to the command; the reason stays in the
+transcript."""
 
 
 def hubcore():
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     sys.path.insert(0, os.path.join(root, "bin"))
     import hubcore as hc  # noqa: E402
 
@@ -415,7 +423,8 @@ def message(kind: str, reason: str, cfg: Config) -> str:
     head = ("Waiting in the foreground is not run (agent-hub polling guard)." if kind == "wait" else
             "Reading CI status by hand in the foreground is not run (agent-hub polling guard): every such read is "
             "a turn that re-reads the whole context.")
-    return f"{head}\n\n{reason}\n\n" + INSTEAD.format(hint=cfg.hint, escape=cfg.escape_word)
+    instead = CODEX_INSTEAD if os.environ.get("AGENT_HUB_ENGINE") == "codex" or os.environ.get("CODEX_THREAD_ID") else INSTEAD
+    return f"{head}\n\n{reason}\n\n" + instead.format(hint=cfg.hint, escape=cfg.escape_word)
 
 
 def main() -> int:

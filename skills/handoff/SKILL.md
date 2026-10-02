@@ -6,13 +6,17 @@ argument-hint: "[stage] [what the next shift focuses on]"
 
 # Hub handoff
 
+Run bundled commands with the host's shell tool. Resolve the plugin root from `PLUGIN_ROOT`,
+`CLAUDE_PLUGIN_ROOT`, or this skill's installed path; use `<plugin-root>/bin/<tool>` when PATH is missing
+or shadowed. Session identity comes from the current host; use `self` where supported.
+
 A handoff is the successor's entry point, not a diary: facts with their source, the queue with stop conditions, and
 pointers to the registers — never copies of them.
 
 1. Generate the draft: `hub handoff --stage <S>` (prints the path; your shift number comes from `roles.json`). It fills in the locks you hold, the
    headless agents and their state, the night queue, `ask summary` and the register digest, and — if
    `<stage>/handoff-facts.sh` exists — its environment rows; everything else is `TODO`.
-   Without a stage hub, start from `${CLAUDE_PLUGIN_ROOT}/templates/HANDOFF-template.md` and save it as
+   Without a stage hub, start from `<plugin-root>/templates/HANDOFF-template.md` and save it as
    `HANDOFF-<role>-<YYYY-MM-DD-HHMM>.md` in the stage's `coordinator/` directory.
 2. Fill every `TODO`:
    - **Headline**: one or two sentences — what matters most now and whose word is behind it (quote + `ask` id).

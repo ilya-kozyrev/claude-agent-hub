@@ -92,10 +92,10 @@ def cmd_take(args) -> int:
         for w in known["warnings"]:
             print(w, file=sys.stderr)
         return 2
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = hc.session_id()
     if not sid and not args.force:
-        print("CLAUDE_CODE_SESSION_ID is not set: the hook could not recognise you as the holder. "
-              "Run from a Claude Code session, or pass --force to write an ownerless lock.", file=sys.stderr)
+        print("No host session ID is set: the hook could not recognise you as the holder. "
+              "Run from a Claude or Codex session, or pass --force to write an ownerless lock.", file=sys.stderr)
         return 2
     until = board.parse_time(args.until)
     if until <= board.now():
@@ -132,7 +132,7 @@ def cmd_take(args) -> int:
 
 
 def cmd_release(args) -> int:
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = hc.session_id()
     explicit = args.repo is not None
     args.repo = args.repo or DEFAULT_REPO
     with board.Locked():

@@ -76,6 +76,9 @@ successor per shift: a second call while one is
 being started or has not taken over is refused with the time to retry and a ready jwait; --again drops the record
 of a successor that did not take over and is not running. The successor's takeover carries --auto-handoff, which keeps the
 chain; any other takeover resets it.
+With --engine codex, succeed starts a detached Codex hub in its own worktree from the main checkout, preserving
+model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
+Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
 reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
 .agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
 available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
@@ -107,6 +110,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import autopilot  # noqa: E402
+import engines
 import hubcore as hc  # noqa: E402
 import hubhome  # noqa: E402
 import reviewers  # noqa: E402
@@ -535,9 +539,9 @@ def resolve_self(raw: str) -> str:
     """`--session self` = the Claude Code session running the command."""
     if raw.strip() != "self":
         return raw
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or os.environ.get("AGENT_SESSION_ID", "").strip()
+    sid = hc.session_id() or os.environ.get("AGENT_SESSION_ID", "").strip()
     if not sid:
-        raise hc.UsageError("--session self: neither $CLAUDE_CODE_SESSION_ID nor $AGENT_SESSION_ID (set by `agent spawn`) "
+        raise hc.UsageError("--session self: neither $CLAUDE_CODE_SESSION_ID nor $CODEX_THREAD_ID nor $AGENT_SESSION_ID (set by `agent spawn`) "
                             "is set here — pass the full session id")
     return sid
 
@@ -570,7 +574,7 @@ def cmd_takeover(a) -> int:
                             f"`hub start --stage {stage} --session <your session id>`")
     a.session = resolve_self(a.session)
     session, cli, kind, title = new_hub_session(a.session)
-    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    env_sid = hc.session_id()
     if env_sid and env_sid != cli:
         print(f"ATTENTION: not run from session {session} (your sid {env_sid[:8]}, its sid {cli[:8]}); "
               "the locks are recorded on it", file=sys.stderr)
@@ -668,7 +672,7 @@ def cmd_takeover(a) -> int:
             argv += ["--value", r["value"]]
 
         def do(argv=argv):
-            res = run_tool(argv, {"CLAUDE_CODE_SESSION_ID": cli})
+            res = run_tool(argv, {"CLAUDE_CODE_SESSION_ID": cli, "CODEX_THREAD_ID": cli if engines.selected() == "codex" else ""})
             if res.returncode != 0:
                 raise hc.Failure(f"lock take {argv[2]}: {res.stderr.strip() or res.stdout.strip()}")
 
@@ -727,6 +731,10 @@ def cmd_takeover(a) -> int:
               short="journal")
 
     if not a.dry_run:
+        with hc.roles_lock(stage):
+            data = hc.roles_load(stage)
+            data["roles"]["hub"]["engine"] = engines.selected()
+            hc.roles_save(stage, data)
         autopilot.on_takeover(stage, n, a.auto_handoff)  # the automatic successor keeps the chain; anyone else resets it
     print()
     print(digest(stage, n, name, handoff, plan.done, notes))
@@ -751,7 +759,7 @@ def hub_sessions(stage: str, given: str, me: dict) -> list:
     if subagents.UUID_RE.fullmatch(cli or ""):
         rec = hc.roles_load(stage)["roles"].get("hub") or {}
         out.append((cli, rec if cli in (rec.get("cli_session_id"), rec.get("session")) else {}))
-    own = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    own = hc.session_id()
     if subagents.UUID_RE.fullmatch(own) and own not in [c for c, _ in out]:
         out.append((own, {}))
     return out
@@ -760,7 +768,7 @@ def hub_sessions(stage: str, given: str, me: dict) -> list:
 def live_subagents(cli: str, rec: dict) -> list:
     """Sub-agents (the Agent tool) of the session `cli` that are still running. The session that runs this command
     is alive by definition; any other is judged by its process (bin/subagents.py)."""
-    if cli == os.environ.get("CLAUDE_CODE_SESSION_ID", ""):
+    if cli == hc.session_id():
         alive = True
     else:
         table = subagents.process_table()
@@ -918,7 +926,7 @@ def check_caller(stage: str, n: int) -> None:
     stop a successor in the current hub's name. Judged by $CLAUDE_CODE_SESSION_ID, else $HUB_TAG; a terminal without
     either (the owner by hand) passes."""
     rec = hc.roles_load(stage)["roles"].get("hub") or {}
-    sid, tag = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip(), os.environ.get("HUB_TAG", "").strip()
+    sid, tag = hc.session_id(), os.environ.get("HUB_TAG", "").strip()
     if sid and rec and sid not in (rec.get("session"), rec.get("cli_session_id")):
         raise hc.UsageError(f"this session ({sid[:8]}) is not the hub of stage {stage} (hub-{n}: "
                             f"{rec.get('title') or rec.get('session')}) — only the registered hub hands over")
@@ -958,7 +966,7 @@ def cmd_succeed(a) -> int:
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
-                             succ, tuple(notes))
+                             engine=a.engine, succ=succ, notes=tuple(notes))
 
 
 # ---------------------------------------------------------------- reviewer
@@ -1045,6 +1053,7 @@ def main(argv: list) -> int:
     sc.add_argument("--permission-mode", help="the successor's mode (default: AGENT_HUB_SUCCESSOR_PERMISSION_MODE, "
                                               "else default)")
     sc.add_argument("--cwd", help="the successor's working directory (default: here)")
+    sc.add_argument("--engine", choices=engines.ENGINES, help="successor engine (default: current host)")
     sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn) right away")
     sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
                                                             "and start a headless one")

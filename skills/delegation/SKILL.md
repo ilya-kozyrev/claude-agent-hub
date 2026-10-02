@@ -6,9 +6,13 @@ argument-hint: "[N | global N | clear | try TYPE MODEL]"
 
 # Delegation level
 
+Run bundled commands with the host's shell tool. Resolve the plugin root from `PLUGIN_ROOT`,
+`CLAUDE_PLUGIN_ROOT`, or this skill's installed path; use `<plugin-root>/bin/<tool>` when PATH is missing
+or shadowed. Session identity comes from the current host; use `self` where supported.
+
 The level sets how much work this session hands to subagents; which model and effort they run at is decided by
 your subagent rules (`AGENT_HUB_EFFORT_RULES`). The plugin's hooks inject the level's policy into the context at
-session start and whenever the level changes; at level 0 a hook denies the Agent and Workflow tools.
+session start and whenever the level changes; at level 0 a trusted hook denies the host's subagent-spawn tools.
 
 Parse the user's arguments and run exactly one command (the plugin's `bin/` is on PATH):
 
@@ -18,7 +22,7 @@ Parse the user's arguments and run exactly one command (the plugin's `bin/` is o
 | `N` (0-5) | `delegation set N` — this session only |
 | `global N` | `delegation set N --global` — every session without its own level |
 | `clear` | `delegation clear` — back to the global level |
-| `try <type> [<model>]` | `delegation try <type> [<model>]` — what the rules would say about such an Agent call (no model: the definition's or inherited) |
+| `try <type> [<model>]` | `delegation try <type> [<model>]` — what the rules would say about such a native subagent call (no model: the definition's or inherited) |
 
 The output holds the effective level and its policy. Work by it from this turn on: the command prints it exactly so
 that a change applies now, not from the next message.

@@ -6,6 +6,10 @@ argument-hint: "[repository path] [--defaults]"
 
 # agent-hub setup for a repository
 
+Run bundled commands with the host's shell tool. Resolve the plugin root from `PLUGIN_ROOT`,
+`CLAUDE_PLUGIN_ROOT`, or this skill's installed path; use `<plugin-root>/bin/<tool>` when PATH is missing
+or shadowed. Session identity comes from the current host; use `self` where supported.
+
 The lock hook refuses a command that touches a shared resource while another session holds that resource's lock.
 It knows one resource by itself — `main-merge`: merges into, and pushes to, the protected branches. Everything else
 (a production deploy, a staging environment, a migration chain, a shared test database) exists only if this setup
@@ -50,8 +54,9 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    outside the repository; say what `hub home` showed.
 8. Autopilot — should a stage hub hand its shift to a background successor by itself when its context grows large, so
    the stage runs while you are away (`AGENT_HUB_AUTO_HANDOFF=on`, in the hub home's `config.json`, not the
-   repository's)? Check first: `claude auth status` shows `"loggedIn": true`, and `claude` has been run once in this
-   directory with its trust prompt accepted. *Recommended:* on if the user wants to leave stages running and both
+   repository's)? Check the selected engine first: Claude uses `claude auth status` (`"loggedIn": true`) and an accepted
+   directory trust prompt; Codex uses `codex login status` and the hook setup in `docs/codex.md`.
+   Codex successors are detached sessions reached through `agent send`, not Claude Remote Control. *Recommended:* on if the user wants to leave stages running and both
    checks pass; off otherwise (say which check failed and the command that fixes it).
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
@@ -74,14 +79,24 @@ regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_M
 - *inside this project:* add `"AGENT_HUB_HOME": "project"` to `.agent-hub/config.json` (the home becomes
   `<main checkout>/.agent-hub/local/`, kept out of git by the tools; a session in the repository needs no grant);
 - *one shared folder:* nothing to write in the repository, `~/agent-hub` is the default. A session started outside it
-  needs the folder granted, so OFFER to add it to the user settings: run `hub home`, show the exact edit — the path
+  may need the folder granted. In Claude, OFFER to add it to the user settings: run `hub home`, show the exact edit — the path
   `hub home` prints added to `permissions.additionalDirectories` in `~/.claude/settings.json`, other keys and entries
-  kept — and ask first. Never edit settings silently. With `--defaults` or headless, do not edit them: list the edit.
+  kept — and ask first. In Codex sandboxed sessions, use `--add-dir <hub-home>` or the documented sandbox settings; full access needs
+  no directory grant. Show a concrete settings edit before changing user settings. With `--defaults` or headless, list it.
 - if `hub home` showed the legacy `~/.claude/agent-hub`, say so and mention `hub home migrate` (a dry run first, then
   `--apply`).
 
 For question 8, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's `config.json` (the hub home is where `hub home`
 points; create the file as `{}` first, keep its other keys) — a repository's `config.json` cannot turn it on.
+
+### Native Codex worker definitions
+
+For a Codex host, offer to copy `resources/codex-agents/worker-*.toml` from this skill to the project's
+`.codex/agents/` (or `~/.codex/agents/` if the owner requests personal scope). Keep existing definitions unless
+an update was requested. These files pin effort and inherit the model selected at spawn; set a real available
+model id when a persistent pin is required. Installed Claude `agents/*.md` are not native Codex definitions.
+The plugin manifest loads skills and hooks; it does not register these TOML files automatically.
+Check that `python3` is 3.11+ before enabling Codex hooks or workers; TOML discovery needs the standard-library parser.
 
 ## 4. Prove it
 

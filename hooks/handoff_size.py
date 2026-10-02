@@ -18,6 +18,8 @@ import os
 import sys
 from pathlib import Path
 
+from codex_compat import patch_contents
+
 REASON = (
     "Handoff is {size} bytes > {limit}. Shorten it: follow the agent-hub handoff template "
     "(templates/HANDOFF-template.md in the plugin; ≤ 12 KB, chronology goes to journal-<date>.md) and continue "
@@ -26,7 +28,7 @@ REASON = (
 
 
 def hubcore():
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     sys.path.insert(0, os.path.join(root, "bin"))
     import hubcore as hc  # noqa: E402
 
@@ -44,6 +46,24 @@ def main() -> None:
         return
     tool = data.get("tool_name")
     ti = data.get("tool_input") or {}
+    if tool == "apply_patch":
+        hc = hubcore()
+        hc.use_cwd(data.get("cwd"))
+        cwd = data.get("cwd") or os.getcwd()
+        try:
+            limit = int(hub_setting("AGENT_HUB_HANDOFF_MAX_BYTES") or 15360)
+        except ValueError:
+            limit = 15360
+        for _, target, content in patch_contents(ti.get("command"), cwd):
+            if target is None or content is None or not fnmatch.fnmatchcase(os.path.basename(target), "HANDOFF-*.md"):
+                continue
+            if not hc.in_scope(os.path.join(cwd, target)):
+                continue
+            size = len(content.encode("utf-8"))
+            if size > limit:
+                deny(size, limit)
+                return
+        return
     fp = ti.get("file_path")
     if tool not in ("Write", "Edit") or not isinstance(fp, str):
         return
@@ -66,7 +86,7 @@ def main() -> None:
         old, new = ti.get("old_string"), ti.get("new_string")
         if not isinstance(old, str) or not isinstance(new, str):
             return
-        cur = Path(fp).read_text(encoding="utf-8")
+        cur = (Path(data.get("cwd") or os.getcwd()) / fp).read_text(encoding="utf-8")
         if old == "":
             content = new if cur == "" else None
         elif old not in cur:
@@ -79,6 +99,10 @@ def main() -> None:
     size = len(content.encode("utf-8"))
     if size <= limit:
         return
+    deny(size, limit)
+
+
+def deny(size, limit):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",

@@ -1,7 +1,8 @@
 """Autopilot: the hub hands its shift to a successor session by itself (`hub succeed`, hooks/context_budget.py).
 
 At the context budget's warn threshold the hook tells a stage hub to hand over at its next quiet point: `hub handoff`,
-fill the TODOs, `hub succeed`. `hub succeed` starts the successor as a background Remote Control session
+fill the TODOs, `hub succeed`. Codex successors are detached `agent spawn --engine codex` sessions.
+Claude starts the successor as a background Remote Control session
 (`claude --bg --remote-control`), reachable from the phone or claude.ai and from a terminal (`claude attach <id>`);
 when that cannot start, as a headless hub (`agent spawn`) the owner talks to through `ask` and `agent send`. Either
 starts from the main checkout of the hub's directory in a new worktree of its own (outside git: in the directory).
@@ -10,6 +11,7 @@ Settings (the hub home's config.json or the environment only — a cloned reposi
 sessions or choose their permission mode):
   AGENT_HUB_AUTO_HANDOFF               off | on (default off)
   AGENT_HUB_AUTO_HANDOFF_CHAIN         automatic handoffs in a row without the owner (default 10; 0 = never)
+  AGENT_HUB_SUCCESSOR_ENGINE           inherit the selected engine, or claude | codex
   AGENT_HUB_SUCCESSOR_MODEL            the successor's model (default: the hub's own, from its transcript)
   AGENT_HUB_SUCCESSOR_PERMISSION_MODE  inherit (default: the hub's own mode) or a `claude --permission-mode` value
   AGENT_HUB_SUCCESSOR_TIMEOUT          seconds to wait for the successor's takeover line (default 600)
@@ -33,6 +35,8 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import engines  # noqa: E402
+import codex_rollouts  # noqa: E402
 
 MARKER_RE = re.compile(r"\[agent-hub auto-handoff (\d+)/(\d+)\]")
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
@@ -44,7 +48,8 @@ MODES = ("default", "manual", "acceptEdits", "auto", "bypassPermissions", "dontA
 # AGENT_SESSION_ID: a headless hub's own id (`agent spawn` sets it); inherited, the successor's `--session self` would
 # name the old hub.
 STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT",
-             "HUB_TAG", "AGENT_ROLE", "AGENT_SESSION_ID")
+             "HUB_TAG", "AGENT_ROLE", "AGENT_SESSION_ID", "CODEX_THREAD_ID", "AGENT_HUB_CODEX_MODEL",
+             "AGENT_HUB_CODEX_EFFORT")
 # The hub's own commands and the hub home, allowed in the successor (`--settings`) unless it runs in bypass mode: a
 # background session in the default mode otherwise stops at the permission prompt of its takeover, then at reading the
 # handoff outside the project, with nobody there to answer (smoke test, CLI 2.1.285). Everything else still asks — the
@@ -234,6 +239,58 @@ def successor_model(given: Optional[str], transcript=None) -> Optional[str]:
         transcript or find_transcript(os.environ.get("CLAUDE_CODE_SESSION_ID", "")))
 
 
+def codex_context() -> dict:
+    """The latest persisted turn settings of this exact Codex session, if present."""
+    hit = codex_rollouts.INDEX.session(hc.session_id())
+    if hit:
+        try:
+            with hit[0].open("rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - (4 << 20)))
+                lines = f.read().splitlines()
+            for line in reversed(lines):
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "turn_context" and isinstance(ev.get("payload"), dict):
+                    return dict(ev["payload"], _rollout_found=True)
+        except OSError:
+            pass
+    # A detached coordinator knows its launch policy even before a rollout is discoverable.
+    role = os.environ.get("AGENT_ROLE")
+    stage = os.environ.get("HUB_STAGE")
+    if role and stage and hc.STAGE_RE.fullmatch(role):
+        try:
+            meta = json.loads((hc.root() / hc.check_stage(stage) / "agents" / role / "meta.json").read_text())
+            if meta.get("engine") == "codex" and meta.get("session_id") == hc.session_id():
+                return {"model": meta.get("model"), "effort": meta.get("effort"), "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
+                        "approval_policy": meta.get("approval_policy", "never")}
+        except (OSError, ValueError, hc.Failure):
+            pass
+    return {}
+
+
+def codex_model(given: Optional[str], context: dict, cwd: Path) -> Optional[str]:
+    return (given or configured_model() or context.get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL")
+            or hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd) or None)
+
+
+def codex_policy(given: Optional[str], context: dict, cwd: Path) -> tuple:
+    override = given or configured_mode()
+    if override:
+        return engines.permission_policy(override, cwd=cwd), "never"
+    sandbox = context.get("sandbox_policy")
+    sandbox = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
+    if context and sandbox not in engines.SANDBOXES:
+        raise hc.UsageError(f"unsupported or missing inherited Codex sandbox {sandbox!r}; "
+                            "choose an explicit supported --permission-mode")
+    if not sandbox:
+        sandbox = engines.permission_policy(cwd=cwd)
+    # Detached successors cannot surface approvals. Keep the sandbox and fail denied tools without a prompt.
+    return sandbox, "never"
+
+
 def successor_mode(given: Optional[str], hub_mode: Optional[str] = None) -> str:
     return given or configured_mode() or hub_mode or "default"
 
@@ -254,8 +311,10 @@ def fallback_mode(model: str) -> str:
 
 # ---------------------------------------------------------------- instructions for the hub (the hook)
 
-def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str]) -> str:
+def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], engine=None) -> str:
     parts = [tool("hub"), "succeed", "--stage", stage, "--handoff", "<the draft>"]
+    if engine:
+        parts += ["--engine", engine]
     if model:
         parts += ["--model", shlex.quote(model)]
     if mode:
@@ -271,6 +330,18 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
     when = ("Hand over now" if now_block else
             "Hand your shift to a successor yourself at the next quiet point (no agent waiting for your reply, no "
             "merge or lock operation in flight)")
+    if engines.selected(hc.setting("AGENT_HUB_SUCCESSOR_ENGINE"), cwd) == "codex":
+        context = codex_context()
+        model = codex_model(None, context, Path(cwd or os.getcwd()))
+        # Hook inputs may carry Claude-shaped permission names; inherit the exact Codex rollout at execution.
+        command = succeed_command(stage, model, configured_mode(), cwd, "codex")
+        return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` "
+                f"and fill its TODOs; (2) `{command}` starts a detached Codex successor and prints one `jwait`; "
+                "(3) run/continue that waiter through the Codex shell harness, with individual waits bounded. "
+                "On the successor's start line, tell the owner its name and `agent send` command, then stop: "
+                "release no locks and make no more tool calls. On ALARM, check `agent status`; retry with --again "
+                "only when the successor is dead. A chain limit stops automatic launches until the owner responds. "
+                f"At {block_k} only handoff/succeed, jlog/jwait and the HANDOFF file pass.")
     return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` and fill "
             "its TODOs; "
             f"(2) `{succeed_command(stage, model, mode, cwd)}` (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
@@ -525,6 +596,88 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         return f"in {self.root} (a worktree of it)" if self.root else f"in {self.cwd}"
 
 
+class CodexSuccessor(Successor):
+    """Detached successor without a Claude login check or Remote Control fallback."""
+    def __init__(self, stage, n, handoff, model, mode, cwd, k, limit, approval="never", sandbox_policy=None, effort=None, succ=None):
+        self.root = main_checkout(cwd)
+        self.stage, self.n, self.handoff, self.model, self.mode = stage, n, handoff, model, mode
+        self.cwd = self.root or cwd
+        self.k, self.limit, self.succ = k, limit, succ or n + 1
+        self.tag, self.title = f"hub-{n}", f"Hub {stage} #{self.succ}"
+        self.rc_name = f"{stage}-hub-{self.succ}"
+        self.worktree = None
+        self.wt_name = ""
+        self.notes, self.env, self.approval = [], child_env(), approval
+        self.sandbox_policy = sandbox_policy or {"type": mode}
+        self.effort = effort
+        self.codex = engines.codex_bin(cwd)
+        self.cli_model = engines.model_map(cwd).get(model, model) if model else None
+
+    def brief_text(self):
+        skill = hc.BIN.parent / "skills" / "hub" / "SKILL.md"
+        return f"""# Takeover brief: "{self.title}" — stage {self.stage}
+
+You are the next hub of stage `{self.stage}`. Your predecessor handed over automatically and stopped.
+The owner may be away; they reach you through `ask` and `agent send hub-{self.succ} "…"`.
+
+1. Read the bundled hub skill at `{skill}` (or invoke the installed `agent-hub:hub` skill), then run
+   `{self.takeover_cmd()}`. `self` resolves this worker's own session id. Follow its digest and `{self.handoff}`.
+2. Wait through the shell harness with `"$HUB_BIN/jwait" --for 9m`; preserve its execution id and exit status.
+   Keep individual tool waits bounded so you can read the inbox and respond. When nothing remains to wait for,
+   write a status line with `"$HUB_BIN/jlog"` and finish; `agent send` resumes this same Codex thread.
+3. The executor footer's "hub" means the owner here: record questions with `ask add` and journal `@owner …`.
+4. Hand over at your context budget as your predecessor did. Preserve your engine, model and permission policy.
+
+{self.marker}
+"""
+
+    def brief(self, why):
+        path = hc.work_dir(self.stage) / f"hub-{self.succ}-takeover-brief.md"
+        hc.atomic_write(path, self.brief_text())
+        return path
+
+    def argv(self, brief):
+        role = f"hub-{self.succ}"
+        argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--engine", "codex", "--stage", self.stage,
+                "--role", role, "--tag", role, "--cwd", str(self.cwd), "--brief", str(brief), "--title", self.title,
+                "--sandbox-policy", json.dumps(self.sandbox_policy, separators=(",", ":"))]
+        if self.model:
+            argv += ["--model", self.model]
+        if self.effort:
+            argv += ["--effort", self.effort]
+        if self.root and self.wt_name:
+            argv += ["--worktree", self.wt_name]
+        return argv
+
+    def start_headless(self, why):
+        role, brief = f"hub-{self.succ}", self.brief(why)
+        if self.root:
+            self.wt_name = free_worktree_name(self.root, self.rc_name)
+            self.worktree = self.root / ".worktrees" / self.wt_name
+        res = subprocess.run(self.argv(brief), capture_output=True, text=True, env=dict(self.env, HUB_TAG=self.tag),
+                             stdin=subprocess.DEVNULL)
+        if res.returncode:
+            if f"agent {role} is already running" in res.stdout + res.stderr:
+                self.notes.append(f"the headless {role} was already running (started by an earlier run)")
+                self.worktree = None
+            else:
+                raise hc.Failure(f"the Codex successor did not start: {tail(res.stderr or res.stdout, 400)}")
+        return {"role": role, "brief": str(brief), "worktree": str(self.worktree or "")}
+
+    def dry_spawn_argv(self):
+        """The actual launcher command, with a prospective brief path and worktree; no filesystem writes."""
+        if self.root:
+            self.wt_name = free_worktree_name(self.root, self.rc_name)
+            self.worktree = self.root / ".worktrees" / self.wt_name
+        brief = hc.work_dir(self.stage) / f"hub-{self.succ}-takeover-brief.md"
+        return self.argv(brief)
+
+    def dry_argv(self):
+        meta = {"cwd": str(self.cwd), "model": self.cli_model, "sandbox": self.mode,
+                "approval_policy": self.approval, "sandbox_policy": self.sandbox_policy, "effort": self.effort}
+        return engines.codex_argv(meta, self.brief_text())
+
+
 def successor_settings() -> dict:
     """Permissions of a successor not in bypass mode: the hub's commands, reading and writing in the hub home (its
     journal, the handoff, the next handoff). Both spellings of the home when a symlink is in its path (/tmp)."""
@@ -576,14 +729,16 @@ def report(stage: str, s: Successor, pend: dict, timeout_s: int) -> None:
                 f"session {pend['id']} — {where}; terminal: claude attach {pend['id']}; {s.where()}; waiting for its "
                 f"takeover (≤ {timeout_s} s)")
     else:
-        line = (f"auto-handoff {s.k}/{s.limit}: started \"{s.title}\" ({s.model}) headless as agent {pend['role']} "
+        line = (f"auto-handoff {s.k}/{s.limit}: started \"{s.title}\" ({s.model or 'CLI configured model'}) headless as agent {pend['role']} "
                 f"because {pend['why']} — the owner reaches it through `ask` and `agent send {pend['role']} \"…\"`; "
                 f"{s.where()}; waiting for its takeover (≤ {timeout_s} s)")
     if s.notes:
         line += "; " + "; ".join(s.notes)
     hc.journal_append(stage, s.tag, line)
     print(line)
-    print("\nNext: run in the background (Bash run_in_background: true):\n  "
+    waiting = ("continue through the Codex shell execution harness" if pend.get("engine") == "codex"
+               else "run in the background (Bash run_in_background: true)")
+    print(f"\nNext: {waiting}:\n  "
           + jwait_command(stage, s.succ, since, timeout_s))
     if pend["kind"] == "bg":
         print(f"Exit 0 (its start line) → tell the owner one line: \"{s.title}\" took over — "
@@ -690,7 +845,10 @@ def _record(stage: str, succ: int, pend: dict) -> None:
     """Replace the pending record of this shift (a takeover by hand in between cleared it: then leave it)."""
     with state_lock(stage):
         data = load_state(stage)
-        if (data.get("pending") or {}).get("n") == succ:
+        previous = data.get("pending") or {}
+        if previous.get("n") == succ:
+            if previous.get("taken_over"):
+                pend = dict(pend, taken_over=previous["taken_over"])
             data["pending"] = pend
             save_state(stage, data)
 
@@ -707,22 +865,45 @@ def _release(stage: str, succ: int, k: int) -> None:
 
 
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
-            headless: bool = False, dry_run: bool = False, again: bool = False, succ: Optional[int] = None,
-            notes: tuple = ()) -> int:
-    """`n`: the handing-over hub's number; `succ`: its successor's, from the function `hub takeover` numbers by
-    (default n + 1); `notes`: what the numbering had to say, for the journal line."""
+            headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
+            succ: Optional[int] = None, notes: tuple = ()) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
-    model = successor_model(model)
-    if not model:
-        raise hc.UsageError("no model for the successor: pass --model (the hub's transcript was not found and "
-                            "AGENT_HUB_SUCCESSOR_MODEL is not set)")
-    problem = hc.model_problem(model, cwd)
+    retry = (load_state(stage).get("pending") or {}) if again else {}
+    if retry.get("n") != succ or retry.get("taken_over"):
+        retry = {}
+    engine = engines.selected(engine or hc.setting("AGENT_HUB_SUCCESSOR_ENGINE") or retry.get("engine"), cwd)
+    approval, sandbox_policy, effort = "never", None, None
+    if engine == "codex":
+        context = codex_context()
+        if retry.get("engine") == "codex":
+            context = dict(context, model=retry.get("model"), effort=retry.get("effort"),
+                           sandbox_policy=retry.get("sandbox_policy") or {"type": retry.get("mode")},
+                           approval_policy=retry.get("approval_policy", "never"))
+        effort = context.get("effort")
+        if effort is None and retry.get("engine") != "codex":
+            effort = os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
+        if effort is not None and effort not in engines.CODEX_EFFORTS:
+            raise hc.UsageError(f"unsupported inherited Codex effort {effort!r}")
+        model = codex_model(model, context, cwd)
+        problem = engines.model_problem(model, cwd) if model else None
+        explicit_mode = mode or configured_mode()
+        mode, approval = codex_policy(mode, context, cwd)
+        sandbox_policy = (context.get("sandbox_policy") if not explicit_mode else None)
+        if not isinstance(sandbox_policy, dict):
+            sandbox_policy = {"type": mode}
+        sandbox_policy = engines.sandbox_policy(sandbox_policy)
+    else:
+        model = successor_model(model)
+        if not model:
+            raise hc.UsageError("no model for the successor: pass --model (the hub's transcript was not found and "
+                                "AGENT_HUB_SUCCESSOR_MODEL is not set)")
+        problem = hc.model_problem(model, cwd)
+        mode = successor_mode(mode)
+        if mode not in MODES:
+            raise hc.UsageError(f"permission mode {mode!r}: one of {', '.join(MODES)}")
     if problem:
         raise hc.UsageError(f"--model {model!r}: {problem}")
-    mode = successor_mode(mode)
-    if mode not in MODES:
-        raise hc.UsageError(f"permission mode {mode!r}: one of {', '.join(MODES)}")
     if again and not dry_run:
         drop_dead(stage, n, cwd, succ)
     started = hc.now().isoformat(timespec="seconds")
@@ -740,7 +921,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if not at_limit and not dry_run:
             data["chain"] = k
             data["pending"] = {"n": succ, "kind": "starting", "at": started, "handoff": str(handoff),
-                               "model": model, "k": k}
+                               "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}
             save_state(stage, data)
     if at_limit:
         line = (f"auto-handoff chain limit {limit} reached — waiting for the owner; handoff {handoff}. "
@@ -750,8 +931,12 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         print(line + "\nTell the owner one line (the handoff path) and stop; the owner starts the next hub.")
         return 3
     try:
-        s = Successor(stage, n, handoff, model, mode, cwd, k, limit, succ)
+        s = (CodexSuccessor(stage, n, handoff, model, mode, cwd, k, limit, approval, sandbox_policy, effort, succ) if engine == "codex"
+             else Successor(stage, n, handoff, model, mode, cwd, k, limit, succ))
         s.notes.extend(notes)
+        if engine == "codex" and context.get("approval_policy") not in (None, "never"):
+            s.notes.append(f"inherited sandbox {mode}; approval policy {context['approval_policy']} becomes never "
+                           "for the unattended successor (denied tools fail without broadening permissions)")
     except hc.Failure as e:
         if not dry_run:
             _release(stage, succ, k)
@@ -761,9 +946,14 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if dry_run:
         print(f"[plan] auto-handoff {s.k}/{limit}: start \"{s.title}\" from {s.cwd}"
               + (" in a new worktree" if s.root else "") + ":\n  "
-              + " ".join(shlex.quote(x) for x in [s.claude] + s.bg_argv(mode)))
+              + " ".join(shlex.quote(x) for x in (s.dry_spawn_argv() if engine == "codex"
+                                                 else [s.claude] + s.bg_argv(mode))))
+        if engine == "codex":
+            print("\nCodex exec policy preview:\n  " + " ".join(shlex.quote(x) for x in s.dry_argv()))
         return 0
-    if headless:
+    if engine == "codex":
+        why = "the Codex engine uses a detached successor"
+    elif headless:
         why = "--headless was given"
     else:
         try:
@@ -780,10 +970,11 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     hc.journal_append(stage, tag, f"auto-handoff: background successor not started — {why}; falling back to a "
                                   "headless hub (agent spawn)")
     _record(stage, succ, {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
-                          "handoff": str(handoff), "model": model, "k": k})  # a new phase: a fresh start budget
+                          "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
+                          "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort})  # a new phase: a fresh start budget
     got = headless_or_owner(stage, s, why)
     pend = {"n": succ, "kind": "headless", "at": started, "handoff": str(handoff), "model": model, "k": k,
-            "why": why, "cwd": str(s.cwd), **got}
+            "why": why, "cwd": str(s.cwd), "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort, **got}
     _record(stage, succ, pend)
     report(stage, s, pend, takeover_timeout())
     return 0
@@ -791,6 +982,16 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
 
 def headless_or_owner(stage: str, s: Successor, why: str) -> dict:
     try:
+        if isinstance(s, CodexSuccessor):
+            # A manual takeover while this command prepared its successor ends our reservation.
+            # Keep the lock until spawn has returned its init handshake; takeover then proceeds normally.
+            with state_lock(stage):
+                current = hc.roles_load(stage)["roles"].get("hub") or {}
+                pending = load_state(stage).get("pending") or {}
+                number = hc.hub_number(current.get("tag"))
+                if not current or (number is not None and number != s.n) or pending.get("n") != s.succ or pending.get("taken_over"):
+                    raise hc.Failure("the hub changed while the successor was prepared; no Codex process started")
+                return s.start_headless(why)
         return s.start_headless(why)
     except hc.Failure as e:
         _release(stage, s.succ, s.k)

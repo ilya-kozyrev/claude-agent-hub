@@ -67,6 +67,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import engines  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -85,11 +86,12 @@ DEFAULT_PERMISSION_MODE = "bypassPermissions"
 model_map = hc.model_map
 
 
-STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT")
+STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT",
+             "CODEX_THREAD_ID", "AGENT_SESSION_ID", "AGENT_HUB_CODEX_MODEL", "AGENT_HUB_CODEX_EFFORT")
 
 FOOTER = """
 ---
-You are "{role}" (journal tag `{tag}`), stage `{stage}`, a headless `claude -p` session with nobody on the
+You are "{role}" (journal tag `{tag}`), stage `{stage}`, a headless {engine} session with nobody on the
 other end: questions asked in chat are read by no one. The brief above is your contract.
 - Talk to the hub only through the journal: `{jlog} "…"` (your tag is already in $HUB_TAG; run it by this
   path, $HUB_BIN is the plugin's bin/: another `jlog` earlier on PATH writes to a journal the hub does not read). Write only on events: MERGED / STOP /
@@ -98,8 +100,8 @@ other end: questions asked in chat are read by no one. The brief above is your c
   path. The answer arrives as a new message in this same session (the hub runs `agent send {role} "…"`,
   which resumes the session).
 - Messages that arrive while you work: `{inbox}` — read it after every major step and before finishing.
-- In `claude -p` the end of your turn is the end of the process: do not wait in `run_in_background` or a
-  Monitor. Run a long command in the foreground with the Bash `timeout` raised (up to 600000 ms).
+- The end of your turn is the end of the process. Keep long commands attached and wait for their completion
+  through the host's execution tools; do not end your turn while a command you need still runs.
 - Commit unfinished work before long runs: an interrupted turn loses whatever is uncommitted.
 """
 
@@ -108,6 +110,7 @@ def footer(stage: str, cwd: Path, **fields) -> str:
     """The standard footer plus the first brief-footer.md of the config layers (stage, the agent's repository,
     hub home), with {role} {tag} {stage} {report} {inbox} {jlog} filled in."""
     fields["stage"] = stage
+    fields.setdefault("engine", "claude")
     fields["jlog"] = '"$HUB_BIN/jlog"'  # not the path itself: a resumed run follows the plugin's current version
     text = FOOTER.format(**fields)
     extra = hc.config_file("brief-footer.md", stage, cwd)
@@ -233,7 +236,7 @@ def alive(meta: dict) -> bool:
         cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
     except OSError:
         return True
-    return meta["session_id"] in cmd  # guards against a reused pid
+    return (meta.get("process_token") or meta["session_id"]) in cmd  # guards against a reused pid
 
 
 def child_env(stage: str, tag: str) -> dict:
@@ -262,7 +265,8 @@ def init_timeout(cwd=None) -> int:
         raise hc.UsageError("AGENT_INIT_TIMEOUT must be a whole number of seconds") from None
 
 
-def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120) -> dict:
+def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120,
+                  engine: str = "claude") -> dict:
     """Block until the run writes its init event for this session and return it; kill the run and fail otherwise."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -274,8 +278,13 @@ def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, t
                         ev = json.loads(raw)
                     except ValueError:
                         continue
-                    if ev.get("type") == "system" and ev.get("subtype") == "init" and ev.get("session_id") == session_id:
-                        return ev
+                    if not isinstance(ev, dict):
+                        continue
+                    for event in engines.normalize_event(ev):
+                        if event.get("type") == "system" and event.get("subtype") == "init":
+                            sid = event.get("session_id")
+                            if (sid == session_id if session_id else isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid)):
+                                return event
         except FileNotFoundError:
             pass
         if proc.poll() is not None:
@@ -289,11 +298,40 @@ def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, t
             pass
     tail = stderr.read_text(encoding="utf-8", errors="replace")[-600:].strip() if stderr.exists() else ""
     why = f"exited with code {code}" if code is not None else f"sent no init event in {timeout_s} s, killed"
-    raise hc.Failure(f"claude {why}; stderr: {tail or '—'}")
+    raise hc.Failure(f"{engine} {why}; stderr: {tail or '—'}")
 
 
 def launch(meta: dict, prompt: str, resume: bool) -> int:
     d = Path(meta["dir"])
+    engine = meta.get("engine", "claude")
+    if engine == "codex":
+        argv = engines.codex_argv(meta, prompt, resume)
+    else:
+        argv = claude_argv(meta, prompt, resume)
+    log = d / "log.jsonl"
+    offset = log.stat().st_size if log.exists() else 0
+    note = 'marker=$1; shift; "$@"; c=$?; python3 "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
+    token = meta.get("process_token") or meta["session_id"]
+    argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve()), token] + argv
+    env = child_env(meta["stage"], meta["tag"])
+    env.update({"AGENT_ROLE": meta["role"], "AGENT_SESSION_ID": meta["session_id"], "AGENT_HUB_ENGINE": engine})
+    if engine == "claude":
+        env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
+    else:
+        env.update({"PLUGIN_ROOT": str(hc.BIN.parent), "CLAUDE_PLUGIN_ROOT": str(hc.BIN.parent),
+                    "AGENT_HUB_CODEX_MODEL": meta.get("model") or "", "AGENT_HUB_CODEX_EFFORT": meta.get("effort") or ""})
+    with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
+        proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                env=env, start_new_session=True, close_fds=True)
+    init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine)
+    meta["session_id"] = init["session_id"]
+    model = init.get("model")
+    if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
+        meta["resolved_model"] = model
+    return proc.pid
+
+
+def claude_argv(meta: dict, prompt: str, resume: bool) -> list:
     # Session flags first: the id stays at the head of `ps` output whatever the prompt size.
     argv = [claude_bin(meta["cwd"])]
     argv += ["--resume", meta["session_id"]] if resume else ["--session-id", meta["session_id"]]
@@ -306,37 +344,18 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     if not resume:
         argv += ["-n", meta["title"]]
     argv += ["-p", prompt]
-    log = d / "log.jsonl"
-    offset = log.stat().st_size if log.exists() else 0
-    # The shell outlives claude by one command: `exit-note` journals EXIT when the run died or ended without a status
-    # word, so the hub's jwait wakes on it (otherwise a run killed by an API error on turn 1 stays silent).
-    # Same process group (setsid), so agent-stop still kills both; exit-note output goes to stderr.log, not the jsonl.
-    note = '"$@"; c=$?; python3 "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
-    argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve())] + argv
-    env = child_env(meta["stage"], meta["tag"])
-    env["AGENT_ROLE"] = meta["role"]
-    env["AGENT_SESSION_ID"] = meta["session_id"]  # the run's own id, for `hub takeover --session self` (bin/autopilot.py)
-    env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
-    with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
-        proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                                env=env, start_new_session=True, close_fds=True)
-    init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]))
-    # the id the CLI resolved the alias to: an alias follows the installed CLI, so this is what actually runs
-    model = init.get("model")
-    if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
-        meta["resolved_model"] = model
-    return proc.pid
+    return argv
 
 
 def model_name(meta: dict) -> str:
     """The model of an agent: the id its run reported, else the one requested (`sonnet`, or a pinned id)."""
-    return meta.get("resolved_model") or meta["model"]
+    return meta.get("resolved_model") or meta["model"] or "CLI default"
 
 
 def model_text(meta: dict) -> str:
     """model_name, plus what was asked for when the CLI resolved it to something else (an alias)."""
     got = meta.get("resolved_model")
-    return f"{got} (asked for {meta['model']})" if got and got != meta["model"] else meta["model"]
+    return f"{got} (asked for {meta['model']})" if got and got != meta["model"] else model_name(meta)
 
 
 def journal(stage: str, fallback_tag: str, text: str) -> str:
@@ -352,31 +371,56 @@ def cmd_spawn(a) -> int:
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     # Settings come from the agent's repository (its .agent-hub/config.json), not from the caller's.
-    mmap = model_map(cwd)
-    problem = hc.model_problem(a.model, cwd)
+    engine = engines.selected(a.engine, cwd)
+    if engine == "claude" and not a.model:
+        raise hc.UsageError("--model is required for Claude")
+    given_model = a.model or (hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd) if engine == "codex" else None)
+    mmap = model_map(cwd) if engine == "claude" else engines.model_map(cwd)
+    problem = (hc.model_problem(given_model, cwd) if engine == "claude" else engines.model_problem(given_model, cwd)) if given_model else None
     if problem:
         raise hc.UsageError(f"--model: {problem}")
-    given, a.model = a.model, mmap.get(a.model, a.model)
+    given, a.model = given_model, mmap.get(given_model, given_model)
     default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
-    if default_effort not in EFFORTS:
-        raise hc.UsageError(f"AGENT_HUB_DEFAULT_EFFORT={default_effort!r}: one of {EFFORTS}")
-    effort = None if "haiku" in a.model else (a.effort or default_effort)
+    allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
+    effective_effort = a.effort or default_effort
+    if effective_effort not in allowed_efforts:
+        raise hc.UsageError(f"effort {effective_effort!r} ({engine}): one of {allowed_efforts}")
+    effort = None if engine == "claude" and "haiku" in a.model else effective_effort
     # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
     import subagent_rules  # noqa: E402
-    denied = subagent_rules.check_spawn(given, a.model, effort, cwd)
+    denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
     if denied:
         raise hc.UsageError(denied)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
-    bg_wait_ceiling(cwd)  # a bad value fails here, before any directory or process exists
+    sandbox = None
+    policy = None
+    if engine == "codex":
+        if a.sandbox_policy:
+            policy = engines.sandbox_policy(a.sandbox_policy)
+            sandbox = policy["type"]
+            if a.sandbox and a.sandbox != sandbox:
+                raise hc.UsageError("--sandbox and --sandbox-policy type disagree")
+            if a.permission_mode and engines.permission_policy(a.permission_mode, cwd=cwd) != sandbox:
+                raise hc.UsageError("--permission-mode and --sandbox-policy type disagree")
+        else:
+            sandbox = engines.permission_policy(a.permission_mode, a.sandbox, cwd)
+        engines.hook_args(cwd)
+    elif a.sandbox or a.sandbox_policy:
+        raise hc.UsageError("--sandbox and --sandbox-policy are only supported by the Codex engine")
+    else:
+        bg_wait_ceiling(cwd)  # a bad value fails before any directory or process exists
     if not brief.is_file():
         raise hc.UsageError(f"--brief {brief}: no such file")
-    cli = hc.find_claude(cwd)
-    if cli is None:
-        raise hc.Failure("claude not found on PATH, and no CLI is bundled with Claude Desktop (set $CLAUDE_BIN)")
-    print(f"CLI {cli.describe()}")
-    old_cli = hc.cli_warning(cli)
-    if old_cli:
-        hc.warn(old_cli)
+    if engine == "claude":
+        cli = hc.find_claude(cwd)
+        if cli is None:
+            raise hc.Failure("claude not found on PATH, and no CLI is bundled with Claude Desktop (set $CLAUDE_BIN)")
+        print(f"CLI {cli.describe()}")
+        old_cli = hc.cli_warning(cli)
+        if old_cli:
+            hc.warn(old_cli)
+    else:
+        print(f"CLI {engines.codex_bin(cwd)} (codex)")
     own = hc.caller_tag(stage)
     if own and hc.tag_is(a.tag or a.role, own):
         # jwait drops the caller's own tag and its sub-tags: the agent's DONE would never wake the hub
@@ -401,13 +445,18 @@ def cmd_spawn(a) -> int:
     shutil.copyfile(brief, d / "brief.md")
     (d / "inbox.md").write_text(f"# Inbox of agent {a.role}\n\n", encoding="utf-8")
     report = hc.work_dir(stage) / f"{tag.replace('/', '-')}-REPORT.md"
-    meta = {"role": a.role, "tag": tag, "stage": stage, "session_id": str(uuid.uuid4()), "model": a.model,
+    meta = {"role": a.role, "tag": tag, "stage": stage, "session_id": str(uuid.uuid4()) if engine == "claude" else "", "model": a.model,
             "effort": effort, "permission_mode": pmode, "cwd": str(cwd), "dir": str(d), "brief": str(brief),
             "title": a.title or f"agent {a.role} ({stage})", "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
+    meta["engine"] = engine
+    if engine == "codex":
+        meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
+        if policy:
+            meta["sandbox_policy"] = policy
     if wt:
         meta["worktree"] = wt
-    prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, role=a.role, tag=tag, report=report,
+    prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, engine=engine, role=a.role, tag=tag, report=report,
                                                        inbox=d / "inbox.md")
     save_meta(stage, a.role, meta)
     try:
@@ -420,9 +469,15 @@ def cmd_spawn(a) -> int:
     save_meta(stage, a.role, meta)
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
                        note=f"agent-spawn {model_name(meta)}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
+    with hc.roles_lock(stage):
+        data = hc.roles_load(stage)
+        data["roles"][a.role]["engine"] = engine
+        if meta.get("process_token"):
+            data["roles"][a.role]["process_token"] = meta["process_token"]
+        hc.roles_save(stage, data)
     got = meta.get("resolved_model")
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
-                               f"{', asked for ' + a.model if got and got != a.model else ''}), "
+                               f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
@@ -442,25 +497,41 @@ def read_log(path: Path) -> dict:
     with fh:
         for raw in fh:
             try:
-                ev = json.loads(raw)
+                events = engines.normalize_event(json.loads(raw))
             except ValueError:
                 continue
-            n += 1
-            t = ev.get("type")
-            last_type = t
-            if t == "system" and ev.get("subtype") == "init":
-                started_after_result = True
-                run_turns = set()  # a resumed session logs one init per run: count the last run's turns apart
-            elif t == "assistant":
-                msg = ev.get("message") or {}
-                turns.add(msg.get("id") or n)
-                run_turns.add(msg.get("id") or n)
-                for block in msg.get("content") or []:
-                    if block.get("type") == "text" and block.get("text", "").strip():
-                        last_text = [ln for ln in block["text"].splitlines() if ln.strip()][-1].strip()
-            elif t == "result":
-                results.append(ev)
-                started_after_result = False
+            for ev in events:
+                n += 1
+                t = ev.get("type")
+                if ev.get("_engine") == "codex":
+                    if t == "system" and ev.get("subtype") == "turn_start":
+                        turns.add(n)
+                        run_turns.add(n)
+                        started_after_result = True
+                        continue
+                    if t == "system" and ev.get("subtype") == "init":
+                        run_turns = set()
+                    if t == "assistant":
+                        for block in (ev.get("message") or {}).get("content") or []:
+                            if block.get("type") == "text" and block.get("text", "").strip():
+                                last_text = [ln for ln in block["text"].splitlines() if ln.strip()][-1].strip()
+                        continue
+                    if t == "result":
+                        ev["result"] = last_text
+                if t == "system" and ev.get("subtype") == "init":
+                    started_after_result = True
+                    run_turns = set()
+                elif t == "assistant":
+                    msg = ev.get("message") or {}
+                    turns.add(msg.get("id") or n)
+                    run_turns.add(msg.get("id") or n)
+                    for block in msg.get("content") or []:
+                        if block.get("type") == "text" and block.get("text", "").strip():
+                            last_text = [ln for ln in block["text"].splitlines() if ln.strip()][-1].strip()
+                elif t == "result":
+                    results.append(ev)
+                    started_after_result = False
+                last_type = t
     return {"turns": len(turns), "run_turns": len(run_turns), "last_text": last_text,
             "result": results[-1] if results else None, "events": n, "running_after_result": started_after_result,
             "last_type": last_type}
@@ -498,6 +569,11 @@ def pending_unread(meta: dict) -> list:
                         handled = True
             elif ev.get("type") == "result" and re.search(r"\bDONE\b", str(ev.get("result") or "")):
                 handled = True
+            elif ev.get("type") == "item.completed":
+                item = ev.get("item") or {}
+                handled = ((item.get("type") == "command_execution" and "inbox.md" in item.get("command", "")
+                            and item.get("exit_code") == 0) or
+                           (item.get("type") == "agent_message" and re.search(r"\bDONE\b", item.get("text", ""))))
             if handled:
                 break
         if not handled:
@@ -558,7 +634,7 @@ def cmd_send(a) -> int:
     meta = load_meta(stage, a.role)
     if a.role not in hc.roles_load(stage)["roles"]:
         raise hc.Failure(f"agent {a.role} was stopped (role retired); start a new one with agent spawn")
-    if not alive(meta):
+    if not alive(meta) and meta.get("engine", "claude") == "claude":
         bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
     t = hc.now()
     if msg:
@@ -685,9 +761,12 @@ def main(argv: list) -> int:
     s.add_argument("--stage")
     s.add_argument("--role", required=True)
     s.add_argument("--cwd", required=True)
-    s.add_argument("--model", required=True, help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
+    s.add_argument("--engine", choices=engines.ENGINES, help="AGENT_HUB_ENGINE, detected Codex host, else claude")
+    s.add_argument("--sandbox", choices=engines.SANDBOXES, help="Codex sandbox; approval prompts remain disabled")
+    s.add_argument("--sandbox-policy", help="Codex rollout sandbox JSON; preserve supported roots/network/temp restrictions")
+    s.add_argument("--model", help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
                    "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
-    s.add_argument("--effort", choices=EFFORTS, help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")
+    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
