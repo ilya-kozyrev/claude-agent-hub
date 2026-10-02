@@ -17,6 +17,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import codex_rollouts
+
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TOOL_ID_RE = re.compile(rb'"tool_use_id"\s*:\s*"([^"]+)"')
 NOTICE_RE = re.compile(rb"<task-id>([\w-]+)</task-id>.*?<status>(\w+)</status>", re.S)
@@ -102,7 +104,7 @@ def process_table():
 
 
 def is_alive(meta: dict, table) -> bool:
-    pid, sid = meta.get("pid"), meta.get("session_id") or ""
+    pid, sid = meta.get("pid"), meta.get("process_token") or meta.get("session_id") or ""
     if not isinstance(pid, int) or not pid:
         return False
     if table is None:
@@ -153,8 +155,14 @@ def parent_alive(rec: dict, sid: str, table, live):
     """Whether a session runs: True / False, or None when there is no session registry to ask (the caller then
     falls back to the silence rule). `rec` is the session's role record: a headless agent is judged by its pid."""
     pid = rec.get("pid")
-    if rec.get("kind") == "headless" and isinstance(pid, int) and is_alive({"pid": pid, "session_id": sid}, table):
+    if rec.get("kind") == "headless" and isinstance(pid, int) and is_alive({**rec, "session_id": sid}, table):
         return True
+    if rec.get("engine") == "codex" or codex_rollouts.INDEX.session(sid):
+        # Native Codex has no Claude-style per-pid session registry. An unrelated
+        # Claude registry must not turn an unknown Codex parent into a dead one.
+        if isinstance(pid, int):
+            return is_alive({**rec, "session_id": sid}, table)
+        return None
     if live is not None:
         return sid in live
     return None
@@ -259,6 +267,31 @@ class Finder:
     def __init__(self, last_user_ts=None):
         self.last_user_ts = last_user_ts or tail_last_user_ts
         self.notices, self.sub_dirs, self.metas = {}, {}, {}
+        self.codex_states = {}
+
+    def codex_session(self, sid, parent_is_alive, now, show_all=False):
+        rec = codex_rollouts.INDEX.session(sid)
+        return self._codex_sub(sid, *rec, parent_is_alive, now, show_all) if rec else None
+
+    def _codex_sub(self, aid, log, meta, mtime, parent_is_alive, now, show_all):
+        # File activity is not a process identity; preserve the existing silence
+        # fallback only where the parent's process is unknown.
+        old = now - mtime > SUB_RECENT_S
+        if not show_all and old and parent_is_alive is not True:
+            return None
+        reader = self.codex_states.setdefault(log, codex_rollouts.State(log)).update()
+        status = reader.status
+        if status is not None:
+            state = SUB_STATE.get(status, "dead")
+        elif parent_is_alive is False or now - mtime > SUB_LOST_S and parent_is_alive is not True:
+            state = "dead"
+        else:
+            state = "live"
+        spawn = codex_rollouts.spawn_source(meta) or {}
+        info = {**meta, "engine": "codex", "model": reader.model, "effort": reader.effort,
+                "description": spawn.get("agent_path") or spawn.get("agent_nickname") or "",
+                "agentType": spawn.get("agent_role") or "codex sub-agent"}
+        return Sub(aid, log, info, mtime, status, state, True)
 
     def dirs(self, sid: str) -> list:
         hit = self.sub_dirs.get(sid)
@@ -286,6 +319,10 @@ class Finder:
         """The sub-agents of one session (a full uuid). Finished or orphaned ones older than SUB_RECENT_S are left
         out unless `show_all`; those are not even read."""
         out = []
+        for aid, log, meta, mtime in codex_rollouts.INDEX.children(sid):
+            sub = self._codex_sub(aid, log, meta, mtime, parent_is_alive, now, show_all)
+            if sub:
+                out.append(sub)
         for sdir in self.dirs(sid):
             path = sdir.parent.parent / f"{sid}.jsonl"
             notes = self.notices.setdefault(path, Notices(path)).update()

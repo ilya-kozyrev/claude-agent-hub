@@ -50,6 +50,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import engines  # noqa: E402
+import codex_rollouts  # noqa: E402
 import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
 from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as _line_ts,  # noqa: E402
                        live_sessions, loads as _loads, parse_ts, process_table, read_json)
@@ -61,7 +63,7 @@ SCAN_MAX = int(os.environ.get("AGENT_TOP_SCAN_MAX") or 8 * 1024 * 1024)
 FEED_TAIL_BYTES = 400_000
 FEED_MAX_ITEMS = 4000
 ARCHIVE_RE = re.compile(r"^(?P<role>.+)\.(?:failed-)?\d{8}-\d{6}$")
-_TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"(\w+)"')
+_TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"([\w.]+)"')
 _RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` events with "duration_api_ms" first
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _DONE_RE = re.compile(r"\bDONE\b")
@@ -272,13 +274,21 @@ class LogState:
         self.rate, self.rate_mtime = None, 0.0
         self.effort = None                # a session transcript records the effort on each assistant line
         self.last_user_ts = None          # …and a timestamp on each line: the newest user line (prompt, tool result)
+        self.engine = "claude"
+        self.codex_turns = self.codex_run_turns = 0
+        self.usage_tokens = self.ctx_source = self.context_window = self.codex_rate_limits = None
+        self.rollout = codex_rollouts.Normalizer()
 
     @property
     def turns(self) -> int:
+        if self.engine == "codex":
+            return self.codex_turns
         return len(self.turn_ids) + self.n_anon
 
     @property
     def run_turns(self) -> int:
+        if self.engine == "codex":
+            return self.codex_run_turns
         return len(self.run_turn_ids) + self.run_n_anon
 
     @property
@@ -318,6 +328,54 @@ class LogState:
         typ = event_type(line)
         if not typ:
             return
+        if b"." in typ or typ in (b"session_meta", b"response_item", b"event_msg", b"turn_context"):
+            ev = _loads(line)
+            if not ev:
+                return
+            normalized = (self.rollout.events(ev) if "payload" in ev else engines.normalize_event(ev))
+            for common in normalized:
+                self._common(pos, common)
+            return
+        self._legacy_feed(pos, line, typ)
+
+    def _common(self, pos, ev):
+        self.engine = "codex"
+        typ = ev.get("type")
+        if typ == "codex_turn_start" or typ == "system" and ev.get("subtype") == "turn_start":
+            self.codex_turns += 1
+            self.codex_run_turns += 1
+            self.running = True
+            self.pending.clear()
+            return
+        if typ == "codex_context":
+            self.model, self.effort = ev.get("model"), ev.get("effort")
+            return
+        usage = ev.get("codex_usage")
+        if isinstance(usage, dict):
+            if ev.get("codex_usage_scope") == "session":
+                self.usage_tokens = dict(usage)
+            else:
+                self.usage_tokens = {key: num((self.usage_tokens or {}).get(key)) + num(value)
+                                     for key, value in usage.items()}
+        if isinstance(ev.get("context_tokens"), int):
+            # Codex's total input usage sums every model call. Only the most
+            # recent call's input size is comparable to Claude's context metric.
+            self.ctx, self.ctx_source = ev["context_tokens"], "last_input_tokens"
+        if isinstance(ev.get("context_window"), int):
+            self.context_window = ev["context_window"]
+        if isinstance(ev.get("codex_rate_limits"), dict):
+            self.codex_rate_limits = ev["codex_rate_limits"]
+        if typ == "system" and ev.get("subtype") == "init":
+            self.codex_run_turns = 0
+        if typ == "result" and not ev.get("result"):
+            errors = ev.get("errors") or []
+            detail = "; ".join(str(err.get("message") or err) if isinstance(err, dict) else str(err)
+                               for err in errors if err)
+            ev = {**ev, "result": detail or self.last_text}
+        if typ in ("assistant", "user", "result", "system"):
+            self._legacy_feed(pos, json.dumps(ev).encode(), str(typ).encode())
+
+    def _legacy_feed(self, pos, line, typ):
         if typ == b"assistant":
             ev = _loads(line)
             if ev:
@@ -325,7 +383,7 @@ class LogState:
         elif typ == b"user":
             for tid in _TOOL_ID_RE.findall(line):
                 self.pending.pop(tid.decode("utf-8", "replace"), None)
-            ts = _line_ts(line) if line.startswith(b'{"parentUuid"') else None
+            ts = _line_ts(line) if line.startswith(b'{"parentUuid"') or self.engine == "codex" else None
             if ts is not None and (self.last_user_ts is None or ts > self.last_user_ts):
                 self.last_user_ts = ts
         elif typ == b"result":
@@ -363,13 +421,14 @@ class LogState:
             return
         if isinstance(ev.get("effort"), str):
             self.effort = ev["effort"]
-        mid = msg.get("id")
-        if mid:
-            self.turn_ids.add(mid)
-            self.run_turn_ids.add(mid)
-        else:
-            self.n_anon += 1
-            self.run_n_anon += 1
+        if self.engine != "codex":
+            mid = msg.get("id")
+            if mid:
+                self.turn_ids.add(mid)
+                self.run_turn_ids.add(mid)
+            else:
+                self.n_anon += 1
+                self.run_n_anon += 1
         usage = msg.get("usage")
         if isinstance(usage, dict):
             ctx = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
@@ -400,7 +459,7 @@ def event_type(line: bytes) -> bytes:
     m = _TYPE_RE.match(line)
     if m:
         return m.group(1)
-    if line.startswith(b'{"parentUuid"'):
+    if line.startswith(b'{"parentUuid"') or b'"payload"' in line[:160]:
         # a session transcript line (a sub-agent's log): its own "type" key comes after the nested message's
         ev = _loads(line)
         return str(ev.get("type") or "").encode() if ev else b""
@@ -421,6 +480,7 @@ class Feed:
         self.path = path
         self.items, self.tool_names, self.done_ids = [], {}, set()
         self.ino, self.offset, self.version, self.truncated = None, 0, 0, False
+        self.rollout = codex_rollouts.Normalizer()
 
     def update(self) -> None:
         try:
@@ -429,6 +489,7 @@ class Feed:
             return
         if st.st_ino != self.ino or st.st_size < self.offset:
             self.items, self.tool_names, self.done_ids, self.offset, self.truncated = [], {}, set(), 0, False
+            self.rollout = codex_rollouts.Normalizer()
             self.ino = st.st_ino
         if st.st_size <= self.offset:
             return
@@ -444,10 +505,16 @@ class Feed:
                     if not line or not line.endswith(b"\n"):
                         break
                     self.offset += len(line)
-                    if event_type(line) in (b"assistant", b"user", b"result", b"system"):
+                    typ = event_type(line)
+                    if typ in (b"assistant", b"user", b"result", b"system", b"session_meta", b"response_item", b"event_msg", b"turn_context") or b"." in typ:
                         ev = _loads(line)
                         if ev:
-                            self.items.extend(self._items(ev))
+                            normalized = self.rollout.events(ev) if "payload" in ev else engines.normalize_event(ev)
+                            for common in normalized:
+                                if common.get("type") == "result" and not common.get("result") and common.get("errors"):
+                                    common = {**common, "result": "; ".join(str(err.get("message") or err) if isinstance(err, dict) else str(err)
+                                                                            for err in common["errors"] if err)}
+                                self.items.extend(self._items(common))
         except OSError:
             return
         del self.items[:-FEED_MAX_ITEMS]
@@ -462,6 +529,8 @@ class Feed:
                     continue
                 if b.get("type") == "text" and str(b.get("text") or "").strip():
                     out.append(Item(ts, "text", b["text"], sub=sub))
+                elif b.get("type") == "thinking" and str(b.get("thinking") or "").strip():
+                    out.append(Item(ts, "thinking", b["thinking"], sub=sub))
                 elif b.get("type") == "tool_use":
                     name = str(b.get("name") or "?")
                     head, detail = tool_brief(name, b.get("input"))
@@ -592,6 +661,7 @@ class Collector:
                     r = info.pop("_rate")
                     if r and (rate is None or r[1] > rate[1]):
                         rate = r
+            agents += self._native_sessions(stage, reg["roles"], base, table, live, now)
             agents += self._subagents(stage, reg["roles"], table, live, now)
         agents.sort(key=lambda a: (a["group"], a["stage"], a["role"], a["dir_name"]))
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
@@ -632,6 +702,7 @@ class Collector:
         role = meta.get("role") or (m.group("role") if m else d.name)
         return {
             "kind": "headless", "parent": None,
+            "engine": meta.get("engine") or ls.engine,
             "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
             "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
             "model_id": meta.get("resolved_model") or ls.model,
@@ -644,9 +715,12 @@ class Collector:
             "started_at": meta.get("started_at"), "runs": len(meta.get("runs") or []),
             "turns": ls.turns, "run_turns": ls.run_turns, "sub_turns": ls.sub_turns, "turns_approx": ls.truncated,
             "ctx_tokens": ls.ctx or None,
+            "ctx_source": ls.ctx_source, "context_window": ls.context_window,
+            "usage_tokens": ls.usage_tokens, "codex_rate_limits": ls.codex_rate_limits,
+            "turns_kind": "user" if ls.engine == "codex" else "model",
             "cost_usd": None if ls.cost_sum is None else round(ls.cost_sum, 4),
             "result": None if not res else {"subtype": res.get("subtype"), "is_error": bool(res.get("is_error")),
-                                            "num_turns": res.get("num_turns"), "text": str(res.get("result") or "")[:400]},
+                                            "num_turns": res.get("num_turns"), "text": str(res.get("result") or (ls.last_text if ls.engine == "codex" else ""))[:400]},
             "action": None if not act else {"tool": act["tool"], "text": act["text"], "detail": act["detail"],
                                             "elapsed_s": None if not act["ts"] else max(0, int(now - act["ts"]))},
             "last_text": ls.last_text, "unread": [{"at": u.get("at"), "msg": u.get("msg")} for u in unread],
@@ -656,11 +730,29 @@ class Collector:
         }
 
     # -- sub-agents (read-only: only their parent session can message them; discovery and state: bin/subagents.py)
+    def _native_sessions(self, stage, registry, base, table, live, now):
+        out = []
+        for role, rec in sorted(registry.items()):
+            if (base / role / "meta.json").exists():
+                continue  # managed workers already use the raw exec stream
+            sid = rec.get("cli_session_id") or rec.get("session") or ""
+            if not isinstance(sid, str) or not UUID_RE.fullmatch(sid):
+                continue
+            sub = self.subs.codex_session(sid, subagents.parent_alive(rec, sid, table, live), now, self.show_all)
+            if sub:
+                info = self._subagent(stage, role, rec, sub, now)
+                info.update(kind="session", parent=None, role=role, dir_name=role,
+                            title=rec.get("title") or "Codex session", agent_type=None, background=False,
+                            cwd=sub.meta.get("cwd"), started_at=sub.meta.get("timestamp"),
+                            liveness_source="completion" if sub.status else "activity")
+                out.append(info)
+        return out
+
     def _subagents(self, stage: str, registry: dict, table, live, now: float) -> list:
         out = []
         for prole, rec in sorted(registry.items()):
             sid = rec.get("cli_session_id") or rec.get("session") or ""
-            if not UUID_RE.fullmatch(sid):
+            if not isinstance(sid, str) or not UUID_RE.fullmatch(sid):
                 continue
             for sub in self.subs.of_session(sid, subagents.parent_alive(rec, sid, table, live), now, self.show_all):
                 out.append(self._subagent(stage, prole, rec, sub, now))
@@ -676,9 +768,10 @@ class Collector:
         meta = sub.meta
         return {
             "kind": "subagent", "parent": prole,
+            "engine": meta.get("engine") or ls.engine,
             "stage": stage, "role": f"{prole}/{aid[:7]}", "dir_name": f"{prole}/{aid}",
             "tag": prec.get("tag") or prole, "title": desc or str(meta.get("agentType") or "sub-agent"),
-            "model": str(meta.get("model") or ""), "model_id": None, "effort": ls.effort,
+            "model": str(meta.get("model") or ""), "model_id": ls.model, "effort": ls.effort,
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": None, "session_id": aid, "retired": False, "archived": False,
@@ -687,6 +780,9 @@ class Collector:
             "started_at": None, "runs": 1,
             "turns": ls.turns, "run_turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated,
             "ctx_tokens": ls.ctx or None,
+            "ctx_source": ls.ctx_source, "context_window": ls.context_window,
+            "usage_tokens": ls.usage_tokens, "codex_rate_limits": ls.codex_rate_limits,
+            "turns_kind": "user" if ls.engine == "codex" else "model",
             "cost_usd": None,
             "result": None if status is None else {"subtype": status, "is_error": state == "error", "num_turns": None,
                                                    "text": ls.last_text[:400]},
@@ -821,6 +917,8 @@ def what_now(a: dict) -> tuple:
         return ("⋯ " + a["last_text"] if a["last_text"] else "⋯ thinking"), "dim"
     if a["result"] and a["state"] in ("done", "error"):
         return (a["last_text"] or a["result"]["text"] or a["result"]["subtype"] or ""), "dim"
+    if a.get("kind") == "session":
+        return (a["last_text"] or "no completed turn — session process is unknown"), "dim"
     if a.get("kind") == "subagent":
         return (a["last_text"] or "no completion notice — its parent session ended or it was stopped"), "dim" if a["last_text"] else "err"
     return (a["last_text"] or "no process, no result — died or was killed"), ("dim" if a["last_text"] else "err")
@@ -988,6 +1086,11 @@ def card_rows(a: dict, width: int) -> list:
             + (f" (+{a['sub_turns']} sub-agent turns)" if a["sub_turns"] else ""), f"ctx {fmt_k(a['ctx_tokens'])}",
             f"$ {fmt_cost(a['cost_usd'])}", f"runs {a['runs']}"]
     rows += wrap_rows(" · ".join(bits), width, "dim", " ", "   ")
+    if a.get("engine") == "codex":
+        usage = a.get("usage_tokens") or {}
+        rows += wrap_rows(f"Codex: user turns · input usage {fmt_k(usage.get('input_tokens'))} across model calls"
+                          + (" · ctx is the last model input" if a.get("ctx_source") else " · context size unavailable"),
+                          width, "dim", " ", "   ", 3)
     if a["title"]:
         rows += wrap_rows(a["title"], width, "dim", " ", "   ", 2)
     if a["cwd"]:
@@ -1000,10 +1103,14 @@ def card_rows(a: dict, width: int) -> list:
         r = a["result"]
         rows += wrap_rows(f"result: {r['subtype']}{', error' if r['is_error'] else ''} — {one_line(r['text'])[:300]}", width,
                           "err" if r["is_error"] else "done", " ", "   ", 3)
-    if a.get("kind") == "subagent":
+    if a.get("kind") == "session":
+        rows += wrap_rows("native Codex session; read-only here — continue it in Codex. "
+                          "Process identity is unavailable; unfinished state uses recent activity.", width, "dim", " ", "   ", 3)
+    elif a.get("kind") == "subagent":
         rows += wrap_rows(f"sub-agent of {a['parent']} ({a.get('agent_type') or '?'}, "
                           f"{'background' if a.get('background') else 'foreground'}); read-only here — only its parent "
-                          f"session can message it (SendMessage to {a['session_id']})", width, "dim", " ", "   ", 3)
+                          f"session can message it ({'send_input' if a.get('engine') == 'codex' else 'SendMessage'} "
+                          f"to {a['session_id']})", width, "dim", " ", "   ", 3)
         if a["state"] == "dead":
             rows.append(R((" no completion notice: its parent session ended or it was stopped", "err")))
     elif a["state"] == "dead":
@@ -1022,10 +1129,11 @@ def feed_rows(feed: Feed, width: int, live: bool, now: float) -> list:
         mark = "  ↳ " if it.sub else ""
         first, rest = t + mark, " " * (tw + len(mark))
         w = width
-        if it.kind == "text":
+        if it.kind in ("text", "thinking"):
             ls = text_lines(it.text, 14)
             for i, ln in enumerate(ls):
-                rows += wrap_rows(ln, w, "norm", (first + "✎ ") if i == 0 else rest + "  ", rest + "  ")
+                rows += wrap_rows(ln, w, "dim" if it.kind == "thinking" else "norm",
+                                  (first + "✎ ") if i == 0 else rest + "  ", rest + "  ")
         elif it.kind == "tool":
             pending = it.tool_id not in feed.done_ids
             suffix = ""
@@ -1573,6 +1681,9 @@ class App:
             return
         if a.get("kind") == "subagent":
             self.say(f"sub-agent of {a['parent']}: only its parent session can message or stop it", "warn")
+            return
+        if a.get("kind") == "session":
+            self.say("native Codex session: continue or stop it in Codex", "warn")
             return
         if k == "m":
             self.mode = "input"
