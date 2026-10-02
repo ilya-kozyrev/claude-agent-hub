@@ -173,9 +173,10 @@ The current **app agent** executes this procedure automatically after preparing 
 3. Run `hub desktop-request --stage <S> --request <token> --project-id <returned ID> --project-path <returned path>`.
    Its JSON has `create_thread` arguments and `already_dispatched`. Only when false, pass `create_thread` to
    the supported native `create_thread` tool. Dispatch is reserved before this call; a repeated command returns
-   true and must not create another thread. The request uses the saved project, a managed worktree in Git, actual
-   `model`/`thinking` fields when known, and the project's default branch. `--branch <existing branch>` on succeed
-   supplies startingState only for an explicit user branch request. No branch is invented or created.
+   true and must not create another thread. The request uses the saved project's local environment by default, actual
+   `model`/`thinking` fields when known. Only an explicit owner worktree request uses `--desktop-worktree` on succeed;
+   it requires a Git project and omits startingState to use the project's default branch. An explicit existing
+   `--branch <branch>` request also selects a worktree and supplies startingState. No branch is invented or created.
 4. Confirm native output with `hub desktop-bind --stage <S> --request <token> --project-id <returned ID>` plus
    `--thread-id <actual threadId>` and/or `--client-thread-id <clientThreadId>`. Client IDs are opaque (for example
    `client-new-thread:…`), stored separately, and cannot become registry identities. If only a client ID returns,

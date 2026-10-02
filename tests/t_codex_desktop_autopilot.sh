@@ -81,18 +81,18 @@ request(req,path=tmp,ok=False); assert state(stage)['pending']['phase']=='prepar
 payload=json.loads(request(req).stdout)
 args=payload['create_thread']
 assert not payload['already_dispatched']
-assert args['target']=={'type':'project','projectId':'saved-project','environment':{'type':'worktree'}}
+assert args['target']=={'type':'project','projectId':'saved-project','environment':{'type':'local'}}
 assert args['model']=='gpt-6.1-sol' and args['thinking']=='high'
 assert '--desktop-request '+req in args['prompt'] and 'finite' in args['prompt'] and '--for 9m' not in args['prompt']
 assert 'sandbox' not in args and 'approval' not in args
 assert json.loads(request(req).stdout)['already_dispatched']
 assert state(stage)['chain']==1
-print('PASS same normalized main project, default worktree branch, actual model/thinking fields and dispatch retry guard')
+print('PASS same normalized main project, default local surface, actual model/thinking fields and dispatch retry guard')
 bind(req,'--client-thread-id',client,'--project-id','saved-project')
 assert state(stage)['pending']['client_thread_id']==client and not state(stage)['pending'].get('id')
 bind(req,'--thread-id',client,ok=False)
 env['CODEX_THREAD_ID']=client; rollout(client,{'type':'danger-full-access'})
-takeover(handoff,req,ok=False,cwd=actual); assert roles(stage)['session']==old
+takeover(handoff,req,ok=False,cwd=repo); assert roles(stage)['session']==old
 env['CODEX_THREAD_ID']=old
 bind(req,'--thread-id',real,'--project-id','saved-project'); bind(req,'--thread-id',real)
 bind(req,'--thread-id',other,ok=False); bind('stale-token','--thread-id',real,ok=False)
@@ -103,24 +103,24 @@ assert state(stage)['chain']==1 and not state(stage)['pending'].get('taken_over'
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','cannot claim failure','--no-thread-created',ok=False)
 print('PASS client IDs never become sessions; bind is repeatable and rejects stale/conflicting identity')
 env['CODEX_THREAD_ID']=real
-hub('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,'--desktop-request',req,'--n','9',ok=False,cwd=actual)
+hub('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,'--desktop-request',req,'--n','9',ok=False,cwd=repo)
 assert roles(stage)['session']==old
 rollout(real,{'type':'workspace-write','writable_roots':[str(actual)],'network_access':False})
-takeover(handoff,req,ok=False,cwd=actual)
+takeover(handoff,req,ok=False,cwd=repo)
 assert roles(stage)['session']==old and not state(stage)['pending'].get('taken_over')
 rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
-takeover(handoff,req,cwd=actual); p=state(stage)['pending']
+takeover(handoff,req,cwd=repo); p=state(stage)['pending']
 assert roles(stage)['session']==real and roles(stage)['surface']=='desktop'
-assert p['id']==real and p['cwd']==str(actual.resolve()) and p['project_id']=='saved-project'
+assert p['id']==real and p['cwd']==str(repo.resolve()) and p['project_id']=='saved-project'
 assert p['observed']['model']=='observed-model' and p['observed']['effort']=='medium'
 assert p['requested']['model']=='gpt-6.1-sol' and p['requested']['sandbox_policy']['type']=='danger-full-access'
 assert p['observed']['sandbox_policy']['type']=='danger-full-access' and p['taken_over'] and state(stage)['chain']==1
 assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
-bind(req,'--thread-id',real); takeover(handoff,req,cwd=actual)
+bind(req,'--thread-id',real); takeover(handoff,req,cwd=repo)
 assert state(stage)['chain']==1
 print('PASS restricted home access leaves predecessor active; actual takeover reconciles identity/cwd and records observed settings separately')
 
-home,stage,handoff=setup('takeover-first'); prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
+home,stage,handoff=setup('takeover-first'); prepare(handoff,'--desktop-worktree'); req=state(stage)['pending']['request_id']; request(req)
 env['CODEX_THREAD_ID']=real; takeover(handoff,req,cwd=actual)
 env['CODEX_THREAD_ID']=old; bind(req,'--thread-id',real)
 assert state(stage)['pending']['taken_over'] and state(stage)['chain']==1
@@ -131,7 +131,7 @@ print('PASS takeover-before-bind race, late confirmation and repeats preserve ch
 
 # Parallel prepares reserve one request. Parallel late bind and takeover converge on the same actual UUID.
 home,stage,handoff=setup('parallel')
-cmd=[str(root/'bin/hub'),'succeed','--stage','stage-a','--handoff',str(handoff),'--force']
+cmd=[str(root/'bin/hub'),'succeed','--stage','stage-a','--handoff',str(handoff),'--force','--desktop-worktree']
 procs=[subprocess.Popen(cmd,env=env,cwd=repo,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(2)]
 for proc in procs: proc.communicate(timeout=10)
 assert sorted(p.returncode for p in procs)==[0,1] and state(stage)['chain']==1
@@ -146,7 +146,7 @@ for proc in procs:
 assert state(stage)['chain']==1 and state(stage)['pending']['taken_over'] and roles(stage)['session']==real
 print('PASS concurrent prepares and bind/takeover reserve/migrate once under the state lock')
 
-home,stage,handoff=setup('observed-restricted'); prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
+home,stage,handoff=setup('observed-restricted'); prepare(handoff,'--desktop-worktree'); req=state(stage)['pending']['request_id']; request(req)
 env['CODEX_THREAD_ID']=real
 rollout(real,{'type':'workspace-write','writable_roots':[str(home)],'network_access':False})
 takeover(handoff,req,cwd=actual)
@@ -166,6 +166,11 @@ prepare(handoff,'--again'); assert state(stage)['pending']['phase']=='prepared'
 assert state(stage)['pending']['request_id']==req and state(stage)['chain']==1
 assert not json.loads(request(req).stdout)['already_dispatched']
 print('PASS uncertain launch never duplicates; confirmed no-create failure retries same reservation and chain')
+
+home,stage,handoff=setup('explicit-worktree'); prepare(handoff,'--desktop-worktree')
+req=state(stage)['pending']['request_id']
+assert json.loads(request(req).stdout)['create_thread']['target']['environment']=={'type':'worktree'}
+print('PASS explicitly requested desktop worktree omits startingState and uses project default branch')
 
 home,stage,handoff=setup('branch'); prepare(handoff,'--surface','desktop','--branch','main')
 req=state(stage)['pending']['request_id']
