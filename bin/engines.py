@@ -14,6 +14,16 @@ from pathlib import Path
 
 import hubcore as hc
 
+# App-only transport/attribution markers must never leak into detached CLI workers.
+CODEX_APP_ENV = ("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_APP_TOOLS_PIPE_PATH")
+
+
+def codex_desktop():
+    return (not os.environ.get("AGENT_ROLE")
+            and os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE") == "Codex Desktop"
+            and bool(os.environ.get("CODEX_APP_TOOLS_PIPE_PATH")))
+
+
 ENGINES = ("claude", "codex")
 CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 SANDBOXES = ("read-only", "workspace-write", "danger-full-access")

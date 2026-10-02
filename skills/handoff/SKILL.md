@@ -28,6 +28,12 @@ pointers to the registers — never copies of them.
    - **§ 4 Owner questions**: anything the owner was asked in chat without a record goes into `ask add` first; then its id here.
    - **§ 5 Risks**: what breaks when nobody watches, and how it shows.
    - **§ 6 Skills**: which skills the successor loads first.
+For Codex autopilot, keep the launch surface in the handoff: actual app hub → `hub succeed --surface desktop`
+(native launch procedure in [docs/codex.md](../../docs/codex.md#desktop-autopilot)); console/detached hub → CLI.
+Give the queue finite completion checks. A successor waits only for outstanding work/events and finishes when the
+queue is done. Desktop request/client IDs are pending references; record actual thread/cwd and observed policy only
+once takeover verifies. Keep the predecessor active until `hub desktop-status --verified` succeeds.
+
 3. Check it: `hub handoff --stage <S> --finish` refuses (exit 2, the lines listed) while § 0–2 still hold `TODO`; `hub succeed`
    makes the same check and `hub takeover` warns the successor about a handoff that fails it. `--allow-todo` overrides, and
    the successor then rebuilds that state from the journal. A `TODO` in § 3–6 does not stop it.
