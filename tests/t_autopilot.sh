@@ -3,7 +3,7 @@
 # reset by a manual takeover and by an owner prompt, and the context budget hook's autopilot messages at warn and block.
 # The CLI is tests/fake_claude_bg.py: no real `claude --bg` is ever started.
 . "$(dirname "$0")/lib.sh"
-unset CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
+unset PLUGIN_ROOT CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on
 BR_BIN=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$B")  # the plugin bin/ as the tools resolve it
 HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
@@ -371,7 +371,7 @@ usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
 cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"
 cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny".*Autopilot'; check $? 0 "hook, block: Agent denied with the autopilot text"
-for c in "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /dev/null" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m" "$BR_BIN/hub succeed --stage stage-a --fallback" "jlog x > /dev/null 2>&1" "hub handoff --stage stage-a > /h/stage-a/coordinator/HANDOFF-hub-stage-a-1.md"; do
+for c in "hub desktop-request --stage stage-a --request nonce --project-id p --project-path /repo" "hub desktop-bind --stage stage-a --request nonce --thread-id actual" "hub desktop-fail --stage stage-a --request nonce --why rejected" "hub desktop-status --stage stage-a --request nonce --verified" "hub handoff --stage stage-a" "hub succeed --stage stage-a --handoff /x/h.md --model opus 2>&1" "jlog \"auto-handoff; chain 1/10\"" "jwait --journal --stage stage-a --for 600s > /dev/null" "AGENT_HUB_HOME=/h hub succeed --stage stage-a --fallback" "jlog x && jwait --for 1m" "$BR_BIN/hub succeed --stage stage-a --fallback" "jlog x > /dev/null 2>&1" "hub handoff --stage stage-a > /h/stage-a/coordinator/HANDOFF-hub-stage-a-1.md"; do
   cbh PreToolUse Bash "$(python3 -c 'import json,sys; print(json.dumps({"command":sys.argv[1]}))' "$c")" | grep -q '"deny"'; check $? 1 "hook, block escape: $c"
 done
 cbh PreToolUse Write '{"file_path":"/h/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md","content":"x"}' | grep -q '"deny"'; check $? 1 "hook, block escape: writing the HANDOFF file"

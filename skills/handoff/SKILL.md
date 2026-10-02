@@ -26,6 +26,12 @@ pointers to the registers — never copies of them.
    - **§ 4 Owner questions**: anything the owner was asked in chat without a record goes into `ask add` first; then its id here.
    - **§ 5 Risks**: what breaks when nobody watches, and how it shows.
    - **§ 6 Skills**: which skills the successor loads first.
+For Codex autopilot, keep the launch surface in the handoff: actual app hub → `hub succeed --surface desktop`
+(native launch procedure in [docs/codex.md](../../docs/codex.md#desktop-autopilot)); console/detached hub → CLI.
+Give the queue finite completion checks. A successor waits only for outstanding work/events and finishes when the
+queue is done. Desktop request/client IDs are pending references; record actual thread/cwd and observed policy only
+once takeover verifies. Keep the predecessor active until `hub desktop-status --verified` succeeds.
+
 3. Keep it ≤ 12 KB (the `handoff_size` hook refuses a `HANDOFF-*.md` over 15 KB). The chronology stays in the
    journal; link it.
 4. Delete the role's older handoffs, `jlog "handoff written: <path>"`, and tell the owner the path.

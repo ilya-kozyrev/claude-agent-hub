@@ -25,7 +25,7 @@ Autopilot (AGENT_HUB_AUTO_HANDOFF=on, bin/autopilot.py), in the main thread of a
 (roles `hub`): the warning becomes the instruction to hand the shift to a successor at the next quiet point — `hub
 handoff`, `hub succeed` with the hub's model and permission mode filled in, `jwait`; at the block threshold the deny
 reason says "hand over now" and Bash, Write, Edit and NotebookEdit are gated too: Bash passes only when every command of
-the line is `hub handoff`, `hub succeed`, `jlog` or `jwait` (no substitution, no subshell), a file tool only on a
+the line is `hub handoff`, `hub succeed`, `hub desktop-*`, `jlog` or `jwait` (no substitution, no subshell), a file tool only on a
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
 "[agent-hub auto-handoff k/N]" (the owner spoke) resets the stage's automatic-handoff chain.
 
@@ -74,7 +74,7 @@ def autopilot():
 
 
 def handover_command(command) -> bool:
-    """True when every command of the Bash line is `hub handoff`, `hub succeed`, `jlog` or `jwait` (a leading VAR=value
+    """True when every command of the Bash line is `hub handoff`, `hub succeed`, `hub desktop-*`, `jlog` or `jwait` (a leading VAR=value
     and redirections allowed). Anything the hook cannot read with certainty — a substitution, a subshell, unbalanced
     quotes — is not a handover command."""
     if not isinstance(command, str) or not command.strip() or "$(" in command or "`" in command:
@@ -110,7 +110,7 @@ def handover_command(command) -> bool:
             if not seg:
                 continue
             name = os.path.basename(seg[0])
-            if not (name in ("jlog", "jwait") or (name == "hub" and len(seg) > 1 and seg[1] in ("handoff", "succeed"))):
+            if not (name in ("jlog", "jwait") or (name == "hub" and len(seg) > 1 and seg[1] in ("handoff", "succeed", "desktop-request", "desktop-bind", "desktop-fail", "desktop-status"))):
                 return False
     return True
 
