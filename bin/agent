@@ -460,6 +460,8 @@ def cmd_spawn(a) -> int:
     with hc.roles_lock(stage):
         data = hc.roles_load(stage)
         data["roles"][a.role]["engine"] = engine
+        if meta.get("process_token"):
+            data["roles"][a.role]["process_token"] = meta["process_token"]
         hc.roles_save(stage, data)
     got = meta.get("resolved_model")
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
