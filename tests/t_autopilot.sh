@@ -54,6 +54,7 @@ check $rc 0 "succeed: exit 0"
 call --bg argv | grep -q -- "^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --add-dir $R --model opus --settings {"; check $? 0 "succeed: --bg command (name, title, the hub home granted — --cwd is inside it, not around it — model; no mode flag for default)"
 call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash("+os.path.realpath(sys.argv[2])+"/hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R" "$BR_BIN"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
 check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
+call --bg argv | grep -q -- "--worktree"; check $? 1 "succeed: outside git no --worktree"
 call --bg prompt | grep -qF "/agent-hub:hub take over stage stage-a from $H: run \`$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
 check "$(call --bg AGENT_HUB_HOME)" "$R" "succeed: the hub home reaches the successor through its environment"
 call --bg prompt | grep -qF "[agent-hub auto-handoff 1/10]"; check $? 0 "succeed: prompt carries the marker 1/10"
@@ -160,20 +161,19 @@ setup
 succeed --model haiku --permission-mode bypassPermissions > /dev/null 2>&1
 call --bg argv | grep -q -- "--permission-mode acceptEdits --settings"; check $? 0 "bypass: acceptEdits for haiku"
 unset FAKE_BG
-# untrusted worktree -> the main checkout once
+# the hub in a worktree, the root trusted: started from the root at once (the worktree's trust does not matter)
 setup; export FAKE_BG=untrusted
 mkrepo(){ M=$R/main; mkdir -p $M; git -C $M init -q; git -C $M -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  git -C $M worktree add -q $R/wt -b wt 2>/dev/null; }
+  git -C $M worktree add -q $R/wt -b wt 2>/dev/null; MR=$(cd $M && pwd -P); }
 mkrepo
-FAKE_TRUSTED=$M $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 0 "untrusted: exit 0"
-check "$(call --bg count):$(call --bg cwd)" "2:$(cd $M && pwd -P)" "untrusted: retried in the main checkout"
-J | grep -q "is not trusted by the claude CLI — started in the main checkout"; check $? 0 "untrusted: journaled"
-# still untrusted -> headless hub
+FAKE_TRUSTED=$M $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 0 "trusted root: exit 0"
+check "$(call --bg count):$(call --bg cwd):$(pending kind)" "1:$MR:bg" "trusted root: started from the main checkout at once"
+# an untrusted root -> headless hub, and the journal says why
 setup; mkrepo
-$B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/hl.out 2>&1; check $? 0 "untrusted twice: exit 0 (headless fallback)"
-check "$(pending kind):$(pending role)" "headless:hub-2" "untrusted twice: headless successor recorded"
-J | grep -q "background successor not started — \`claude --bg\` exited 1: Workspace not trusted.*falling back to a headless hub"; check $? 0 "untrusted twice: journal says which fallback and why"
-check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "untrusted twice: agent spawn registered hub-2"
+$B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/hl.out 2>&1; check $? 0 "untrusted root: exit 0 (headless fallback)"
+check "$(call --bg count):$(pending kind):$(pending role)" "1:headless:hub-2" "untrusted root: one --bg, then the headless successor recorded"
+J | grep -q "background successor not started — $MR is not trusted by the claude CLI — run \`claude\` there once and accept the trust prompt.*falling back to a headless hub"; check $? 0 "untrusted root: journal names the root, the fix and the fallback"
+check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "untrusted root: agent spawn registered hub-2"
 BR=$R/stage-a/coordinator/work/hub-2-takeover-brief.md
 grep -qF "$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[agent-hub auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"
 grep -q "agent send hub-2" $R/hl.out; check $? 0 "headless: tells how the owner reaches it"
@@ -281,6 +281,65 @@ setup; succeed --model opus > /dev/null 2>&1
 FAKE_ON_LOGS="$B/roles --stage stage-a set hub $HUB2 --kind cli --tag hub-2 > /dev/null" $B/hub succeed --stage stage-a --fallback > $R/r8.out 2>&1
 check "$?:$(call stop count):$(pending kind)" "0:none:bg" "r2(8): the successor registered while its logs were read — not stopped, record kept"
 grep -q "is taking over; not stopped" $R/r8.out; check $? 0 "r2(8): …and it says so"
+
+# ================================================================== where the successor starts
+# The successor starts from the repository's main checkout (the root) in a new worktree of its own, as a Desktop
+# session does — never in the hub's own directory, which may be a Desktop session's worktree that goes when that
+# session is archived. Outside git: in --cwd itself (above).
+wtrepo(){ M=$R/repo; mkdir -p $M; git -C $M init -q; git -C $M -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C $M worktree add -q $M/.claude/worktrees/x -b claude/x 2>/dev/null; git -C $M worktree add -q $M/.worktrees/x -b x 2>/dev/null
+  MR=$(cd $M && pwd -P); }
+for hubdir in .claude/worktrees/x .worktrees/x .; do
+  setup; wtrepo
+  $B/hub succeed --stage stage-a --handoff $H --cwd $M/$hubdir --model opus > $R/wt.out 2>&1; rc=$?
+  check "$rc:$(call --bg cwd)" "0:$MR" "worktree ($hubdir): started from the main checkout"
+  call --bg argv | grep -q -- "^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --worktree stage-a-hub-2 "; check $? 0 "worktree ($hubdir): --worktree stage-a-hub-2"
+  check "$(pending cwd):$(pending worktree)" "$MR:$MR/.claude/worktrees/stage-a-hub-2" "worktree ($hubdir): root and worktree recorded"
+  J | grep -q "terminal: claude attach bg-1234abcd; in the new worktree $MR/.claude/worktrees/stage-a-hub-2 of $MR; waiting"; check $? 0 "worktree ($hubdir): the journal line names the worktree and the root"
+done
+# a taken name (a worktree directory, or the branch `claude --worktree` would create) -> the next free one
+setup; wtrepo; mkdir -p $M/.claude/worktrees/stage-a-hub-2; git -C $M branch worktree-stage-a-hub-2-2
+$B/hub succeed --stage stage-a --handoff $H --cwd $M/.worktrees/x --model opus > /dev/null 2>&1
+call --bg argv | grep -q -- " --worktree stage-a-hub-2-3 "; check $? 0 "worktree: a taken name (directory, branch) gets the next free suffix"
+# --dry-run says where it would start
+setup; wtrepo
+$B/hub succeed --stage stage-a --handoff $H --cwd $M/.claude/worktrees/x --model opus --dry-run > $R/dry.out 2>&1
+grep -q "start \"Hub stage-a #2\" from $MR in a new worktree:" $R/dry.out && grep -q -- "--worktree stage-a-hub-2 " $R/dry.out; check $? 0 "worktree: --dry-run shows the root and --worktree"
+# the headless successor: agent spawn --cwd <root> --worktree <branch> -> <root>/.worktrees/<branch> from the root's HEAD
+setup; wtrepo
+$B/hub succeed --stage stage-a --handoff $H --cwd $M/.claude/worktrees/x --model opus --headless > $R/wh.out 2>&1; check $? 0 "headless worktree: exit 0"
+check "$(pending kind):$(pending cwd):$(pending worktree)" "headless:$MR:$MR/.worktrees/stage-a-hub-2" "headless worktree: root and worktree recorded"
+check "$(git -C $M worktree list --porcelain | grep -c "^worktree $MR/.worktrees/stage-a-hub-2$"):$(git -C $M show-ref --verify --quiet refs/heads/stage-a-hub-2 && echo branch)" "1:branch" "headless worktree: agent spawn created it on its own branch"
+check "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(call -p-run cwd)")" "$MR/.worktrees/stage-a-hub-2" "headless worktree: the headless hub runs in it"
+J | grep -q "headless as agent hub-2.*in the new worktree $MR/.worktrees/stage-a-hub-2 of $MR"; check $? 0 "headless worktree: the journal line names it"
+
+# ================================================================== the numbers of a hub with a legacy tag
+# A hub registered as `хаб-25` (by hand, before the plugin) wrote the handoff #25 -> #26. `hub succeed` acts as hub-25,
+# names its successor #26, and that successor's takeover (--auto-handoff) is the pending one: the chain is kept.
+legacy(){ setup
+  python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["roles"]["hub"]["tag"]=sys.argv[2]; json.dump(d,open(p,"w"),ensure_ascii=False)' $R/stage-a/roles.json "$1"
+  H25=$R/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-02-1100.md
+  printf '# Handoff "Hub stage-a #25" → "Hub stage-a #26" — stage-a\n\n## 0. First steps\n1. take over\n' > $H25
+  touch -t 203001010000 $H25; H25=$(cd "$(dirname $H25)" && pwd -P)/$(basename $H25); }
+legacy 'хаб-25'
+$B/hub succeed --stage stage-a --handoff $H25 --cwd $W --model opus > $R/lg.out 2>&1; check $? 0 "legacy tag: succeed exit 0"
+call --bg argv | grep -q -- "--remote-control stage-a-hub-26 -n Hub stage-a #26 "; check $? 0 "legacy tag: the successor is named #26"
+J | grep -q '\[hub-25\] auto-handoff 1/10: started "Hub stage-a #26"'; check $? 0 "legacy tag: the hub journals as hub-25"
+check "$(pending n)" 26 "legacy tag: pending successor 26"
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H25 > $R/lgt.out 2>&1; check $? 0 "legacy tag: the successor's takeover"
+J | grep -q '\[hub-26\] start:'; check $? 0 "legacy tag: it takes over as hub-26 (the jwait of hub succeed matches)"
+check "$(chain):$(pending taken_over | cut -c1-2)" "1:20" "legacy tag: the chain is kept, the pending successor marked taken over"
+J | grep -q "chain reset"; check $? 1 "legacy tag: no chain reset"
+# a tag with no number at all: the handoff given to `hub succeed` names the hub (its outgoing #25), not a guess from
+# the latest handoff (its successor #26)
+legacy 'hub'
+$B/hub succeed --stage stage-a --handoff $H25 --cwd $W --model opus > /dev/null 2>&1
+check "$(call --bg argv | grep -c -- '--remote-control stage-a-hub-26 '):$(J | grep -c '\[hub-25\] auto-handoff 1/10')" "1:1" "no number in the tag: --handoff's outgoing #25 wins over the guess"
+# the pending successor's takeover takes the number it was started under, whatever the registry says by then
+setup
+python3 -c 'import json,sys; json.dump({"chain":1,"pending":{"n":7,"kind":"bg","id":"bg-x","k":1,"handoff":sys.argv[2],"at":"2026-10-02T11:00:00+00:00"}},open(sys.argv[1],"w"))' $R/stage-a/auto-handoff.json "$H"
+$B/hub takeover --stage stage-a --session $HUB2 --auto-handoff --handoff $H > /dev/null 2>&1
+check "$($B/roles --stage stage-a list 2>/dev/null | grep -c 'hub-7'):$(chain)" "1:1" "takeover --auto-handoff: the pending successor's number (hub-7), chain kept"
 
 # ================================================================== the hook
 setup
