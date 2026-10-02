@@ -581,7 +581,8 @@ def cmd_takeover(a) -> int:
 def locked_takeover(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir() and not (getattr(a, "start", False) and a.dry_run):
-        raise hc.UsageError(f"no stage directory {hc.root() / stage}; start the stage before takeover")
+        raise hc.UsageError(f"no stage directory {hc.root() / stage} — the first hub of a stage runs "
+                            f"`hub start --stage {stage} --session <your session id>`")
     # Serialize role migration with launch/bind and other takeovers. Desktop validation precedes locks/roles/journal.
     with contextlib.nullcontext() if a.dry_run else autopilot.state_lock(hc.check_stage(a.stage)):
         request = getattr(a, "desktop_request", None)
