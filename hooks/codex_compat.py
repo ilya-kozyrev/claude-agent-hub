@@ -84,7 +84,7 @@ def patch_contents(command, cwd):
     """
     if not isinstance(command, str):
         return []
-    lines = command.splitlines()
+    lines = command.strip().splitlines()
     if not lines or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
         raise ValueError("not an apply_patch patch")
     out = []

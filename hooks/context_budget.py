@@ -2,9 +2,13 @@
 """Context budget: nudge a session toward a handoff when its context grows large, and stop it from starting new
 work past a hard threshold.
 
-Size of the context = usage of the last real assistant turn of the transcript:
+Claude context = usage of the last real assistant turn of the transcript:
     input_tokens + cache_read_input_tokens + cache_creation_input_tokens
 If a compact_boundary record comes after that turn, its compactMetadata.postTokens wins.
+Codex context = the latest event_msg token_count's info.last_token_usage.total_tokens, never the accumulated
+total_token_usage. Cached/reasoning counters are already included. A compacted record resets the estimate until
+fresh usage arrives. When a Codex rollout includes its model_context_window, default warn/block/step are
+60%/85%/10% of that window; explicit settings still win. Transcript formats are not a stable runtime API.
 
 Which transcript: the main thread reads `transcript_path` and skips sidechain records; inside a subagent (the hook
 input carries `agent_id`) the subagent's own transcript (`agent_transcript_path`, else

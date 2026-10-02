@@ -60,6 +60,8 @@ class CodexHooks(unittest.TestCase):
         outside = self.home / 'HANDOFF-outside.md'
         self.assertFalse(self.denied(self.patch(f'*** Add File: {outside}\n+' + 'x' * 100 + '\n')))
         self.assertFalse((self.cwd / 'HANDOFF-small.md').exists(), 'guard must never mutate files')
+        out = self.hook('handoff_size.py', 'apply_patch', {'command': '\n*** Begin Patch\n*** Add File: HANDOFF-padded.md\n+' + 'x' * 30 + '\n*** End Patch\n'})
+        self.assertTrue(self.denied(out))
 
     def test_patch_update_multiple_hunks_delete_and_move(self):
         fp = self.cwd / 'HANDOFF-update.md'
@@ -156,6 +158,8 @@ class CodexHooks(unittest.TestCase):
     def test_bash_guard_remains_active_in_bypass(self):
         denied = self.hook('polling_guard.py', 'Bash', {'command': 'sleep 120'})
         self.assertTrue(self.denied(denied))
+        self.assertIn('exec_command', denied['hookSpecificOutput']['permissionDecisionReason'])
+        self.assertNotIn('run_in_background', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertFalse(self.denied(self.hook('polling_guard.py', 'Bash', {'command': 'echo done'})))
         run = subprocess.run([str(ROOT / 'bin' / 'lock'), 'take', 'main-merge', '--until', '2099-01-01T00:00',
                               '--why', 'test', '--owner', 'Other'], capture_output=True, text=True,
