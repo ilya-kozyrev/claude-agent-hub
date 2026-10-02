@@ -6,6 +6,9 @@ or `--engine codex`; sending, status and stopping use the engine recorded at spa
 
 ## Install in Codex
 
+Codex support requires Python 3.11+ on PATH, including for native hook execution: native agent definitions and
+configuration use the standard-library TOML parser. The Claude engine continues to support Python 3.10+.
+
 Use the repository marketplace from a local checkout:
 
 ```sh

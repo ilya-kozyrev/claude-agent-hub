@@ -169,7 +169,7 @@ The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` pro
 
 ## Install
 
-**Platform.** macOS and Linux, Python 3.10+ (standard library only), the selected `claude` or `codex` CLI on `PATH`. Windows is not
+**Platform.** macOS and Linux, Python 3.10+ for Claude or 3.11+ for Codex (standard library only), the selected `claude` or `codex` CLI on `PATH`. Windows is not
 supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself does run natively on Windows
 ([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
 
@@ -752,7 +752,7 @@ The Claude-specific facilities below apply when the selected host/engine is Clau
 - The `"project"` home is shared by the worktrees of an ordinary clone; the worktrees of a bare repository each get
   their own.
 - macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
-  itself runs natively on Windows. Python 3.10+, standard library only.
+  itself runs natively on Windows. Python 3.10+ for Claude, 3.11+ for Codex; standard library only.
 - The selected CLI must be on `PATH` (or set `CLAUDE_BIN` / `CODEX_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
   is newer. Model aliases follow the CLI: with Claude Code older than 2.1.285 they resolve to older models.
 - Headless agents run with `bypassPermissions` by default. Give every agent a brief that says what it must not

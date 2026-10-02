@@ -13,6 +13,22 @@ while time.monotonic()<end:
 else:sys.exit('agent did not finish')
 PY
 }
+python3 - "$B" <<'PY'
+import sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import engines, hubcore
+with patch.object(engines.sys, 'version_info', (3, 10, 9)):
+ try:
+  engines.codex_bin()
+ except hubcore.UsageError as e:
+  assert '3.11+' in str(e)
+ else:
+  raise AssertionError('unsupported Python accepted')
+with patch.object(engines.sys, 'version_info', (3, 11, 0)):
+ assert engines.codex_bin()
+PY
+check $? 0 'Codex Python floor refuses unsupported TOML runtime and accepts 3.11'
 FAKE_CODEX_HOLD=2 spawn worker --model gpt-fixture > "$AGENT_HUB_HOME/spawn.out"; check $? 0 'Codex detached spawn'
 "$B/agent" status worker | grep -Eq 'ALIVE'; check $? 0 'generated session ID does not break liveness'
 "$B/agent" send worker 'queued control' >/dev/null; check $? 0 'alive Codex inbox'
@@ -89,4 +105,9 @@ spawn unknown --sandbox-policy '{"type":"externalSandbox"}' >/dev/null 2>&1; che
 spawn nested --sandbox-policy '{"type":"workspace-write","writable_roots":[{"root":"/tmp","excluded_subpaths":["secret"]}]}' >/dev/null 2>&1; check $? 2 'nested restrictions never silently flattened'
 spawn invalid --sandbox-policy '["read-only"]' >/dev/null 2>&1; check $? 2 'policy must be an object'
 
+AGENT_HUB_DEFAULT_EFFORT=ultra CLAUDE_BIN="$T/fake_claude.py" "$B/agent" spawn --engine claude --role mixed --cwd "$W" --model opus --effort high --brief "$W/brief.md" > /dev/null
+check $? 0 'explicit Claude effort overrides Codex-only default'
+wait_done mixed
+AGENT_HUB_DEFAULT_EFFORT=ultra CLAUDE_BIN="$T/fake_claude.py" "$B/agent" spawn --engine claude --role mixed-invalid --cwd "$W" --model opus --brief "$W/brief.md" > /dev/null 2>&1
+check $? 2 'effective unsupported Claude effort still refused'
 exit $fail

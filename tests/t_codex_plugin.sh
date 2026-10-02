@@ -50,7 +50,7 @@ for effort in ('low', 'medium', 'high', 'xhigh'):
     raw = (root / 'skills/setup/resources/codex-agents' / f'worker-{effort}.toml').read_text()
     try:
         import tomllib
-    except ImportError:  # Python 3.10 is supported; these resources use only scalar strings.
+    except ImportError:  # Packaging may be inspected on Claude's Python 3.10; Codex runtime needs 3.11+.
         assert raw.count('"""') == 2
         parsed = dict(re.findall(r'^(\w+) = "([^"\n]*)"$', raw, re.M))
         parsed['developer_instructions'] = raw.split('"""')[1]

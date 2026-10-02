@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import hubcore as hc
@@ -26,6 +27,8 @@ def selected(given=None, cwd=None):
 
 
 def codex_bin(cwd=None):
+    if sys.version_info < (3, 11):
+        raise hc.UsageError("Codex support requires Python 3.11+ (standard-library TOML parsing)")
     value = hc.setting("CODEX_BIN", cwd=cwd) or "codex"
     found = shutil.which(value)
     if not found:

@@ -96,6 +96,7 @@ For a Codex host, offer to copy `resources/codex-agents/worker-*.toml` from this
 an update was requested. These files pin effort and inherit the model selected at spawn; set a real available
 model id when a persistent pin is required. Installed Claude `agents/*.md` are not native Codex definitions.
 The plugin manifest loads skills and hooks; it does not register these TOML files automatically.
+Check that `python3` is 3.11+ before enabling Codex hooks or workers; TOML discovery needs the standard-library parser.
 
 ## 4. Prove it
 

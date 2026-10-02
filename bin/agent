@@ -382,9 +382,10 @@ def cmd_spawn(a) -> int:
     given, a.model = given_model, mmap.get(given_model, given_model)
     default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
     allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
-    if default_effort not in allowed_efforts or (a.effort and a.effort not in allowed_efforts):
-        raise hc.UsageError(f"AGENT_HUB_DEFAULT_EFFORT={default_effort!r}: one of {EFFORTS}")
-    effort = None if engine == "claude" and "haiku" in a.model else (a.effort or default_effort)
+    effective_effort = a.effort or default_effort
+    if effective_effort not in allowed_efforts:
+        raise hc.UsageError(f"effort {effective_effort!r} ({engine}): one of {allowed_efforts}")
+    effort = None if engine == "claude" and "haiku" in a.model else effective_effort
     # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
     import subagent_rules  # noqa: E402
     denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
