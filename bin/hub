@@ -33,7 +33,7 @@ target state is already there is skipped as "already done", so a re-run finishes
      kind, repo, until and value. The previous hub is every session named by the roles entry `hub`
      or the `coordinator:` line of night-queue.md (other than the new one); when they disagree it
      says so and takes the locks of all of them. --take-main-merge also takes main-merge of the hub's
-     repo (AGENT_HUB_DEFAULT_REPO, else "*") when nobody holds it (until --main-merge-until) or when a third
+     repo (AGENT_HUB_DEFAULT_REPO, else the git repository you run in, else "*") when nobody holds it (until --main-merge-until) or when a third
      party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
      reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
      The free lock is never added when a main-merge is already taken over or held (no second, wildcard
@@ -621,10 +621,10 @@ def cmd_takeover(a) -> int:
     if "main-merge" not in skip:
         # Every main-merge lock is looked at, one per repo. --take-main-merge takes those of the hub's repo
         # (AGENT_HUB_DEFAULT_REPO; "*" = all) and the repo's free lock; the rest is reported and left alone.
-        mm_repo = hc.setting("AGENT_HUB_DEFAULT_REPO") or b.DEFAULT_REPO
+        mm_repo = hc.default_repo() or b.DEFAULT_REPO
         ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
         if take_mm and mm_repo == "*":
-            notes.append(f"no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
+            notes.append(f"no repository and no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
         third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
                  and r.get("session_id") not in owners and r.get("session_id") != cli]
         for mm in third:

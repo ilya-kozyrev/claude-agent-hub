@@ -13,8 +13,8 @@ hook(){ python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","sessi
 deny(){ hook "$@" 2>/dev/null | grep -q '"permissionDecision": "deny"'; }
 GOOD_HOME='{"rules": [{"match": "^helm upgrade\\b", "kinds": ["deploy-window"], "action": "helm rollout"}]}'
 echo "$GOOD_HOME" > $R/lock-rules.json
-CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take deploy-window --until +2h --why "release" --owner-name "release hub" >/dev/null
-CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +2h --why "merge train" --owner-name "steward" >/dev/null
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take deploy-window --repo '*' --until +2h --why "release" --owner-name "release hub" >/dev/null
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --repo '*' --until +2h --why "merge train" --owner-name "steward" >/dev/null
 GOOD_REPO='{"rules": [{"match": "^make release\\b", "kinds": ["deploy-window"], "action": "release"}]}'
 GOOD_HOME='{"rules": [{"match": "^helm upgrade\\b", "kinds": ["deploy-window"], "action": "helm rollout"}]}'
 echo "$GOOD_HOME" > $R/lock-rules.json
@@ -77,7 +77,7 @@ $B/roles budget --stage stage-a worker > $P/cap.out 2>> $P/cap.err; check $? 0 "
 grep -q '10' $P/cap.out; check $? 0 "…with the default cap"
 grep -q "AGENT_HUB_SEND_CAP='ten' is not a whole number" $P/cap.err; check $? 0 "…the bad value is reported"
 deny "gh pr merge 3" $ME $OUT; check $? 1 "…(no lock: no decision)"
-CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +1h --why x --owner-name s >/dev/null 2>&1
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --repo '*' --until +1h --why x --owner-name s >/dev/null 2>&1
 deny "gh pr merge 3" $ME $OUT; check $? 0 "…and the lock hook still denies"
 check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import hubcore; print(hubcore.MESSAGE_CAP)' "$B" 2>/dev/null)" 10 "…MESSAGE_CAP falls back to 10"
 echo '{"AGENT_HUB_SEND_CAP": 4}' > $R/config.json

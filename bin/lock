@@ -19,8 +19,10 @@ that is not configured where you run it and lists the known ones; `release` acce
 The holder is $CLAUDE_CODE_SESSION_ID; --owner-name defaults to this session's sidebar title.
 A kind already held by another session's active lock is refused unless --force (a handover:
 the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to
-AGENT_HUB_DEFAULT_REPO (env, the current repository's .agent-hub/config.json or the hub home's), else "*"
-(every repo); `release` without --repo that finds nothing there releases this session's only lock of the kind.
+AGENT_HUB_DEFAULT_REPO (env, the current repository's .agent-hub/config.json or the hub home's), else the name of
+the git repository you run in (a worktree: its main repository, as the hook reads it); "*" (every repo) only with an
+explicit --repo '*' or outside any git checkout. `release` without --repo that finds nothing there releases this
+session's only lock of the kind.
 Board: $AGENT_BOARD_FILE, else <hub home>/board.md (`hub home` shows the hub home).
 """
 from __future__ import annotations
@@ -40,7 +42,7 @@ import board  # noqa: E402
 import hubcore as hc  # noqa: E402
 import lockrules  # noqa: E402
 
-DEFAULT_REPO = hc.setting("AGENT_HUB_DEFAULT_REPO") or board.DEFAULT_REPO
+DEFAULT_REPO = hc.default_repo() or board.DEFAULT_REPO
 
 
 def session_title(sid: str) -> str | None:
@@ -184,10 +186,7 @@ def repo_root(raw: str | None) -> Path:
 
 def repo_name(top: Path) -> str:
     """Repository name as the hook sees it: a worktree resolves to its main repository."""
-    res = subprocess.run(["git", "-C", str(top), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                         capture_output=True, text=True, env=hc.git_env())
-    common = Path(res.stdout.strip()) if res.returncode == 0 else top / ".git"
-    return common.parent.name if common.name == ".git" else top.name
+    return hc.git_repo_name(top) or top.name
 
 
 def rules_path(top: Path) -> Path:
@@ -348,7 +347,7 @@ def main(argv: list[str]) -> int:
     pt.add_argument("--force", action="store_true")
     pr = sub.add_parser("release")
     pr.add_argument("kind", metavar="resource")
-    pr.add_argument("--repo", default=None, help="default: AGENT_HUB_DEFAULT_REPO, else *; when that finds nothing, "
+    pr.add_argument("--repo", default=None, help="default: AGENT_HUB_DEFAULT_REPO, else this git repository, else *; when that finds nothing, "
                     "this session's only lock of the kind")
     pr.add_argument("--force", action="store_true")
     pu = sub.add_parser("rules", help="the resources and rules that apply here; init, add, check")

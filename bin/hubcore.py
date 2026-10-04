@@ -296,6 +296,41 @@ def main_checkout(worktree: Path) -> Optional[Path]:
     return common.parent if common.name == ".git" else None
 
 
+def git_repo_name(path) -> Optional[str]:
+    """Name of the git repository enclosing `path` (a `.git` directory or file found upwards from it); a worktree
+    resolves to its main repository. None outside any repository. The board hook names the repository of a command
+    this way, so a lock taken with this name is matched there."""
+    try:
+        p = Path(os.path.abspath(os.path.expanduser(str(path))))
+    except (OSError, ValueError):
+        return None
+    for d in [p] + list(p.parents):
+        g = d / ".git"
+        if g.is_dir():
+            return d.name
+        if g.is_file():  # a worktree or submodule: "gitdir: <main>/.git/worktrees/<name>"
+            try:
+                m = re.match(r"gitdir:\s*(.+)", g.read_text(encoding="utf-8").strip())
+            except OSError:
+                return d.name
+            if m:
+                gitdir = Path(m.group(1).strip())
+                if not gitdir.is_absolute():
+                    gitdir = (d / gitdir).resolve()
+                parts = gitdir.parts
+                if ".git" in parts:
+                    return parts[parts.index(".git") - 1]
+            return d.name
+    return None
+
+
+def default_repo(cwd=None) -> Optional[str]:
+    """The repository a lock taken from `cwd` guards: AGENT_HUB_DEFAULT_REPO (env, the project's config.json, the hub
+    home's), else the name of the git repository enclosing `cwd` (a worktree resolves to its main repository), else
+    None: the caller falls back to "*" (every repository) only outside any checkout."""
+    return setting("AGENT_HUB_DEFAULT_REPO", cwd=cwd) or git_repo_name(cwd or os.getcwd())
+
+
 def in_scope(path) -> bool:
     """Whether the plugin's session-wide hooks (handoff size, the owner-questions line) apply at `path`: inside the
     hub home, inside a repository with `.agent-hub/`, or under a directory of AGENT_HUB_SCOPE_DIRS (paths separated
