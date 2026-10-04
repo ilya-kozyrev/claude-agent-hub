@@ -10,6 +10,12 @@ Run bundled commands with the host's shell tool. Resolve the plugin root from `P
 `CLAUDE_PLUGIN_ROOT`, or this skill's installed path; use `<plugin-root>/bin/<tool>` when PATH is missing
 or shadowed. Session identity comes from the current host; use `self` where supported.
 
+**In Claude Code** the plugin's mod (Claude Code ≥ 2.1.287) answers a typed `/agent-top [role] [--stage S] [--all]`
+before this skill runs: a live read-only pane (Agents, agent card, Journal, Summary), a status line and toasts.
+If you are running this skill in Claude Code, the pane did not open (older version, mods off) or the user asked in words:
+say in one line that `/agent-top` opens the live pane where mods are on, then take the path below.
+In Codex, VS Code chat and `claude -p` take the path below straight away.
+
 `agent-top` builds both the data and the markup. You only show what it made:
 do not write or edit the HTML by hand, and do not repeat the table in prose.
 

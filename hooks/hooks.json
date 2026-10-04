@@ -1,5 +1,6 @@
 {
   "description": "agent-hub: lock-board enforcement, owner-question summary, a warning when an old command shadows the plugin's tools, handoff size cap, and the agent-discipline hooks (context budget, polling guard, delegation dial and subagent rules).",
+  "modules": ["./agent-top.tsx"],
   "hooks": {
     "SessionStart": [
       {
