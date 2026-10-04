@@ -239,7 +239,10 @@ use the separately configured hook-trust policy; hooks stay enabled. See [Codex 
   same name wins — in practice the GitHub CLI `hub` from Homebrew, or an old copy of `jlog` in `~/.local/bin`. `hub start`
   and a SessionStart hook warn once when any command of the plugin (every executable in its `bin/`: `hub`, `jlog`,
   `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
-  first on `PATH` or remove the old tool.
+  first on `PATH` or remove the old tool. A command that resolves into an installed plugin's `bin/` (the Claude or Codex
+  plugin cache, the marketplace folder) is not reported. To keep a personal shim that dispatches into the plugin (say
+  `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# agent-hub: dispatcher`
+  among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
 - **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
   (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name; in Claude Code ≥ 2.1.287 the mod answers it
   with a live pane before the skill runs); four pinned-effort Claude worker subagents.
@@ -411,7 +414,8 @@ flowchart LR
 
 Every open question carries the action that happens if nobody answers by its due time, so work is never silently
 stuck. A decision an agent takes on its own on a matter the owner normally decides is recorded with `ask decided` —
-visible, contestable. At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
+visible, contestable. The plan the owner approved is recorded with `ask plan` (`agent spawn` warns while its stage has
+none); `ask add|decided|plan --print-id` prints just the new id, for scripts. At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
 hub home, in repositories with `.agent-hub/` and for hub agents.
 
 ## Team use

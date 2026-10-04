@@ -622,6 +622,7 @@ def cmd_takeover(a) -> int:
         # Every main-merge lock is looked at, one per repo. --take-main-merge takes those of the hub's repo
         # (AGENT_HUB_DEFAULT_REPO; "*" = all) and the repo's free lock; the rest is reported and left alone.
         mm_repo = hc.default_repo() or b.DEFAULT_REPO
+        mm_configured = bool(hc.setting("AGENT_HUB_DEFAULT_REPO"))  # the nudge below is for a repository that opted in
         ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
         if take_mm and mm_repo == "*":
             notes.append(f"no repository and no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
@@ -648,7 +649,7 @@ def cmd_takeover(a) -> int:
             if take_mm:
                 notes.append(f"main-merge ({mm_repo}) was wanted but not taken: other main-merge locks exist and the "
                              "hub repo is unknown here — run from the repository or set AGENT_HUB_DEFAULT_REPO")
-            elif mm_repo != "*":
+            elif mm_configured:
                 notes.append(f"nobody holds main-merge ({mm_repo}): merges to its main are not guarded — "
                              "--take-main-merge, or AGENT_HUB_TAKE_MAIN_MERGE=true in the repository's config.json")
     if kept:

@@ -163,6 +163,13 @@ grep -q 'no AGENT_HUB_DEFAULT_REPO here' $P/t1.out; check $? 0 "…and says the 
 tk_setup none
 (cd $OUT && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --take-main-merge) > /dev/null 2>&1
 check "$(mm)" "*:eeee" "negative control: with no main-merge anywhere the free * lock is taken (documented)"
+mkdir -p $P/shop/.git
+tk_setup none
+(cd $P/shop && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --take-main-merge) > $P/t2b.out 2>&1
+check "$(mm)" "shop:eeee" "inside a git checkout without AGENT_HUB_DEFAULT_REPO the free main-merge is the repository's, not *"
+tk_setup none
+(cd $P/shop && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI) > $P/t2c.out 2>&1
+grep -q 'nobody holds main-merge' $P/t2c.out; check $? 1 "…and without the flag nothing is nudged about a repository that never opted in"
 tk_setup none; printf '{"AGENT_HUB_DEFAULT_REPO": "webapp", "AGENT_HUB_TAKE_MAIN_MERGE": "true"}\n' > $REPO/.agent-hub/config.json
 (cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI) > $P/t3.out 2>&1
 check "$(mm)" "webapp:eeee" "AGENT_HUB_TAKE_MAIN_MERGE=true: the hub repo's free main-merge is taken without the flag"

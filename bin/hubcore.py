@@ -738,15 +738,57 @@ def plugin_tools() -> list:
         return []
 
 
+# A personal wrapper that dispatches into the plugin (a shim in ~/.local/bin that picks the newest installed `bin/`)
+# says so with this comment line near the top of its file; the shadow check then treats it as the plugin's own.
+DISPATCHER_MARKER = "# agent-hub: dispatcher"
+
+
+def installed_plugin_bins() -> list:
+    """Real paths of the installed agent-hub plugin `bin/` directories: the Claude and Codex plugin caches
+    (`<config>/plugins/cache/*/agent-hub/*/bin`) and a marketplace folder that is the plugin itself
+    (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
+    $CODEX_HOME / ~/.codex."""
+    home = Path.home()
+    out = []
+    for config in (Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"),
+                   Path(os.environ.get("CODEX_HOME") or home / ".codex")):
+        plugins = config / "plugins"
+        found = list(plugins.glob("cache/*/agent-hub/*/bin")) + [
+            d for d in plugins.glob("marketplaces/*/bin") if (d / "hubcore.py").is_file()]
+        out += [os.path.realpath(d) for d in found]
+    return out
+
+
+def is_dispatcher(path) -> bool:
+    """Whether the file `path` (symlinks resolved) carries the DISPATCHER_MARKER line among its first lines."""
+    try:
+        with open(os.path.realpath(path), "rb") as fh:
+            head = fh.read(2048).decode("utf-8", "replace")
+    except OSError:
+        return False
+    return any(line.strip() == DISPATCHER_MARKER for line in head.splitlines()[:10])
+
+
 def shadowed_tools(path=None) -> list:
-    """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file outside this
-    bin/ (`command -v`: the first match on PATH; a symlink into this bin/ counts as ours)."""
+    """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file that is not
+    the plugin's own (`command -v`: the first match on PATH). Ours: a file whose real path is in this bin/ (a symlink
+    into it counts) or in an installed agent-hub plugin's bin/ (installed_plugin_bins), or a personal dispatcher that
+    carries the DISPATCHER_MARKER line (is_dispatcher)."""
     path = os.environ.get("PATH", "") if path is None else path
     out = []
+    installed = None
     for name in plugin_tools():
         found = shutil.which(name, path=path)
-        if found and os.path.dirname(os.path.realpath(found)) != str(BIN):
-            out.append((name, found))
+        if not found:
+            continue
+        folder = os.path.dirname(os.path.realpath(found))
+        if folder == str(BIN):
+            continue
+        if installed is None:
+            installed = installed_plugin_bins()
+        if folder in installed or is_dispatcher(found):
+            continue
+        out.append((name, found))
     return out
 
 
