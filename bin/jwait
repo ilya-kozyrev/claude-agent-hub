@@ -5,8 +5,9 @@ The only waiter a hub needs. Run it as ONE command with Bash `run_in_background:
 the harness wakes you when it exits. Never re-arm Monitor or cron for the journal.
 
   jwait --journal [--stage stage-a] [--file PATH ...] [--match REGEX ...] [--tag T ...]
-        [--exclude-tag T ...] [--settle 20] [--until HH:MM | --for 6h] [--note "…"] [--since HH:MM|ISO]
+        [--exclude-tag T ...] [--settle 20] [--until HH:MM[:SS] | --for 6h] [--note "…"] [--since HH:MM|ISO]
   jwait --until 20:23 --note "check the nightly import"   # pure alarm, no source
+  jwait --until 20:23:30 --note "…"                        # to the second; so does --until 2026-10-04T20:23:30
 
 Sources: --journal (today's journal of the stage, follows midnight rollover) and/or --file PATH
 (any log; may not exist yet). Several allowed.
@@ -25,8 +26,9 @@ whether or not the caller has seen them (`hub takeover` prints it). A --file sou
 unseen matching line, even the first time (a script may have asked its question before jwait
 started); a last line without a newline is delivered after it stays unchanged for max(--settle, 1) s.
 Batching: after the first match keeps collecting for --settle seconds (default 20), then prints.
-Deadline: --until HH:MM (hub time zone; a past time means tomorrow) or --for 6h; default --for 2h (a background Bash task
-is not guaranteed to live longer; wait again after the alarm). On the
+Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone; a past clock time means
+tomorrow) or --for 6h; default --for 2h (a background Bash task is not guaranteed to live longer; wait again
+after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
 """
@@ -216,7 +218,7 @@ def main(argv: list) -> int:
     p.add_argument("--caller", default=None, help="whose seen-state to use (default: own tag or session id)")
     p.add_argument("--settle", type=float, default=20.0, help="seconds to keep collecting after the first match")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--until", default=None, help="deadline HH:MM or ISO")
+    g.add_argument("--until", default=None, help="deadline HH:MM, HH:MM:SS or ISO (seconds optional)")
     g.add_argument("--for", dest="for_", default=None, help="deadline as a duration: 30m, 6h")
     p.add_argument("--note", default="", help="alarm text")
     p.add_argument("--since", default=None, help="on the initial read, deliver journal lines from HH:MM or an ISO time on")
@@ -314,7 +316,7 @@ def main(argv: list) -> int:
     if args.journal:
         what.append(f"journal {stage}")
     what += [f"file {f}" for f in args.file]
-    print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {deadline:%d.%m %H:%M}", flush=True)
+    print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {fmt_deadline(deadline)}", flush=True)
 
     try:
         while True:
@@ -330,11 +332,15 @@ def main(argv: list) -> int:
             if t >= deadline:
                 finish()
                 warn_baseline()
-                print(f"ALARM {args.note}".rstrip() + f" (deadline {deadline:%d.%m %H:%M})")
+                print(f"ALARM {args.note}".rstrip() + f" (deadline {fmt_deadline(deadline)})")
                 return 3
             time.sleep(POLL_S)
     except KeyboardInterrupt:
         return 130
+
+
+def fmt_deadline(t) -> str:
+    return f"{t:%d.%m %H:%M:%S}" if t.second else f"{t:%d.%m %H:%M}"
 
 
 def print_block(matched: list) -> None:

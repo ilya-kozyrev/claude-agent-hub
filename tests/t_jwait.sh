@@ -40,9 +40,49 @@ check $rc 0 "file source delivered"
 check "$(grep -c 'AWAITING ANSWER' $O/o6.out)" 2 "settle batched both questions into one block"
 $B/jwait --file $F --match 'AWAITING ANSWER' --settle 0 --for 3s --caller t6 > $O/o7.out 2>&1; rc=$?
 check $rc 3 "negative: same file lines not re-delivered"
-# 7. pure alarm
-$B/jwait --until "$(utc_hhmm 1)" --note "check the nightly import" > $O/o8.out 2>&1; rc=$?
-check $rc 3 "pure alarm exit 3"; grep -q '^ALARM check the nightly import' $O/o8.out; check $? 0 "pure alarm text"
+# 7. pure alarm, a few seconds ahead: HH:MM:SS and ISO with seconds fire at the second, not at the next minute.
+# Every alarm runs under a hard limit: a clock time that has already passed when jwait parses it (a loaded machine)
+# means tomorrow for HH:MM:SS, and the runner must fail, not wait a day.
+hms=$(utc_hms 6); case $hms in *:00) hms=$(utc_hms 7);; esac   # a :00 deadline prints without seconds
+t0=$(date +%s)
+bounded 45 $B/jwait --until "$hms" --note "check the nightly import" > $O/o8.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check $rc 3 "pure alarm (HH:MM:SS) exit 3"; grep -q '^ALARM check the nightly import' $O/o8.out; check $? 0 "pure alarm text"
+[ $el -le 30 ]; check $? 0 "HH:MM:SS fires within seconds, not at the next minute (${el}s)"
+grep -Eq 'deadline [0-9.]+ [0-9]{2}:[0-9]{2}:[0-9]{2}\)' $O/o8.out; check $? 0 "the alarm line shows the deadline with seconds"
+# ISO with seconds is a date: one already past fires at once whatever the start delay, one ahead waits for its second
+t0=$(date +%s)
+bounded 45 $B/jwait --until "$(utc_iso_s -2)" --note "iso past" > $O/o8c.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check $rc 3 "ISO with seconds already past: alarm exit 3"; grep -q '^ALARM iso past' $O/o8c.out; check $? 0 "ISO past alarm text"
+[ $el -le 10 ]; check $? 0 "ISO past fires at once, not tomorrow (${el}s)"
+t0=$(date +%s)
+bounded 45 $B/jwait --until "$(utc_iso_s 5)" --note "iso alarm" > $O/o8b.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check $rc 3 "pure alarm (ISO with seconds) exit 3"; grep -q '^ALARM iso alarm' $O/o8b.out; check $? 0 "ISO alarm text"
+[ $el -ge 2 ] && [ $el -le 30 ]; check $? 0 "ISO with seconds waits for its second, not the next minute (${el}s)"
+# HH:MM keeps its meaning: the start of that minute, a past one is tomorrow; HH:MM:SS the same by the second
+python3 - "$B" <<'PY'
+import datetime as dt, sys
+sys.path.insert(0, sys.argv[1])
+import hubcore as hc
+base = dt.datetime(2026, 10, 4, 20, 23, 30, 500, tzinfo=hc.TZ)
+def pd(raw): return hc.parse_deadline(raw, base)
+def at(*a): return dt.datetime(*a, tzinfo=hc.TZ)
+assert pd("20:24") == at(2026, 10, 4, 20, 24, 0), pd("20:24")
+assert pd("20:23") == at(2026, 10, 5, 20, 23, 0), pd("20:23")
+assert pd("20:23:45") == at(2026, 10, 4, 20, 23, 45), pd("20:23:45")
+assert pd("20:23:30") == at(2026, 10, 5, 20, 23, 30), pd("20:23:30")
+assert pd("9:05:07") == at(2026, 10, 5, 9, 5, 7), pd("9:05:07")
+assert pd("2026-10-04T20:23:45") == at(2026, 10, 4, 20, 23, 45), pd("2026-10-04T20:23:45")
+assert pd("2026-10-04T20:23") == at(2026, 10, 4, 20, 23, 0), pd("2026-10-04T20:23")
+for bad in ("20:23:4", "25:00", "20:61", "20:23:61", "20:23:45:01", "soon"):
+    try: pd(bad)
+    except hc.UsageError: continue
+    raise AssertionError(f"accepted {bad!r}")
+PY
+check $? 0 "parse_deadline: HH:MM unchanged, HH:MM:SS and ISO with seconds accepted, malformed refused"
+$B/jwait --until 20:23:61 >/dev/null 2>&1; check $? 2 "usage: --until with seconds out of range"
 # 8. usage errors
 $B/jwait >/dev/null 2>&1; check $? 2 "usage: no source, no deadline"
 $B/jlog "no tag" >/dev/null 2>&1; check $? 2 "usage: jlog without tag"

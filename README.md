@@ -840,7 +840,7 @@ What comes next and in what order: [ROADMAP.md](ROADMAP.md).
 bash tests/run_all.sh
 ```
 
-Every test runs with `HOME` and `AGENT_HUB_HOME` in throw-away directories and a stand-in CLI
+The scripts run in parallel (`TEST_JOBS=N` bounds how many at once). Every test runs with `HOME`, `AGENT_HUB_HOME` and `TMPDIR` in throw-away directories and a stand-in CLI
 (`tests/fake_claude.py`) instead of `claude`, so nothing touches your real hub home and no model is called.
 
 The agent-top mod has its own tests, `hooks/agent-top.test.tsx`: `claude plugin test .` from the plugin root, with a

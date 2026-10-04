@@ -21,6 +21,11 @@
   unsupported.
 - **Review brief:** a read-only reviewer returns the review as its final answer and the caller saves it; the brief lists
   the author's test commands with their exit codes and asks the reviewer not to rerun them unless a finding needs it.
+- **`jwait --until` takes seconds:** `HH:MM:SS` and ISO `YYYY-MM-DDTHH:MM:SS` next to `HH:MM` (unchanged: the start of that
+  minute, a past time means tomorrow).
+- **The test suite runs in parallel:** `tests/run_all.sh` runs the `t_*.sh` scripts concurrently (`TEST_JOBS`, default twice
+  the CPU count, at least 8), each with its own `HOME`, `AGENT_HUB_HOME` and `TMPDIR`, and prints the summaries in sorted order; CI wall time
+  drops from about 5.5 minutes to about 1.5 (a laptop: 7 minutes to 1).
 - `AGENTS.md` at the repository root (Claude Code reads it through `.claude/CLAUDE.md`): how to run the tests and where things live.
 
 ## 0.8.0 — 2026-10-04

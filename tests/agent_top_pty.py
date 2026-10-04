@@ -207,7 +207,7 @@ class Session:
     def wait_for(self, needle, timeout=8.0):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            self.pump(0.2)
+            self.pump(0.05)
             if re.search(needle, self.screen.text()):
                 self.pump(0.3)      # let the rest of the frame arrive before the caller reads the screen
                 return re.search(needle, self.screen.text()) is not None

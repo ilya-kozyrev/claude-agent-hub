@@ -1,7 +1,7 @@
 # agent-hub plugin: pointers for agents (Codex reads this file; Claude Code through `.claude/CLAUDE.md`)
 
-- Full test suite: `bash tests/run_all.sh "$(mktemp -d)"`, about 6 minutes: run it with Bash `timeout: 600000` or
-  `run_in_background`. One script: `bash tests/t_<name>.sh`. Tests use throw-away homes; read exit codes from files, not pipes.
+- Full test suite: `bash tests/run_all.sh "$(mktemp -d)"`, about a minute on a laptop, the scripts run in parallel (`TEST_JOBS`
+  sets how many at once); run it with Bash `timeout: 600000` or `run_in_background`. One script: `bash tests/t_<name>.sh`. Tests use throw-away homes; read exit codes from files, not pipes.
 - Mod tests (`hooks/agent-top.test.tsx`): `claude plugin test .` from the repository root.
 - Manifest: `claude plugin validate .claude-plugin/plugin.json --strict` (the root path validates only `marketplace.json` on some builds).
 - The hub skill is `skills/hub/SKILL.md`; brief, handoff and queue templates are in `templates/`; tools in `bin/`, hooks in
