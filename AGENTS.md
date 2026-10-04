@@ -1,4 +1,4 @@
-# agent-hub plugin: pointers for agents (Codex reads this file too)
+# agent-hub plugin: pointers for agents (Codex reads this file; Claude Code through `.claude/CLAUDE.md`)
 
 - Full test suite: `bash tests/run_all.sh "$(mktemp -d)"`, about 6 minutes: run it with Bash `timeout: 600000` or
   `run_in_background`. One script: `bash tests/t_<name>.sh`. Tests use throw-away homes; read exit codes from files, not pipes.

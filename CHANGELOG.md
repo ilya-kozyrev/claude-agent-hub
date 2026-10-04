@@ -20,7 +20,7 @@
   unsupported.
 - **Review brief:** a read-only reviewer returns the review as its final answer and the caller saves it; the brief lists
   the author's test commands with their exit codes and asks the reviewer not to rerun them unless a finding needs it.
-- `CLAUDE.md` at the repository root: how to run the tests and where things live.
+- `AGENTS.md` at the repository root (Claude Code reads it through `.claude/CLAUDE.md`): how to run the tests and where things live.
 
 ## 0.8.0 — 2026-10-04
 
