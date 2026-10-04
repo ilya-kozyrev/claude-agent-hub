@@ -1,7 +1,7 @@
 #!/bin/bash
 # Latest models by default, through the CLI instead of pinned ids: the newer of `claude` on PATH and Claude Desktop's
 # bundled CLI is started (and named); the id the run reports is recorded and shown (meta, status, the journal line,
-# agent-top screen / --once / widget / --json); a CLI older than 2.1.285 is warned about once by spawn and hub start;
+# agent-top screen / --once / widget / --json); a CLI older than 2.1.287 is warned about once by spawn and hub start;
 # `fable` is an alias like opus/sonnet/haiku, also for the effort rules and `hub reviewer`. Stand-in CLI: fake_claude.py.
 . "$(dirname "$0")/lib.sh"
 new_home; export HUB_STAGE=stage-a HUB_TAG=hub-test
@@ -52,7 +52,7 @@ rm -f $W/which.log
 check "$(cat $W/which.log)" "bundle" "a shim that prints node 20.11.0 before its version does not beat a newer bundled CLI"
 grep -q "2.1.274" $P/shim.out; check $? 0 "…and its real version is the one reported"
 FAKE_VERSION=2.1.274 FAKE_VERSION_BANNER="node 20.11.0" AGENT_HUB_STATE_DIR=$P/st-shimstart $B/hub start --stage web --session 11111111-1111-4111-8111-111111111111 --dry-run > $P/shim-start.out 2>&1
-grep -q '^ATTENTION: Claude Code 2.1.274 .* older than 2.1.285' $P/shim-start.out; check $? 0 "hub start: the same shim does not hide the old-CLI warning"
+grep -q '^ATTENTION: Claude Code 2.1.274 .* older than 2.1.287' $P/shim-start.out; check $? 0 "hub start: the same shim does not hide the old-CLI warning"
 
 # ---- `--version` is bounded and remembered: a hanging shim costs seconds, not 20 s; a spawn does not run it again
 mkdir -p $P/hang
@@ -69,7 +69,7 @@ printf '#!/bin/sh\n[ "$1" = "--version" ] && echo called >> %s\nexec python3 %s 
 cspawn(){ (unset CLAUDE_BIN; HOME=$FH PATH=$P/count:$PATH $B/agent spawn --role $1 --cwd $W --model haiku --brief $W/b.md) > $P/$1.out 2>&1; wait_dead $1; }
 cspawn c1; cspawn c2
 check "$(wc -l < $P/vcalls.log | tr -d ' ')" 1 "two spawns (two processes) run --version once: the answer is cached by path and mtime"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[sys.argv[2]]["version"]=="2.1.285", d' $R/.state/cli-version/cache.json $P/count/claude; check $? 0 "…in <hub home>/.state/cli-version/cache.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[sys.argv[2]]["version"]=="2.1.287", d' $R/.state/cli-version/cache.json $P/count/claude; check $? 0 "…in <hub home>/.state/cli-version/cache.json"
 sleep 1; touch $P/count/claude; cspawn c3
 check "$(wc -l < $P/vcalls.log | tr -d ' ')" 2 "a CLI whose file changed (an update) is asked again"
 mkdir -p $P/dry; printf '#!/bin/sh\n[ "$1" = "--version" ] && echo called >> %s\nexec python3 %s "$@"\n' $P/vcalls.log $T/fake_claude.py > $P/dry/claude; chmod +x $P/dry/claude
@@ -110,15 +110,19 @@ $B/agent-top --json --stage stage-a 2>/dev/null | python3 -c 'import json,sys; a
 # ---- an old CLI is warned about once, by spawn and by hub start; a current one is not
 FAKE_VERSION=2.1.274 AGENT_HUB_STATE_DIR=$P/st-oldcli $B/agent spawn --role oldcli --cwd $W --model haiku --brief $W/b.md > $P/oldcli.out 2>&1; check $? 0 "spawn with CLI 2.1.274 still starts the agent"
 wait_dead oldcli
-[ "$(grep -c 'older than 2.1.285' $P/oldcli.out)" = 1 ]; check $? 0 "…with one warning"
+[ "$(grep -c 'older than 2.1.287' $P/oldcli.out)" = 1 ]; check $? 0 "…with one warning"
 grep -q 'update Claude Code; with an older CLI the aliases' $P/oldcli.out; check $? 0 "…that says to update and why"
 AGENT_HUB_STATE_DIR=$P/st-newcli $B/agent spawn --role newcli --cwd $W --model haiku --brief $W/b.md > $P/newcli.out 2>&1; wait_dead newcli
-grep -q 'older than' $P/newcli.out; check $? 1 "negative: CLI 2.1.285 gets no warning"
+grep -q 'older than' $P/newcli.out; check $? 1 "negative: CLI 2.1.287 (the minimum) gets no warning"
+FAKE_VERSION=2.1.286 AGENT_HUB_STATE_DIR=$P/st-286 $B/agent spawn --role v286 --cwd $W --model haiku --brief $W/b.md > $P/v286.out 2>&1; wait_dead v286
+grep -q 'older than 2.1.287' $P/v286.out; check $? 0 "positive control: CLI 2.1.286, one below the minimum, is warned about"
+FAKE_VERSION=2.1.285 AGENT_HUB_STATE_DIR=$P/st-285 $B/agent spawn --role v285 --cwd $W --model haiku --brief $W/b.md > $P/v285.out 2>&1; wait_dead v285
+grep -q 'older than 2.1.287' $P/v285.out; check $? 0 "…and 2.1.285, the former minimum, now too"
 H1=11111111-1111-4111-8111-111111111111
 FAKE_VERSION=2.1.274 AGENT_HUB_STATE_DIR=$P/st-startold $B/hub start --stage web --session $H1 --dry-run > $P/start-old.out 2>&1; check $? 0 "hub start with CLI 2.1.274"
-[ "$(grep -c 'older than 2.1.285' $P/start-old.out)" = 1 ] && grep -q '^ATTENTION: Claude Code 2.1.274' $P/start-old.out; check $? 0 "…warns once"
+[ "$(grep -c 'older than 2.1.287' $P/start-old.out)" = 1 ] && grep -q '^ATTENTION: Claude Code 2.1.274' $P/start-old.out; check $? 0 "…warns once"
 AGENT_HUB_STATE_DIR=$P/st-startnew $B/hub start --stage web --session $H1 --dry-run > $P/start-new.out 2>&1
-grep -q 'older than' $P/start-new.out; check $? 1 "negative: hub start with CLI 2.1.285 does not warn"
+grep -q 'older than' $P/start-new.out; check $? 1 "negative: hub start with CLI 2.1.287 does not warn"
 
 # ---- fable is an alias like the others
 $B/agent spawn --role fab --cwd $W --model fable --brief $W/b.md > $P/fab.out 2>&1; check $? 0 "spawn --model fable is accepted"

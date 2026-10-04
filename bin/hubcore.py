@@ -35,9 +35,10 @@ JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
 MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
-# The first Claude Code CLI whose aliases resolve to the latest models (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1);
-# an older CLI resolves the same aliases to older models. The plugin pins no ids: the alias follows the CLI.
-MIN_CLI_VERSION = (2, 1, 285)
+# The oldest supported Claude Code CLI: it runs the agent-top mod (2.1.287) and resolves the aliases to the latest models
+# (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1, as 2.1.285 did); an older CLI is unsupported and resolves the same aliases
+# to older models. The plugin pins no ids: the alias follows the CLI.
+MIN_CLI_VERSION = (2, 1, 287)
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -725,9 +726,9 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
     """One line when the chosen CLI is older than MIN_CLI_VERSION, else None."""
     if cli is None or cli.version is None or cli.version >= MIN_CLI_VERSION:
         return None
-    return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}: update "
-            "Claude Code; with an older CLI the aliases (opus, sonnet, haiku, fable) resolve to older models "
-            "(pin ids with AGENT_HUB_MODEL_MAP if you must stay on it)")
+    return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}, the "
+            "oldest version agent-hub supports: update Claude Code; with an older CLI the aliases (opus, sonnet, haiku, "
+            "fable) resolve to older models and the agent-top mod does not run")
 
 
 def plugin_tools() -> list:

@@ -16,7 +16,7 @@ puts it into the `agent spawn` line it prints, `home` ignores it.
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
 takeover. It warns (ATTENTION lines, once) when the hub home is the legacy ~/.claude/agent-hub (`hub home`), when the
-Claude Code CLI is older than 2.1.285 — its model aliases then resolve to older models — and when a command of the same name as one of the plugin's tools (any executable of its
+Claude Code CLI is older than 2.1.287 (the minimum supported; its model aliases resolve to older models) and when a command of the same name as one of the plugin's tools (any executable of its
 bin/: hub, jlog, jwait, agent, ask, roles, lock, …) comes first on PATH, GitHub CLI `hub` from Homebrew being the
 usual one.
 

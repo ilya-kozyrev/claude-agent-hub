@@ -169,7 +169,7 @@ The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` pro
 
 ### agent-top inside Claude Code: a live pane
 
-Claude Code ≥ 2.1.287 (mods are on by default) runs the plugin's mod, `hooks/agent-top.tsx`, in the terminal and in the
+Claude Code (mods are on by default) runs the plugin's mod, `hooks/agent-top.tsx`, in the terminal and in the
 Desktop Code tab. It replaces the chat widget as the primary view there:
 
 - **`/agent-top [role] [--stage S] [--all]` opens a pane.** It never opens by itself. Views: **Agents** (`a`; a row or
@@ -187,7 +187,7 @@ Desktop Code tab. It replaces the chat widget as the primary view there:
 
 ## Install
 
-**Platform.** macOS and Linux, Python 3.10+ for Claude or 3.11+ for Codex (standard library only), the selected `claude` or `codex` CLI on `PATH`. Windows is not
+**Platform.** macOS and Linux, Python 3.10+ for Claude or 3.11+ for Codex (standard library only), the selected `claude` or `codex` CLI on `PATH`. Claude Code 2.1.287 or later: older versions are unsupported. Windows is not
 supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself does run natively on Windows
 ([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
 
@@ -244,7 +244,7 @@ use the separately configured hook-trust policy; hooks stay enabled. See [Codex 
   `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# agent-hub: dispatcher`
   among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
 - **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
-  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name; in Claude Code ≥ 2.1.287 the mod answers it
+  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name; in Claude Code the mod answers it
   with a live pane before the skill runs); four pinned-effort Claude worker subagents.
   Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
 - **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
@@ -349,9 +349,10 @@ A full working day, step by step: [docs/a-day-with-agent-hub.md](docs/a-day-with
   a short report or handoff file between them. The turn limit is a line in the brief; agent-hub does not enforce it.
 - **`agent-top` shows a dollar figure only when the CLI reports one** (the cost of finished runs); a live run shows `—`.
 - **Agents run on the latest models if Claude Code is current.** `--model opus|sonnet|haiku|fable` goes to the CLI,
-  which resolves the alias to the newest model of that family: Claude Code 2.1.285 and later gives `claude-sonnet-5-5`,
-  `claude-opus-5-5`, `claude-haiku-4-5-20251001` and `claude-fable-5-1`, an older CLI gives older models. Keep Claude Code
-  updated; `agent spawn` and `hub start` warn when the CLI is older than 2.1.285, and without `CLAUDE_BIN` they start the
+  which resolves the alias to the newest model of that family: Claude Code 2.1.287 (the minimum supported version) and
+  later gives `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-4-5-20251001` and `claude-fable-5-1`, an older CLI
+  gives older models. Keep Claude Code updated; `agent spawn` and `hub start` warn when the CLI is older than 2.1.287,
+  and without `CLAUDE_BIN` they start the
   newer of `claude` on `PATH` and the CLI bundled with Claude Desktop (`agent spawn` prints which). The plugin pins no
   ids, since a pin goes stale with the next release: the id each run reports is shown by `agent status`, the journal's
   `started headless agent` line, the roles note and `agent-top` (`sonnet-5-5`, not `sonnet`). The CLI's version is read
@@ -800,7 +801,7 @@ The Claude-specific facilities below apply when the selected host/engine is Clau
 - macOS and Linux only (`fcntl`, `setsid`, `ps`, `curses`). Windows is not supported and WSL is untested; Claude Code
   itself runs natively on Windows. Python 3.10+ for Claude, 3.11+ for Codex; standard library only.
 - The selected CLI must be on `PATH` (or set `CLAUDE_BIN` / `CODEX_BIN`); on macOS the CLI bundled with Claude Desktop is used when it
-  is newer. Model aliases follow the CLI: with Claude Code older than 2.1.285 they resolve to older models.
+  is newer. Model aliases follow the CLI; Claude Code older than 2.1.287 is unsupported (its aliases resolve to older models).
 - Headless agents run with `bypassPermissions` by default. Give every agent a brief that says what it must not
   touch, or set `AGENT_HUB_PERMISSION_MODE`.
 - The hub home must be writable without a prompt, so keep it out of `.claude`, which Claude Code protects (the legacy

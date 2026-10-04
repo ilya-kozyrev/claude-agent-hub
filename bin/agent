@@ -23,8 +23,8 @@ The agent gets HUB_TAG=<tag>, HUB_STAGE and this
 plugin's bin/ first on PATH and in $HUB_BIN (the brief footer names jlog as "$HUB_BIN/jlog", since a shell may put
 an old same-named tool ahead; every resume rebuilds the variable, so it follows a plugin update); it is recorded in `roles` (kind headless, pid).
 Model: an alias (opus, sonnet, haiku, fable) or a full id claude-…. An alias follows the CLI: a current Claude Code
-resolves it to the latest model of that family, an older one (before 2.1.285) to an older model, and spawn warns about
-it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
+resolves it to the latest model of that family; Claude Code 2.1.287 is the minimum supported version (an older one
+resolves it to an older model), and spawn warns about it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
 and agent-top. $AGENT_HUB_MODEL_MAP pins aliases to ids ("sonnet=claude-sonnet-x-y,opus=…") — an opt-in, since a pin
 goes stale with the next model release.
 Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effort flag.

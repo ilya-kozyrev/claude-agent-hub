@@ -14,7 +14,7 @@ live agents pane inside Claude Code.
 - Port lifecycle guards, apply_patch handoff checks, context-window budgets, monitoring and headless autopilot.
   Keep cumulative usage separate from context size and do not invent costs or model metadata.
 - Add lifecycle/permission/installation controls and Linux/macOS CI.
-- **agent-top inside Claude Code as a mod** (Claude Code ≥ 2.1.287; on older versions the settings hooks and the skill keep working).
+- **agent-top inside Claude Code as a mod** (needs Claude Code ≥ 2.1.287, the minimum supported version).
   `hooks/hooks.json` gains `"modules": ["./agent-top.tsx"]` beside the unchanged settings hooks. `/agent-top [role]
   [--stage S] [--all]` opens a read-only pane (Agents, agent card with a live feed, Journal, Summary with locks, owner
   questions and Claude/Codex plan limits), refreshed every 3 s while open; a status line `agents ● 2 ✓ 5 ✗ 1`; toasts
