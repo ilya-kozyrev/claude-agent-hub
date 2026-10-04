@@ -302,7 +302,7 @@ def git_repo_name(path) -> Optional[str]:
     resolves to its main repository. None outside any repository. The board hook names the repository of a command
     this way, so a lock taken with this name is matched there."""
     try:
-        p = Path(os.path.abspath(os.path.expanduser(str(path))))
+        p = Path(os.path.realpath(os.path.expanduser(str(path))))  # a symlinked checkout and its worktrees agree
     except (OSError, ValueError):
         return None
     for d in [p] + list(p.parents):
@@ -744,19 +744,40 @@ def plugin_tools() -> list:
 DISPATCHER_MARKER = "# agent-hub: dispatcher"
 
 
+def plugin_version(bin_dir) -> Optional[tuple]:
+    """(major, minor, patch) of the plugin that owns `bin_dir`: its manifest's version (.claude-plugin or
+    .codex-plugin), else a cache folder named <version>; None when neither says."""
+    root = Path(bin_dir).parent
+    for manifest in (root / ".claude-plugin" / "plugin.json", root / ".codex-plugin" / "plugin.json"):
+        try:
+            raw = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+        except (OSError, ValueError, AttributeError):
+            continue
+        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(raw or ""))
+        if m:
+            return tuple(int(x) for x in m.groups())
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", root.name)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
 def installed_plugin_bins() -> list:
-    """Real paths of the installed agent-hub plugin `bin/` directories: the Claude and Codex plugin caches
-    (`<config>/plugins/cache/*/agent-hub/*/bin`) and a marketplace folder that is the plugin itself
-    (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
-    $CODEX_HOME / ~/.codex."""
+    """Real paths of the installed agent-hub plugin `bin/` directories that are not older than this plugin: the Claude
+    and Codex plugin caches (`<config>/plugins/cache/*/agent-hub/*/bin`) and a marketplace folder that is the plugin
+    itself (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
+    $CODEX_HOME / ~/.codex. An older copy stays a shadow: it is the old tool on PATH the warning exists for (a version
+    nobody can read counts as current)."""
     home = Path.home()
+    current = plugin_version(BIN)
     out = []
     for config in (Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"),
                    Path(os.environ.get("CODEX_HOME") or home / ".codex")):
         plugins = config / "plugins"
         found = list(plugins.glob("cache/*/agent-hub/*/bin")) + [
             d for d in plugins.glob("marketplaces/*/bin") if (d / "hubcore.py").is_file()]
-        out += [os.path.realpath(d) for d in found]
+        for d in found:
+            version = plugin_version(d)
+            if current is None or version is None or version >= current:
+                out.append(os.path.realpath(d))
     return out
 
 
@@ -773,8 +794,8 @@ def is_dispatcher(path) -> bool:
 def shadowed_tools(path=None) -> list:
     """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file that is not
     the plugin's own (`command -v`: the first match on PATH). Ours: a file whose real path is in this bin/ (a symlink
-    into it counts) or in an installed agent-hub plugin's bin/ (installed_plugin_bins), or a personal dispatcher that
-    carries the DISPATCHER_MARKER line (is_dispatcher)."""
+    into it counts) or in an installed agent-hub plugin's bin/ that is not older than this one
+    (installed_plugin_bins), or a personal dispatcher that carries the DISPATCHER_MARKER line (is_dispatcher)."""
     path = os.environ.get("PATH", "") if path is None else path
     out = []
     installed = None

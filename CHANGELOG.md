@@ -10,9 +10,10 @@
 - **`lock take` guards the repository you run in.** Without `--repo`, `AGENT_HUB_DEFAULT_REPO` or `.agent-hub/config.json`
   the lock took the repository `*` and held up merges everywhere; now it takes the enclosing git repository's name (a
   worktree resolves to its main repository, the way the board hook reads it). `*` only with an explicit `--repo '*'` or
-  outside any git checkout. `hub takeover --take-main-merge` follows the same default.
+  outside any git checkout. The name is the checkout directory's; give `--repo` when the remote's differs. `hub takeover
+  --take-main-merge` follows the same default.
 - **The PATH shadow check knows a dispatcher.** A command that resolves into an installed agent-hub plugin's `bin/` (the
-  Claude or Codex plugin cache, a marketplace folder), or into a file carrying the line `# agent-hub: dispatcher` among its
+  Claude or Codex plugin cache, a marketplace folder; not an older copy than the running plugin), or into a file carrying the line `# agent-hub: dispatcher` among its
   first ten lines (symlinks followed), is no longer reported as a foreign tool; GitHub CLI's `hub` still is.
 - **Every `hub` subcommand takes `--stage`** (default `$HUB_STAGE`); `hub reviewer --stage S` puts it into the `agent spawn`
   line it prints.

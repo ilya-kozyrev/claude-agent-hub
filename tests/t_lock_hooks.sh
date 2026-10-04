@@ -104,6 +104,10 @@ deny "gh pr merge 3" $OTHER $BLOG; check $? 1 "negative: a merge in another repo
 grep -q '"kind": "main-merge", "repo": "\*"' $R/board.md; check $? 0 "…and records the wildcard"
 deny "gh pr merge 3" $OTHER $BLOG; check $? 0 "…which holds up every repository"
 rm -f $R/board.md
+ln -s $MAIN $G/shop-link
+(cd $G/shop-link && CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "via a symlink") > /dev/null; check $? 0 "take from a symlinked checkout"
+grep -q '"kind": "main-merge", "repo": "shop"' $R/board.md; check $? 0 "…a symlinked checkout names the same repository as its worktree"
+rm -f $R/board.md
 (cd $PLAIN && CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "no repository") > /dev/null; check $? 0 "take outside any git repository"
 grep -q '"kind": "main-merge", "repo": "\*"' $R/board.md; check $? 0 "…falls back to *"
 exit $fail

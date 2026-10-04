@@ -21,7 +21,8 @@ A kind already held by another session's active lock is refused unless --force (
 the previous holder is recorded in took_over_from). One lock per (kind, repo); --repo defaults to
 AGENT_HUB_DEFAULT_REPO (env, the current repository's .agent-hub/config.json or the hub home's), else the name of
 the git repository you run in (a worktree: its main repository, as the hook reads it); "*" (every repo) only with an
-explicit --repo '*' or outside any git checkout. `release` without --repo that finds nothing there releases this
+explicit --repo '*' or outside any git checkout. That name is the checkout directory's: a command that names another
+repository (`gh pr merge -R owner/other-name`) is matched by the name it gives, so give --repo when they differ. `release` without --repo that finds nothing there releases this
 session's only lock of the kind.
 Board: $AGENT_BOARD_FILE, else <hub home>/board.md (`hub home` shows the hub home).
 """

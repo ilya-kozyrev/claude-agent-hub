@@ -1079,11 +1079,14 @@ def main(argv: list) -> int:
                                                             "the source)")
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
     a = p.parse_args(argv)
-    a.stage = a.stage or os.environ.get("HUB_STAGE") or None
-    if a.cmd in ("start", "takeover", "handoff", "succeed") and not a.stage:
+    explicit, a.stage = a.stage, a.stage or os.environ.get("HUB_STAGE") or None
+    needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed")
+    if needs_stage and not a.stage:
         p.error(f"{a.cmd}: --stage is required (or set HUB_STAGE)")
     if a.stage and not hc.STAGE_RE.fullmatch(a.stage):  # check_stage does the rest for the commands that use the stage
-        p.error(f"bad stage name {a.stage!r} (lowercase letters, digits, '-' and '_')")
+        if explicit or needs_stage:
+            p.error(f"bad stage name {a.stage!r} (lowercase letters, digits, '-' and '_')")
+        a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home}[a.cmd](a)
 
