@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.1 — unreleased
+## 0.8.1 — 2026-10-05
 
 - **`jwait` prints its `waiting for …` line after the baseline read of the journal**, so the line means "armed": whatever is
   written after it is news. A script that starts the writer once it sees that line no longer loses a line to a slow start
