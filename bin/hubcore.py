@@ -869,19 +869,23 @@ class Failure(Exception):
 # ---------------------------------------------------------------- time
 
 def parse_deadline(raw: str, base: Optional[dt.datetime] = None) -> dt.datetime:
-    """'HH:MM' (hub time zone; a time already past today means tomorrow), ISO datetime (naive = hub zone)."""
+    """'HH:MM' or 'HH:MM:SS' (hub time zone; a time already past today means tomorrow), ISO datetime with or without
+    seconds (naive = hub zone)."""
     base = base or now()
     raw = raw.strip()
-    m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", raw)
     if m:
-        t = base.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        try:
+            t = base.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=int(m.group(3) or 0), microsecond=0)
+        except ValueError:
+            raise UsageError(f"cannot parse time {raw!r}: use HH:MM, HH:MM:SS or 2026-09-29T20:23:05") from None
         if t <= base:
             t += dt.timedelta(days=1)
         return t
     try:
         t = dt.datetime.fromisoformat(raw)
     except ValueError:
-        raise UsageError(f"cannot parse time {raw!r}: use HH:MM or 2026-09-29T20:23") from None
+        raise UsageError(f"cannot parse time {raw!r}: use HH:MM, HH:MM:SS or 2026-09-29T20:23:05") from None
     return (t.replace(tzinfo=TZ) if t.tzinfo is None else t).astimezone(TZ)
 
 

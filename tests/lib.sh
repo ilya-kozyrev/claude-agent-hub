@@ -19,6 +19,9 @@ today(){ date -u +%F; }
 # UTC clock arithmetic, portable (no GNU/BSD date flags): utc_iso -2 -> ISO minute two minutes ago
 utc_iso(){ python3 -c 'import datetime as d,sys; print((d.datetime.now(d.timezone.utc)+d.timedelta(minutes=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M"))' "$1"; }
 utc_hhmm(){ python3 -c 'import datetime as d,sys; print((d.datetime.now(d.timezone.utc)+d.timedelta(minutes=int(sys.argv[1]))).strftime("%H:%M"))' "$1"; }
+# a clock time n seconds from now (may be negative): utc_hms 4 -> 20:23:34; utc_iso_s 4 -> 2026-10-04T20:23:34
+utc_hms(){ python3 -c 'import datetime as d,sys; print((d.datetime.now(d.timezone.utc)+d.timedelta(seconds=int(sys.argv[1]))).strftime("%H:%M:%S"))' "$1"; }
+utc_iso_s(){ python3 -c 'import datetime as d,sys; print((d.datetime.now(d.timezone.utc)+d.timedelta(seconds=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%S"))' "$1"; }
 journal(){ echo "$AGENT_HUB_HOME/${1:-stage-a}/coordinator/work/journal-$(today).md"; }
 # in-place regex substitution on a file, portable (no sed -i flavours)
 subst(){ python3 - "$1" "$2" "$3" <<'PY'

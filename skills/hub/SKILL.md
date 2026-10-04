@@ -131,7 +131,8 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
   wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
   delivered too.
-- `jwait --until 20:23 --note "check the nightly import"` — an alarm; exit 3 and a line `ALARM …`.
+- `jwait --until 20:23 --note "check the nightly import"` — an alarm; exit 3 and a line `ALARM …`. `--until` also takes
+  `HH:MM:SS` and an ISO time with seconds (`2026-10-04T20:23:30`); `HH:MM` still means that minute's start.
 - Sources and filters combine in one command. What was read is remembered: lines that arrived while you worked come
   with the next `jwait`.
 
