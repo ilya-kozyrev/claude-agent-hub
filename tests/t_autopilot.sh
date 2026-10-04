@@ -51,7 +51,7 @@ succeed(){ $B/hub succeed --stage stage-a --handoff $H --cwd $W "$@"; }
 setup
 CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli HUB_TAG=hub-1 succeed --model opus --permission-mode default > $R/s1.out 2>&1; rc=$?
 check $rc 0 "succeed: exit 0"
-call --bg argv | grep -q -- "^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --add-dir $R --model opus --settings {"; check $? 0 "succeed: --bg command (name, title, the hub home granted — --cwd is inside it, not around it — model; no mode flag for default)"
+call --bg argv | grep -q -- "^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --add-dir $R --model opus --effort high --settings {"; check $? 0 "succeed: --bg command (name, title, the hub home granted — --cwd is inside it, not around it — model; no mode flag for default)"
 call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash("+os.path.realpath(sys.argv[2])+"/hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R" "$BR_BIN"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
 check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
 call --bg argv | grep -q -- "--worktree"; check $? 1 "succeed: outside git no --worktree"
@@ -124,11 +124,11 @@ mkdir -p $HOME/.claude/projects/p
 echo '{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5}}}' > $HOME/.claude/projects/p/$HUB1.jsonl
 echo '{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":5}}}' >> $HOME/.claude/projects/p/$HUB1.jsonl
 CLAUDE_CODE_SESSION_ID=$HUB1 succeed > /dev/null 2>&1
-call --bg argv | grep -q -- "--model claude-fable-5-1 --settings"; check $? 0 "model: inherited from the hub's transcript (sidechain skipped)"
+call --bg argv | grep -q -- "--model claude-fable-5-1 --effort high --settings"; check $? 0 "model: inherited from the hub's transcript (sidechain skipped)"
 setup
 echo '{"AGENT_HUB_SUCCESSOR_MODEL": "sonnet", "AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "acceptEdits"}' > $R/config.json
 CLAUDE_CODE_SESSION_ID=$HUB1 succeed > /dev/null 2>&1
-call --bg argv | grep -q -- "--model sonnet --permission-mode acceptEdits --settings"; check $? 0 "model and mode: hub home settings win over inheritance"
+call --bg argv | grep -q -- "--model sonnet --effort high --permission-mode acceptEdits --settings"; check $? 0 "model and mode: hub home settings win over inheritance"
 rm $R/config.json
 setup
 mkdir -p $W/.agent-hub; echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "bypassPermissions"}' > $W/.agent-hub/config.json; mkdir -p $W/.git
@@ -208,6 +208,35 @@ check "$(pending kind):$(pending bg_id):$(chain)" "headless:bg-1234abcd:1" "fall
 $B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check $? 1 "fallback after the headless one: nothing further"
 J | grep -q "the headless successor hub-2 did not take over either — waiting for the owner"; check $? 0 "…journaled"
 
+# ================================================================== the successor's effort
+# --effort beats AGENT_HUB_SUCCESSOR_EFFORT (env or the hub home's config.json), which beats the default (high, above)
+meta_effort(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("effort"))' $R/stage-a/agents/hub-2/meta.json 2>/dev/null || echo none; }
+setup; AGENT_HUB_SUCCESSOR_EFFORT=low succeed --model opus --effort max > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort max --settings"; check "$? $(pending effort)" "0 max" "effort: --effort beats the environment"
+setup; AGENT_HUB_SUCCESSOR_EFFORT=xhigh succeed --model opus > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort xhigh --settings"; check "$? $(pending effort)" "0 xhigh" "effort: the environment beats the default"
+setup; echo '{"AGENT_HUB_SUCCESSOR_EFFORT": "medium"}' > $R/config.json; succeed --model opus > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort medium --settings"; check $? 0 "effort: the hub home's config.json sets it"
+setup; succeed --model haiku > /dev/null 2>&1
+call --bg argv | grep -q -- "--effort"; check $? 1 "effort: Haiku gets no --effort"
+setup; succeed --model opus --effort bogus > $R/bad.out 2>&1; check "$?:$(call --bg count)" "2:none" "effort: an unknown --effort is refused, nothing started"
+setup; AGENT_HUB_SUCCESSOR_EFFORT=bogus succeed --model opus > $R/bad.out 2>&1; check "$?:$(grep -c "AGENT_HUB_SUCCESSOR_EFFORT 'bogus'" $R/bad.out):$(call --bg count)" "2:1:none" "effort: an unknown AGENT_HUB_SUCCESSOR_EFFORT is refused, nothing started"
+setup; succeed --model opus --effort xhigh --dry-run > $R/dry.out 2>&1; grep -qF -- "--model opus --effort xhigh --settings" $R/dry.out; check "$?:$(call --bg count)" "0:none" "effort: the dry run shows it"
+setup; AGENT_HUB_SUCCESSOR_EFFORT=max succeed --model opus --headless > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "max:max" "effort: the headless hub (agent spawn) gets it"
+setup; succeed --model opus --effort xhigh > /dev/null 2>&1
+$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "xhigh:xhigh" "effort: --fallback's headless hub keeps the effort of the background one"
+
+# --fallback of a record without an effort (state from before the upgrade) with a bad setting: refused before the
+# reservation, so the retry is not blocked
+setup; succeed --model opus > /dev/null 2>&1
+python3 - $R/stage-a/auto-handoff.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["pending"].pop("effort"); json.dump(d, open(sys.argv[1], "w"))
+PY
+AGENT_HUB_SUCCESSOR_EFFORT=bogus $B/hub succeed --stage stage-a --fallback > $R/fbb.out 2>&1
+check "$?:$(grep -c "AGENT_HUB_SUCCESSOR_EFFORT 'bogus'" $R/fbb.out):$(pending kind):$(call stop count)" "2:1:bg:none" "effort: --fallback with a bad setting is refused before the reservation"
+$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check "$?:$(pending kind):$(pending effort)" "0:headless:high" "effort: …and the retry is not blocked (an old record falls back to the default)"
+
 # ================================================================== review round 2
 setst(){ python3 - $R/stage-a/auto-handoff.json "$@" <<'PY'
 import json, sys, datetime as d
@@ -249,6 +278,11 @@ setup; setst 1 bg 700 id=bg-from-list
 succeed --model opus --again > $R/r2b.out 2>&1; check "$?:$(grep -c 'is still running' $R/r2b.out):$(call --bg count)" "1:1:none" "r2(2): --again refuses while the bg successor still runs"
 setup; setst 1 bg 700 id=bg-gone
 FAKE_AGENTS=stale succeed --model opus --again > /dev/null 2>&1; check "$?:$(call --bg count)" "0:1" "r2(2): --again with the bg session gone starts a new one"
+# --again reuses the previous attempt's effort unless a new --effort is given
+setup; setst 1 headless 700 role=hub-2 effort=max
+succeed --model opus --again > /dev/null 2>&1; call --bg argv | grep -q -- "--model opus --effort max --settings"; check "$? $(pending effort)" "0 max" "effort: --again reuses the recorded effort"
+setup; setst 1 headless 700 role=hub-2 effort=max
+succeed --model opus --again --effort low > /dev/null 2>&1; call --bg argv | grep -q -- "--model opus --effort low --settings"; check "$? $(pending effort)" "0 low" "effort: --again with --effort uses the new one"
 # (6) `claude --bg` hangs past its timeout: only a session started since this start counts; a late one is stopped
 bgrun(){ python3 - "$B" "$H" "$W" <<'PY'
 import sys
@@ -360,12 +394,14 @@ usage 320000
 AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:handoff" $R/h0.out && ! grep -q Autopilot $R/h0.out; check $? 0 "hook, autopilot off: the warning stays as today"
 export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
 cbh UserPromptSubmit > $R/h1.out
-grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, mode, cwd)"
+grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --effort high --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, effort, mode, cwd)"
 grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF "$BR_BIN/hub succeed --stage stage-a --fallback" $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
 SID=$HUB2 cbh PostToolUse Bash > $R/h2.out; grep -q "agent-hub:handoff" $R/h2.out && ! grep -q Autopilot $R/h2.out; check $? 0 "hook, warn: a session that is not the hub gets today's warning"
 echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "default"}' > $R/config.json; usage 360000
 cbh PostToolUse Bash | grep -qF -- '--permission-mode default --cwd'; check $? 0 "hook, warn: the configured mode wins over the session's"
 rm $R/config.json
+usage 420000
+AGENT_HUB_SUCCESSOR_EFFORT=max cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort max --permission-mode'; check $? 0 "hook, warn: the printed command carries AGENT_HUB_SUCCESSOR_EFFORT"
 cbh PreToolUse Bash '{"command":"ls"}' > $R/h3.out; check "$(wc -c < $R/h3.out | tr -d ' ')" 0 "hook: below block, Bash passes"
 usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""

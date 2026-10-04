@@ -13,6 +13,8 @@ sessions or choose their permission mode):
   AGENT_HUB_AUTO_HANDOFF_CHAIN         automatic handoffs in a row without the owner (default 10; 0 = never)
   AGENT_HUB_SUCCESSOR_ENGINE           inherit the selected engine, or claude | codex
   AGENT_HUB_SUCCESSOR_MODEL            the successor's model (default: the hub's own, from its transcript)
+  AGENT_HUB_SUCCESSOR_EFFORT           the Claude successor's effort: low | medium | high | xhigh | max (default high; the
+                                       hub's own effort is not readable from its session, and a CLI default is too low)
   AGENT_HUB_SUCCESSOR_PERMISSION_MODE  inherit (default: the hub's own mode) or a `claude --permission-mode` value
   AGENT_HUB_SUCCESSOR_TIMEOUT          seconds to wait for the successor's takeover line (default 600)
 Chain state: <hub home>/<stage>/auto-handoff.json — `chain` (automatic handoffs since the owner last spoke) and
@@ -62,6 +64,7 @@ BG_TIMEOUT_S = 60  # one `claude --bg` call
 # this belongs to a run that died.
 START_BUDGET_S = 240
 IN_PROGRESS = ("starting", "falling-back")
+DEFAULT_EFFORT = "high"  # the Claude successor's effort when neither --effort nor AGENT_HUB_SUCCESSOR_EFFORT says
 
 
 def tool(name: str) -> str:
@@ -88,6 +91,14 @@ def takeover_timeout() -> int:
 
 def configured_model() -> Optional[str]:
     return (hc.setting("AGENT_HUB_SUCCESSOR_MODEL") or "").strip() or None
+
+
+def configured_effort() -> Optional[str]:
+    """The Claude successor's effort from the setting; None = unset."""
+    raw = (hc.setting("AGENT_HUB_SUCCESSOR_EFFORT") or "").strip()
+    if raw and raw not in hc.EFFORTS:
+        raise hc.UsageError(f"AGENT_HUB_SUCCESSOR_EFFORT {raw!r}: one of {', '.join(hc.EFFORTS)}")
+    return raw or None
 
 
 def configured_mode() -> Optional[str]:
@@ -291,6 +302,13 @@ def codex_policy(given: Optional[str], context: dict, cwd: Path) -> tuple:
     return sandbox, "never"
 
 
+def successor_effort(given: Optional[str]) -> str:
+    """--effort, else AGENT_HUB_SUCCESSOR_EFFORT, else high: the `claude --bg` default would start a hub at medium."""
+    if given is not None and given not in hc.EFFORTS:
+        raise hc.UsageError(f"--effort {given!r}: one of {', '.join(hc.EFFORTS)}")
+    return given or configured_effort() or DEFAULT_EFFORT
+
+
 def successor_mode(given: Optional[str], hub_mode: Optional[str] = None) -> str:
     return given or configured_mode() or hub_mode or "default"
 
@@ -311,12 +329,15 @@ def fallback_mode(model: str) -> str:
 
 # ---------------------------------------------------------------- instructions for the hub (the hook)
 
-def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], engine=None) -> str:
+def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], engine=None,
+                    effort: Optional[str] = None) -> str:
     parts = [tool("hub"), "succeed", "--stage", stage, "--handoff", "<the draft>"]
     if engine:
         parts += ["--engine", engine]
     if model:
         parts += ["--model", shlex.quote(model)]
+    if effort:
+        parts += ["--effort", shlex.quote(effort)]
     if mode:
         parts += ["--permission-mode", shlex.quote(mode)]
     if cwd:
@@ -334,7 +355,9 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
         context = codex_context()
         model = codex_model(None, context, Path(cwd or os.getcwd()))
         # Hook inputs may carry Claude-shaped permission names; inherit the exact Codex rollout at execution.
-        command = succeed_command(stage, model, configured_mode(), cwd, "codex")
+        effort = context.get("effort") or os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
+        command = succeed_command(stage, model, configured_mode(), cwd, "codex",
+                                  effort if effort in engines.CODEX_EFFORTS else None)
         return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` "
                 f"and fill its TODOs; (2) `{command}` starts a detached Codex successor and prints one `jwait`; "
                 "(3) run/continue that waiter through the Codex shell harness, with individual waits bounded. "
@@ -344,7 +367,7 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
                 f"At {block_k} only handoff/succeed, jlog/jwait and the HANDOFF file pass.")
     return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` and fill "
             "its TODOs; "
-            f"(2) `{succeed_command(stage, model, mode, cwd)}` (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
+            f"(2) `{succeed_command(stage, model, mode, cwd, effort=successor_effort(None))}` (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
             "session, else a headless hub) and prints a `jwait` command; (3) run that `jwait` with Bash "
             "run_in_background: true. When it delivers the successor's start line, tell the owner one line — the "
             "successor's name and link from `hub succeed` — and stop: no more tool calls, release no locks (the "
@@ -375,7 +398,7 @@ class Start(Exception):
 
 class Successor:
     def __init__(self, stage: str, n: int, handoff: Path, model: str, mode: str, cwd: Path, k: int, limit: int,
-                 succ: Optional[int] = None):
+                 succ: Optional[int] = None, effort: Optional[str] = None):
         # The successor starts where a Desktop session does: in the repository's main checkout (the root), in a new
         # worktree of its own — never in the hub's directory, which may be a Desktop session's worktree that goes
         # when that session is archived. Outside git: in `cwd` itself, no worktree.
@@ -383,6 +406,7 @@ class Successor:
         self.stage, self.n, self.handoff, self.model, self.mode = stage, n, handoff, model, mode
         self.cwd = self.root or cwd
         self.k, self.limit = k, limit
+        self.effort = successor_effort(effort)
         self.succ = succ or n + 1
         self.worktree: Optional[Path] = None  # the successor's worktree once started
         self.tag = f"hub-{n}"
@@ -448,6 +472,8 @@ class Successor:
             argv += ["--worktree", self.wt_name]
         argv += hc.add_dir_args(cwd or self.cwd)
         argv += ["--model", self.cli_model]
+        if "haiku" not in self.cli_model.lower():  # Haiku has no effort setting (`agent spawn` skips it too)
+            argv += ["--effort", self.effort]
         if flag:
             argv += ["--permission-mode", flag]
         if flag != "bypassPermissions":
@@ -572,7 +598,8 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         role = f"hub-{self.succ}"
         brief = self.brief(why)
         argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--stage", self.stage, "--role", role, "--tag", role,
-                "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title]
+                "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title,
+                "--effort", self.effort]
         if self.root:
             # agent spawn's own worktree: <root>/.worktrees/<branch>, a new branch from the root's HEAD
             branch = free_worktree_name(self.root, self.rc_name)
@@ -866,7 +893,7 @@ def _release(stage: str, succ: int, k: int) -> None:
 
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
             headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
-            succ: Optional[int] = None, notes: tuple = ()) -> int:
+            succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
     retry = (load_state(stage).get("pending") or {}) if again else {}
@@ -880,7 +907,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             context = dict(context, model=retry.get("model"), effort=retry.get("effort"),
                            sandbox_policy=retry.get("sandbox_policy") or {"type": retry.get("mode")},
                            approval_policy=retry.get("approval_policy", "never"))
-        effort = context.get("effort")
+        effort = effort_arg or context.get("effort")
         if effort is None and retry.get("engine") != "codex":
             effort = os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
         if effort is not None and effort not in engines.CODEX_EFFORTS:
@@ -894,6 +921,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             sandbox_policy = {"type": mode}
         sandbox_policy = engines.sandbox_policy(sandbox_policy)
     else:
+        # --again without a new --effort: the previous attempt's effort, not the default
+        effort = successor_effort(effort_arg or (retry.get("effort") if retry.get("engine") != "codex" else None))
         model = successor_model(model)
         if not model:
             raise hc.UsageError("no model for the successor: pass --model (the hub's transcript was not found and "
@@ -932,7 +961,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         return 3
     try:
         s = (CodexSuccessor(stage, n, handoff, model, mode, cwd, k, limit, approval, sandbox_policy, effort, succ) if engine == "codex"
-             else Successor(stage, n, handoff, model, mode, cwd, k, limit, succ))
+             else Successor(stage, n, handoff, model, mode, cwd, k, limit, succ, effort))
         s.notes.extend(notes)
         if engine == "codex" and context.get("approval_policy") not in (None, "never"):
             s.notes.append(f"inherited sandbox {mode}; approval policy {context['approval_policy']} becomes never "
@@ -959,7 +988,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         try:
             got = s.start_bg()
             pend = {"n": succ, "kind": "bg", "at": started, "handoff": str(handoff), "model": model, "k": k,
-                    "link": "", **got}
+                    "effort": effort, "link": "", **got}
             _record(stage, succ, pend)  # the id first: a crash while the link is read leaves it findable
             pend["link"] = s.wait_link(got["id"])
             _record(stage, succ, pend)
@@ -1031,12 +1060,14 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
                   f"`{tool('hub')} succeed --stage {stage} --handoff {shlex.quote(str(pend.get('handoff', '<the handoff>')))}`")
             return 1
         bg = dict(pend, kind="bg") if pend.get("kind") == "falling-back" else pend  # a stale run of --fallback
+        effort = successor_effort(bg.get("effort"))  # a bad setting is refused before the reservation is saved
         data["pending"] = dict(bg, kind="falling-back", at=now, bg_at=bg.get("bg_at") or bg.get("at"))
         save_state(stage, data)
     timeout_s = takeover_timeout()
     try:
         s = Successor(stage, n, Path(bg["handoff"]), bg["model"], bg.get("mode") or "default",
-                      Path(bg.get("cwd") or os.getcwd()), bg.get("k") or data["chain"], chain_limit(), succ)
+                      Path(bg.get("cwd") or os.getcwd()), bg.get("k") or data["chain"], chain_limit(), succ,
+                      effort)
     except hc.Failure:
         _record(stage, succ, bg)
         raise
@@ -1059,7 +1090,7 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
                                     f"claude logs tail: {logs or '—'}; falling back to a headless hub")
     got = headless_or_owner(stage, s, why)
     new = {"n": s.succ, "kind": "headless", "at": hc.now().isoformat(timespec="seconds"), "handoff": bg["handoff"],
-           "model": bg["model"], "k": s.k, "why": why, "cwd": str(s.cwd), "bg_id": bg["id"], **got}
+           "model": bg["model"], "k": s.k, "why": why, "cwd": str(s.cwd), "bg_id": bg["id"], "effort": s.effort, **got}
     _record(stage, s.succ, new)
     report(stage, s, new, timeout_s)
     return 0

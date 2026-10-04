@@ -109,6 +109,23 @@ finally: stop()
 # Restore discovery for dry-run controls.
 ap.codex_rollouts.INDEX.checked=None
 
+# `hub succeed --effort` overrides the inherited Codex effort; an unknown one is refused before anything starts.
+home,handoff,cwd=setup('effort-override')
+try:
+    rc,out=succeed(handoff,cwd,effort_arg='medium')
+    meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
+    assert rc==0 and meta['effort']=='medium' and state(home)['pending']['effort']=='medium'
+    assert 'model_reasoning_effort="medium"' in calls()[-1]['argv']
+    print('PASS Codex --effort overrides the inherited effort')
+finally: stop()
+home,handoff,cwd=setup('effort-bad')
+before=len(calls())
+try: succeed(handoff,cwd,effort_arg='turbo')
+except hc.UsageError: pass
+else: raise AssertionError('unknown Codex --effort accepted')
+assert len(calls())==before and not (home/'stage-a/auto-handoff.json').exists()
+print('PASS Codex unknown --effort refused before reservation')
+
 home,handoff,cwd=setup('dry')
 rc,out=succeed(handoff,cwd,dry_run=True)
 assert rc==0 and 'exec --json' in out and 'sandbox_mode=' in out and 'fixture-codex-model' in out

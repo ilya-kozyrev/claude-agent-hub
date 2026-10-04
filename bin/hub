@@ -5,7 +5,7 @@
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
                [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
   hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
-  hub succeed  --stage stage-a --handoff PATH [--model M] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
+  hub succeed  --stage stage-a --handoff PATH [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub home     [--cwd DIR] [--json]
@@ -65,7 +65,8 @@ its TODO section.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
-(`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode and the
+(`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode, an explicit
+effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else high) and the
 prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
 When the background session cannot start (CLI not logged in, the main checkout untrusted) it starts a headless hub
@@ -969,7 +970,7 @@ def cmd_succeed(a) -> int:
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
-                             engine=a.engine, succ=succ, notes=tuple(notes))
+                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort)
 
 
 # ---------------------------------------------------------------- reviewer
@@ -1051,6 +1052,8 @@ def main(argv: list) -> int:
     sc = sub.add_parser("succeed", parents=[stage_opt], help="start the successor of an automatic handoff (autopilot)")
     sc.add_argument("--handoff", help="the filled handoff draft")
     sc.add_argument("--model", help="the successor's model (default: AGENT_HUB_SUCCESSOR_MODEL, else the hub's own)")
+    sc.add_argument("--effort", choices=tuple(dict.fromkeys(hc.EFFORTS + engines.CODEX_EFFORTS)),
+                    help="the successor's effort (default: AGENT_HUB_SUCCESSOR_EFFORT, else high; Codex: the hub's own)")
     sc.add_argument("--permission-mode", help="the successor's mode (default: AGENT_HUB_SUCCESSOR_PERMISSION_MODE, "
                                               "else default)")
     sc.add_argument("--cwd", help="the successor's working directory (default: here)")
