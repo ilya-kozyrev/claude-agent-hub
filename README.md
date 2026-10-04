@@ -172,10 +172,14 @@ The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` pro
 Claude Code (mods are on by default) runs the plugin's mod, `hooks/agent-top.tsx`, in the terminal and in the
 Desktop Code tab. It replaces the chat widget as the primary view there:
 
-- **`/agent-top [role] [--stage S] [--all]` opens a pane.** It never opens by itself. Views: **Agents** (`a`; a row or
-  its digit key `1`–`9` opens the agent card), the **agent card** (header and a live feed of the last 30 events; `b`
-  goes back), **Journal** (`j`) and **Summary** (`s`: locks, owner questions, plan limits including Codex). It refreshes
-  every 3 s while open; a role opens that agent's card. Claude and Codex agents are listed alike, as in the console.
+- **`/agent-top [role] [--stage S] [--all]` opens a pane.** It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
+  the `❯` cursor, Enter or the row's digit `1`–`9` opens the agent card), the **agent card** (state, model, turns, a
+  context bar against the model's window, cost, result; a live feed of the last 30 events; `b` goes back), **Journal**
+  (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks). Each agent is two lines with a
+  coloured state badge (LIVE, QUIET, DONE, FAIL, DIED); a long list is a window around the cursor. Docked beside a
+  fullscreen transcript the pane is framed and the card takes its state's colour; above the prompt and when narrow it
+  drops the frames. It refreshes every 3 s while open; a role opens that agent's card; Esc closes it. Claude and Codex
+  agents are listed alike, as in the console.
 - **A status line and toasts.** The status line reads `agents ● 2 ✓ 5 ✗ 1` (nothing when there are no agents). A toast
   appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
   session started is never announced. With the pane closed the mod looks every 15 s.

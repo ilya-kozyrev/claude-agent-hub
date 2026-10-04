@@ -62,6 +62,10 @@ chk("json: alive1 action is the pending Bash call", a["action"] and a["action"][
 chk("json: alive1 last text", a["last_text"] == "Running the tests")
 chk("json: alive1 turns 4 own + 1 sub-agent (half-written last line ignored)", a["turns"] == 4 and a["sub_turns"] == 1)
 chk("json: alive1 context size", a["ctx_tokens"] == 42003)
+chk("json: ctx_window by model id (opus-5 -> 1M; no result yet)", a["ctx_window"] == 1000000)
+chk("json: ctx_window reported by the result's modelUsage wins over the table (own model, not the sub-agent's)", g("done1")["ctx_window"] == 777000)
+chk("json: negative — a reported window differs from the table's", g("done1")["ctx_window"] != a["ctx_window"])
+chk("json: every agent row has a positive ctx_window", all(isinstance(x.get("ctx_window"), int) and x["ctx_window"] > 0 for x in d["agents"]))
 chk("json: alive1 unread = only the message no tool call has read", [u["msg"] for u in a["unread"]] == ["new message from the hub"])
 chk("json: finished agents have no action and no unread", g("done1")["action"] is None and g("done1")["unread"] == [])
 chk("json: done1 cost and last text", g("done1")["cost_usd"] == 1.25 and g("done1")["last_text"] == "finished: task 1")
@@ -79,6 +83,31 @@ chk("json: role state joined from the agent", [r["state"] for r in d["roles"]["s
 chk("json: role journal age from the journal by tag", [r["journal_age_s"] is not None for r in d["roles"]["stage-a"] if r["role"] == "alive1"] == [True])
 chk("json: plan limits from rate_limit_event", d["limits"]["info"]["unifiedWindows"]["five_hour"]["utilization"] == 0.07)
 chk("json: journal tail of both stages", any("ran the tests" in j["text"] for j in d["journal_tail"]) and any(j["stage"] == "stage-b" for j in d["journal_tail"]))
+sys.exit(fails)
+PY
+[ $? -eq 0 ] || fail=1
+
+# ---- ctx_window: the model's context window (reported, else by model id, else 200k; never below the context used)
+python3 - "$B/agent-top" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("agent_top_bin", sys.argv[1])
+spec = importlib.util.spec_from_loader("agent_top_bin", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+fails = 0
+def chk(name, cond):
+    global fails
+    print(("PASS " if cond else "FAIL ") + name)
+    fails += 0 if cond else 1
+chk("ctx_window: reported wins", m.ctx_window("claude-haiku-4-5", 123456, 1000) == 123456)
+chk("ctx_window: table opus-5 / sonnet-5 / fable-5 -> 1M", all(m.ctx_window(x, None, 0) == 1000000 for x in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1")))
+chk("ctx_window: table haiku-4 -> 200k", m.ctx_window("claude-haiku-4-5-20251001", None, 0) == 200000)
+chk("ctx_window: [1m] suffix -> 1M", m.ctx_window("some-model[1m]", None, 0) == 1000000)
+chk("ctx_window: unknown model -> 200k default", m.ctx_window("gpt-6.1-sol", None, 5) == 200000 and m.ctx_window(None, None, None) == 200000)
+chk("ctx_window: a context above the guess means a 1M window", m.ctx_window("mystery", None, 300000) == 1000000)
+chk("model_usage_window: own model's entry, not the sub-agent's", m.model_usage_window({"claude-haiku-4-5": {"contextWindow": 200000}, "claude-opus-5-5": {"contextWindow": 1000000}}, "claude-opus-5-5") == 1000000)
+chk("model_usage_window: [1m] model id matches its base entry", m.model_usage_window({"claude-opus-5-5": {"contextWindow": 1000000}}, "claude-opus-5-5[1m]") == 1000000)
+chk("model_usage_window: negative — no entry of the model -> 0", m.model_usage_window({"claude-haiku-4-5": {"contextWindow": 200000}}, "claude-opus-5-5") == 0)
+chk("model_usage_window: negative — junk -> 0", m.model_usage_window("x", "m") == 0 and m.model_usage_window({"m": {"contextWindow": "big"}}, "m") == 0)
 sys.exit(fails)
 PY
 [ $? -eq 0 ] || fail=1

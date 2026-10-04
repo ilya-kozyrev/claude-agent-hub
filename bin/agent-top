@@ -208,6 +208,35 @@ def short_model(m: str, effort) -> str:
     return m + ("/" + eff if eff else "")
 
 
+# The context window by model id, where the log has not reported one (Claude reports it in the result event's
+# modelUsage, Codex in its rollout). Values as Claude Code 2.1.289 reported them on this machine, 2026-10.
+CTX_WINDOWS = (("opus-5", 1_000_000), ("sonnet-5", 1_000_000), ("fable-5", 1_000_000), ("haiku-4", 200_000))
+CTX_DEFAULT = 200_000
+
+
+def model_usage_window(usage, model) -> int:
+    """contextWindow of the run's own model in a result event's modelUsage (sub-agents' models are listed beside it)."""
+    if not isinstance(usage, dict) or not isinstance(model, str) or not model:
+        return 0
+    base = re.sub(r"\[.*\]$", "", model)
+    for name, rec in usage.items():
+        if isinstance(rec, dict) and isinstance(rec.get("contextWindow"), int) and rec["contextWindow"] > 0 \
+                and (name == model or name == base or name.startswith(base + "-")):
+            return rec["contextWindow"]
+    return 0
+
+
+def ctx_window(model_id, reported, ctx) -> int:
+    """The model's context window: the one the log reported, else by model id ("[1m]" means 1M), else 200k; never
+    below the context already used (a 200k guess under a 300k context is a 1M model)."""
+    if isinstance(reported, int) and reported > 0:
+        win = reported
+    else:
+        m = (model_id or "").lower()
+        win = 1_000_000 if "[1m]" in m else next((w for k, w in CTX_WINDOWS if k in m), CTX_DEFAULT)
+    return 1_000_000 if isinstance(ctx, int) and ctx > win else win
+
+
 def model_label(a: dict) -> str:
     """model/effort as shown: the id the run reported ("sonnet-5-5"), else the model that was asked for."""
     return short_model(a.get("model_id") or a["model"], a["effort"])
@@ -280,6 +309,7 @@ class LogState:
         self.codex_turns = self.codex_run_turns = 0
         self.usage_tokens = self.ctx_source = self.context_window = self.codex_rate_limits = None
         self.usage_scope = None
+        self.model_usage = None           # the last result's modelUsage: per model, its contextWindow among others
         self.rollout = codex_rollouts.Normalizer()
 
     @property
@@ -297,6 +327,9 @@ class LogState:
     @property
     def sub_turns(self) -> int:
         return len(self.sub_ids)
+
+    def ctx_window(self, model) -> int:
+        return ctx_window(model, self.context_window or model_usage_window(self.model_usage, model), self.ctx)
 
     def update(self) -> None:
         try:
@@ -399,6 +432,8 @@ class LogState:
                 cost = ev.get("total_cost_usd")
                 if isinstance(cost, (int, float)):
                     self.cost_sum = (self.cost_sum or 0.0) + cost
+                if isinstance(ev.get("modelUsage"), dict):
+                    self.model_usage = ev["modelUsage"]
                 if _DONE_RE.search(str(ev.get("result") or "")):
                     self.done_at = pos
                 self.pending.clear()
@@ -719,6 +754,7 @@ class Collector:
             "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
             "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
             "model_id": meta.get("resolved_model") or ls.model,
+            "ctx_window": ls.ctx_window(meta.get("resolved_model") or ls.model or meta.get("model")),
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": meta.get("pid"), "session_id": meta.get("session_id"),
@@ -785,6 +821,7 @@ class Collector:
             "stage": stage, "role": f"{prole}/{aid[:7]}", "dir_name": f"{prole}/{aid}",
             "tag": prec.get("tag") or prole, "title": desc or str(meta.get("agentType") or "sub-agent"),
             "model": str(meta.get("model") or ""), "model_id": ls.model, "effort": ls.effort,
+            "ctx_window": ls.ctx_window(ls.model or meta.get("model")),
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": None, "session_id": aid, "retired": False, "archived": False,

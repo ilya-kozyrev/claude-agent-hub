@@ -25,6 +25,8 @@ export type Agent = {
   turns_approx: boolean
   sub_turns: number
   ctx_tokens: number | null
+  /** The model's context window (`agent-top --json` derives it: reported, else by model id, else 200k); null from an older CLI. */
+  ctx_window: number | null
   cost_usd: number | null
   pid: number | null
   cwd: string | null
@@ -106,6 +108,7 @@ export function toAgent(raw: unknown): Agent | null {
     turns_approx: raw.turns_approx === true,
     sub_turns: numOr(raw.sub_turns, 0),
     ctx_tokens: numOrNull(raw.ctx_tokens),
+    ctx_window: numOrNull(raw.ctx_window) !== null && (raw.ctx_window as number) > 0 ? (raw.ctx_window as number) : null,
     cost_usd: numOrNull(raw.cost_usd),
     pid: numOrNull(raw.pid),
     cwd: typeof raw.cwd === 'string' ? raw.cwd : null,
@@ -209,10 +212,11 @@ export function parseArgs(text: string): CommandArgs {
   const words = text.split(/\s+/).filter(Boolean)
   const out: CommandArgs = { role: null, stages: [], isAll: false }
   for (let i = 0; i < words.length; i += 1) {
-    const w = words[i]
+    const w = words[i] ?? ''
     if (w === '--all') out.isAll = true
     else if (w === '--stage') {
-      if (i + 1 < words.length) out.stages.push(words[(i += 1)])
+      const next = words[(i += 1)]
+      if (next !== undefined) out.stages.push(next)
     } else if (w.startsWith('--stage=')) {
       if (w.length > 8) out.stages.push(w.slice(8))
     } else if (!w.startsWith('-') && out.role === null) out.role = w
@@ -520,4 +524,93 @@ export function findByRole(agents: readonly Agent[], name: string, stages: reado
   const cands = agents.filter(a => (a.role === name || a.dir_name === name) && (stages.length === 0 || stages.includes(a.stage)))
   cands.sort((x, y) => rank(x) - rank(y) || (x.age_s ?? Infinity) - (y.age_s ?? Infinity))
   return cands[0] ?? null
+}
+
+// ---------------------------------------------------------------- drawing helpers (the view: hooks/agent-top-view.tsx)
+
+/** A state's badge: the word on a fill. `fg` is the text colour on that fill; `isDim` draws the whole pill faint. */
+export type Badge = { label: string; bg: string; fg: string; isDim: boolean }
+
+export function badgeOf(a: Agent): Badge {
+  if (a.state === 'live') return a.quiet ? { label: 'QUIET', bg: 'yellow', fg: 'black', isDim: false } : { label: 'LIVE', bg: 'green', fg: 'black', isDim: false }
+  if (a.state === 'done') return { label: 'DONE', bg: 'gray', fg: 'black', isDim: false }
+  return a.state === 'error' ? { label: 'FAIL', bg: 'red', fg: 'white', isDim: false } : { label: 'DIED', bg: 'red', fg: 'white', isDim: false }
+}
+
+/** The colour of a fill level (limits, context): below 60 % green, below 85 % yellow, else red. */
+export const levelColor = (percent: number): string => (percent < 60 ? 'green' : percent < 85 ? 'yellow' : 'red')
+
+/** A text bar of `width` cells for `percent`: the filled and the empty part (`█` / `░`). */
+export function barCells(percent: number, width: number): { full: string; empty: string } {
+  const w = Math.max(1, Math.floor(width))
+  const p = Math.min(100, Math.max(0, Number.isFinite(percent) ? percent : 0))
+  const n = p > 0 ? Math.max(1, Math.round((p / 100) * w)) : 0
+  return { full: '█'.repeat(n), empty: '░'.repeat(w - n) }
+}
+
+/** How full the agent's context is, in percent; null when the size or the window is unknown. */
+export function ctxPercent(a: Agent): number | null {
+  if (!a.ctx_tokens || !a.ctx_window) return null
+  return Math.min(100, Math.round((100 * a.ctx_tokens) / a.ctx_window))
+}
+
+const TAG_COLORS = ['cyan', 'magenta', 'blue', 'green', 'yellow', 'red'] as const
+
+/** A journal tag's stable colour: a hash of the tag over six named colours. */
+export function tagColor(tag: string): string {
+  let h = 0
+  for (const ch of tag) h = (h * 31 + (ch.codePointAt(0) ?? 0)) >>> 0
+  return TAG_COLORS[h % TAG_COLORS.length] ?? 'cyan'
+}
+
+/** The colour of a journal line by its first word (display only): done green, fail/error red, review magenta, plan cyan. */
+export function journalColor(text: string): string | undefined {
+  const w = /^\s*([A-Za-z@-]+)/.exec(text)?.[1]?.toLowerCase() ?? ''
+  if (/^(done|merged|green)$/.test(w)) return 'green'
+  if (/^(fail|failed|error|blocked|stop)$/.test(w)) return 'red'
+  if (/^(review|question|@hub)$/.test(w)) return 'magenta'
+  if (/^(plan|start|started|wave)$/.test(w)) return 'cyan'
+  return undefined
+}
+
+/**
+ * The slice of a list a window of `budget` rows shows around the item at `cursor`: items have their own heights (an
+ * agent two rows, a stage rule one). The cursor's item is always in, with one item of margin on each side where the
+ * list has one, so the arrow key that leaves the window lands on a drawn row and the window follows it.
+ */
+export function windowAround(heights: readonly number[], cursor: number, budget: number): { start: number; end: number } {
+  const n = heights.length
+  if (n === 0) return { start: 0, end: 0 }
+  const at = (i: number): number => heights[i] ?? 1
+  const c = Math.min(n - 1, Math.max(0, cursor))
+  let start = c
+  let end = c + 1
+  let used = at(c)
+  // grow down first by one (the margin below), then alternate, preferring to keep the cursor away from both edges
+  let isDown = true
+  for (;;) {
+    const canDown = end < n && used + at(end) <= budget
+    const canUp = start > 0 && used + at(start - 1) <= budget
+    if (!canDown && !canUp) break
+    if ((isDown && canDown) || !canUp) {
+      used += at(end)
+      end += 1
+    } else {
+      start -= 1
+      used += at(start)
+    }
+    isDown = !isDown
+  }
+  return { start, end }
+}
+
+/** "14:30" for a reset today, "Fri 09:00" within a week, else "10-09 14:30" (local time). */
+export function fmtResetShort(epochSeconds: number, nowMs: number): string {
+  const d = new Date(epochSeconds * 1000)
+  const now = new Date(nowMs)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  if (d.toDateString() === now.toDateString()) return hm
+  if (d.getTime() > now.getTime() && d.getTime() - now.getTime() < 6 * 86400000) return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
 }
