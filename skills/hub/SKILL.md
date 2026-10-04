@@ -36,8 +36,10 @@ Do these before anything else, in this order:
    `hub` answers with an error such as `invalid choice` or `not a git command`, another `hub` (GitHub CLI) is ahead of
    the plugin's on PATH: run `<plugin-root>/bin/hub start …` and tell the owner in one line.
 2. `ask search <words of the goal>` — decisions already on record are settled.
-3. One round of questions, each as "Q1 … → Recommendation: …", then a plan (*Planning a stage*). Write no code and
-   start no agents before the owner approves the plan.
+3. Grill, record, plan — in this order, details in *Planning a stage*: load the `grilling` skill when it is
+   installed (otherwise grill by hand: rounds of numbered questions, a recommendation each); `ask add` and `ask close`
+   each answer; propose the plan and wait for the owner's yes. Write no code and start no agents before that yes.
+   Skip the grilling only as *Planning a stage* ends: say so in one line.
 
 A **stage** is one stream of work (a release, a migration, a sprint) with its own directory under the hub home
 (`$AGENT_HUB_HOME`, else a repository's `.agent-hub/config.json` `"project"` / `"user"`, else `~/agent-hub`; `hub home`
@@ -163,8 +165,9 @@ settle the open decisions with the owner, in this order:
    the same way: rounds of numbered questions, a recommendation for each, until nothing is left silently assumed.
 3. Record each answer, so the next hub and every brief inherit it: `ask add … "<question>"` then
    `ask close <id> --answer "<answer>"`. A matter the owner left to you is `ask decided`.
-4. Only then propose the plan and the briefs; their "Owner decisions — do not reopen" section comes from
-   `ask search`, not from memory.
+4. Only then propose the plan and the briefs, and wait for the owner's yes; their "Owner decisions — do not reopen"
+   section comes from `ask search`, not from memory. Record the approved plan: `ask plan --stage <S> "<the plan in
+   one line>"` (`agent spawn` warns when the stage has none).
 
 For an owner who is not technical, one question is mandatory: "How will you open the result, and where should it live?",
 with a recommendation. For something that runs in a browser, recommend a static site (for example GitHub Pages),

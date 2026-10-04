@@ -6,7 +6,7 @@ FAKE_CLAUDE=die: no init, exits 1 after 2 s (a CLI that rejects its flags slowly
 FAKE_CLAUDE=hang: alive for 60 s without an init event.
 FAKE_READ_INBOX=1: a Bash tool call on inbox.md after the hold; FAKE_FINAL=<text>: the last answer.
 FAKE_TURNS=<n>: n extra assistant messages (distinct ids) before the last answer.
-`--version` prints FAKE_VERSION (default 2.1.285) like the real CLI and exits, leaving no log: FAKE_VERSION_BANNER
+`--version` prints FAKE_VERSION (default 2.1.287) like the real CLI and exits, leaving no log: FAKE_VERSION_BANNER
 is printed on a line before it (a version manager's shim), FAKE_VERSION_LOG is a file that gets one line per call.
 The init event carries
 `model`: FAKE_MODEL, else the --model value with an alias resolved the way a current CLI does (sonnet -> claude-sonnet-5-5).
@@ -23,7 +23,7 @@ if argv == ["--version"]:
             fh.write("called\n")
     if os.environ.get("FAKE_VERSION_BANNER"):
         print(os.environ["FAKE_VERSION_BANNER"])
-    print(os.environ.get("FAKE_VERSION", "2.1.285") + " (Claude Code)")
+    print(os.environ.get("FAKE_VERSION", "2.1.287") + " (Claude Code)")
     sys.exit(0)
 def opt(name):
     return argv[argv.index(name) + 1] if name in argv else None

@@ -59,7 +59,8 @@ Platform: macOS or Linux (Windows is not supported; see the [README](../README.m
 /plugin install agent-hub@claude-agent-hub
 ```
 
-Requirements and the permissions note are in the [README](../README.md#install). Read the permissions note before your
+Requirements (Claude Code 2.1.287 or later; older versions are unsupported) and the permissions note are in the
+[README](../README.md#install). Read the permissions note before your
 first agent: headless agents run with `bypassPermissions` by default.
 
 Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill

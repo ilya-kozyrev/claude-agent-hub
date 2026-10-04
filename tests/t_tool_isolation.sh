@@ -54,6 +54,35 @@ grep -q 'shadow' $P/s2.out; check $? 1 "negative: the plugin's bin/ first on PAT
 grep -q 'shadow\|linkbin' $P/s3.out; check $? 1 "negative: a symlink into the plugin's bin/ is not a shadow"
 (PATH="$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/s4.out 2>&1; check $? 0 "hub start without any shadow"
 grep -q '^ATTENTION' $P/s4.out; check $? 1 "…prints no ATTENTION line"
+# a personal dispatcher into the plugin: its own marker line (symlinks resolved), or a copy inside an installed plugin's bin/
+mkdir -p $P/disp $P/disp-nomark $P/disp-late
+printf '#!/bin/sh\n# agent-hub: dispatcher\nexec true\n' > $P/disp/agent-hub-tool
+printf '#!/bin/sh\nexec true\n' > $P/disp-nomark/agent-hub-tool
+{ printf '#!/bin/sh\n'; for i in $(seq 1 20); do echo "# filler $i"; done; echo '# agent-hub: dispatcher'; } > $P/disp-late/agent-hub-tool
+for d in disp disp-nomark disp-late; do chmod +x $P/$d/agent-hub-tool; for t in hub jlog; do ln -s agent-hub-tool $P/$d/$t; done; done
+(PATH="$P/disp:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d1.out 2>&1; check $? 0 "hub start with a marked dispatcher first on PATH"
+grep -q 'ATTENTION' $P/d1.out; check $? 1 "…no warning: a symlink to a file with the dispatcher marker is the plugin's own"
+(PATH="$P/disp-nomark:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d2.out 2>&1
+grep -q "ATTENTION: \`hub\` is $P/disp-nomark/hub, \`jlog\` is $P/disp-nomark/jlog" $P/d2.out; check $? 0 "negative: the same dispatcher without the marker is still reported"
+(PATH="$P/disp-late:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d3.out 2>&1
+grep -q "ATTENTION: \`hub\` is $P/disp-late/hub" $P/d3.out; check $? 0 "negative: a marker far from the top of the file does not count"
+(PATH="$P/shadow:$P/disp:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d4.out 2>&1
+grep -q "ATTENTION: \`hub\` is $P/shadow/hub, \`jlog\` is $P/shadow/jlog" $P/d4.out; check $? 0 "negative: a foreign hub (GitHub CLI style) ahead of the dispatcher is still reported"
+CC=$P/cfg; mkdir -p $CC/plugins/cache/mk/agent-hub/99.0.0/bin $CC/plugins/marketplaces/self/bin; : > $CC/plugins/marketplaces/self/bin/hubcore.py
+for t in hub jlog; do printf '#!/bin/sh\necho installed %s\n' $t > $CC/plugins/cache/mk/agent-hub/99.0.0/bin/$t; chmod +x $CC/plugins/cache/mk/agent-hub/99.0.0/bin/$t; done
+printf '#!/bin/sh\n' > $CC/plugins/marketplaces/self/bin/lock; chmod +x $CC/plugins/marketplaces/self/bin/lock
+(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/agent-hub/99.0.0/bin:$CC/plugins/marketplaces/self/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d5.out 2>&1
+grep -q 'ATTENTION' $P/d5.out; check $? 1 "a command inside an installed plugin's cache or marketplace bin/ is the plugin's own"
+(CLAUDE_CONFIG_DIR=$P/elsewhere PATH="$CC/plugins/cache/mk/agent-hub/99.0.0/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d6.out 2>&1
+grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/agent-hub/99.0.0/bin/hub" $P/d6.out; check $? 0 "negative: the same directory is foreign when it is not under an installed plugin location"
+mkdir -p $CC/plugins/cache/mk/agent-hub/0.0.1/bin $CC/plugins/marketplaces/old/bin $CC/plugins/marketplaces/old/.claude-plugin
+printf '#!/bin/sh\n' > $CC/plugins/cache/mk/agent-hub/0.0.1/bin/hub; printf '#!/bin/sh\n' > $CC/plugins/marketplaces/old/bin/lock; : > $CC/plugins/marketplaces/old/bin/hubcore.py
+chmod +x $CC/plugins/cache/mk/agent-hub/0.0.1/bin/hub $CC/plugins/marketplaces/old/bin/lock
+printf '{"name": "agent-hub", "version": "0.0.2"}\n' > $CC/plugins/marketplaces/old/.claude-plugin/plugin.json
+(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/agent-hub/0.0.1/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d7.out 2>&1
+grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/agent-hub/0.0.1/bin/hub" $P/d7.out; check $? 0 "negative: an installed copy older than this plugin (cache folder 0.0.1) is still a shadow"
+(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/marketplaces/old/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d8.out 2>&1
+grep -q "ATTENTION: \`lock\` is $CC/plugins/marketplaces/old/bin/lock" $P/d8.out; check $? 0 "negative: …and so is a marketplace copy whose manifest says 0.0.2"
 
 # ---- the SessionStart hook
 hook(){ # hook CWD [PATH]: the hook's output for a session starting in CWD

@@ -120,29 +120,13 @@ def _api_method(seg: list[str]) -> str:
 
 
 def _git_repo_name(path: str) -> str | None:
-    """Name of the git repository enclosing `path`; a worktree resolves to its main repository."""
-    try:
-        p = Path(os.path.abspath(os.path.expanduser(path)))
-    except (OSError, ValueError):
-        return None
-    for d in [p] + list(p.parents):
-        g = d / ".git"
-        if g.is_dir():
-            return d.name
-        if g.is_file():  # a worktree or submodule: "gitdir: <main>/.git/worktrees/<name>"
-            try:
-                m = re.match(r"gitdir:\s*(.+)", g.read_text(encoding="utf-8").strip())
-            except OSError:
-                return d.name
-            if m:
-                gitdir = Path(m.group(1).strip())
-                if not gitdir.is_absolute():
-                    gitdir = (d / gitdir).resolve()
-                parts = gitdir.parts
-                if ".git" in parts:
-                    return parts[parts.index(".git") - 1]
-            return d.name
-    return None
+    """Name of the git repository enclosing `path`; a worktree resolves to its main repository. The same function
+    names the repository of `lock take` (hubcore.default_repo), so a lock and the commands it guards agree."""
+    if plugin_bin() not in sys.path:
+        sys.path.insert(0, plugin_bin())
+    import hubcore  # noqa: E402
+
+    return hubcore.git_repo_name(path)
 
 
 def _repo_of(seg: list[str], cwd: str | None) -> str | None:

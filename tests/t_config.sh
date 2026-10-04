@@ -66,8 +66,8 @@ rm $R/board.md
 ME=aaaaaaaa-0000-4000-8000-000000000001; OTHER=bbbbbbbb-0000-4000-8000-000000000002
 hook(){ python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","session_id":sys.argv[2],"cwd":sys.argv[3],"tool_input":{"command":sys.argv[1]}}))' "$1" "$2" "$3" | python3 $HOOKS/board_locks.py; }
 deny(){ hook "$@" | grep -q '"permissionDecision": "deny"'; }
-CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take deploy-window --until +2h --why "release" --owner-name "release hub" >/dev/null
-CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +2h --why "merge train" --owner-name "steward" >/dev/null
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take deploy-window --repo '*' --until +2h --why "release" --owner-name "release hub" >/dev/null
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --repo '*' --until +2h --why "merge train" --owner-name "steward" >/dev/null
 printf '{"protected_branches": ["trunk"], "rules": [{"match": "^make release\\\\b", "kinds": ["deploy-window"], "action": "release"}]}\n' > $REPO/.agent-hub/lock-rules.json
 printf '{"rules": [{"match": "^helm upgrade\\\\b", "kinds": ["deploy-window"], "action": "helm rollout"}]}\n' > $R/lock-rules.json
 deny "make release" $ME $REPO/src; check $? 0 "repository rule applies inside the repository"

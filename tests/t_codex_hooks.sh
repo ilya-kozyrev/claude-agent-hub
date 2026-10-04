@@ -223,7 +223,7 @@ class CodexHooks(unittest.TestCase):
         self.assertIn('exec_command', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertNotIn('run_in_background', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertFalse(self.denied(self.hook('polling_guard.py', 'Bash', {'command': 'echo done'})))
-        run = subprocess.run([str(ROOT / 'bin' / 'lock'), 'take', 'main-merge', '--until', '2099-01-01T00:00',
+        run = subprocess.run([str(ROOT / 'bin' / 'lock'), 'take', 'main-merge', '--repo', '*', '--until', '2099-01-01T00:00',
                               '--why', 'test', '--owner', 'Other'], capture_output=True, text=True,
                              env={**self.env, 'CODEX_THREAD_ID': 'other'}, timeout=5)
         self.assertEqual(run.returncode, 0, run.stderr)

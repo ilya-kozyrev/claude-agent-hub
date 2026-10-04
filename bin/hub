@@ -7,14 +7,16 @@
   hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
   hub succeed  --stage stage-a --handoff PATH [--model M] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
-  hub reviewer [--for CLASS] [--json] [--all]
+  hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
+Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff and succeed need a stage, `reviewer`
+puts it into the `agent spawn` line it prints, `home` ignores it.
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
 takeover. It warns (ATTENTION lines, once) when the hub home is the legacy ~/.claude/agent-hub (`hub home`), when the
-Claude Code CLI is older than 2.1.285 — its model aliases then resolve to older models — and when a command of the same name as one of the plugin's tools (any executable of its
+Claude Code CLI is older than 2.1.287 (the minimum supported; its model aliases resolve to older models) and when a command of the same name as one of the plugin's tools (any executable of its
 bin/: hub, jlog, jwait, agent, ask, roles, lock, …) comes first on PATH, GitHub CLI `hub` from Homebrew being the
 usual one.
 
@@ -33,7 +35,7 @@ target state is already there is skipped as "already done", so a re-run finishes
      kind, repo, until and value. The previous hub is every session named by the roles entry `hub`
      or the `coordinator:` line of night-queue.md (other than the new one); when they disagree it
      says so and takes the locks of all of them. --take-main-merge also takes main-merge of the hub's
-     repo (AGENT_HUB_DEFAULT_REPO, else "*") when nobody holds it (until --main-merge-until) or when a third
+     repo (AGENT_HUB_DEFAULT_REPO, else the git repository you run in, else "*") when nobody holds it (until --main-merge-until) or when a third
      party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
      reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
      The free lock is never added when a main-merge is already taken over or held (no second, wildcard
@@ -621,10 +623,11 @@ def cmd_takeover(a) -> int:
     if "main-merge" not in skip:
         # Every main-merge lock is looked at, one per repo. --take-main-merge takes those of the hub's repo
         # (AGENT_HUB_DEFAULT_REPO; "*" = all) and the repo's free lock; the rest is reported and left alone.
-        mm_repo = hc.setting("AGENT_HUB_DEFAULT_REPO") or b.DEFAULT_REPO
+        mm_repo = hc.default_repo() or b.DEFAULT_REPO
+        mm_configured = bool(hc.setting("AGENT_HUB_DEFAULT_REPO"))  # the nudge below is for a repository that opted in
         ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
         if take_mm and mm_repo == "*":
-            notes.append(f"no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
+            notes.append(f"no repository and no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
         third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
                  and r.get("session_id") not in owners and r.get("session_id") != cli]
         for mm in third:
@@ -648,7 +651,7 @@ def cmd_takeover(a) -> int:
             if take_mm:
                 notes.append(f"main-merge ({mm_repo}) was wanted but not taken: other main-merge locks exist and the "
                              "hub repo is unknown here — run from the repository or set AGENT_HUB_DEFAULT_REPO")
-            elif mm_repo != "*":
+            elif mm_configured:
                 notes.append(f"nobody holds main-merge ({mm_repo}): merges to its main are not guarded — "
                              "--take-main-merge, or AGENT_HUB_TAKE_MAIN_MERGE=true in the repository's config.json")
     if kept:
@@ -978,7 +981,7 @@ def cmd_reviewer(a) -> int:
     verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all)
     source = {"env": "the environment", "project": "the repository's .agent-hub/config.json",
               "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
-    start = reviewers.start_line(chosen.entry) if chosen else None
+    start = reviewers.start_line(chosen.entry, a.stage) if chosen else None
     if a.json:
         print(json.dumps({"class": a.for_class[:reviewers.SHOWN] if a.for_class else None, "source": loaded.origin,
                           "chosen": chosen.entry.name if chosen else None, "start": start,
@@ -1015,16 +1018,16 @@ def cmd_home(a) -> int:
 def main(argv: list) -> int:
     p = argparse.ArgumentParser(prog="hub", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
-    st = sub.add_parser("start", help="register the first hub of a new stage")
-    st.add_argument("--stage", required=True)
+    stage_opt = argparse.ArgumentParser(add_help=False)  # every subcommand takes it: one habit, no "unrecognized arguments"
+    stage_opt.add_argument("--stage", help="the stage (default: $HUB_STAGE)")
+    st = sub.add_parser("start", parents=[stage_opt], help="register the first hub of a new stage")
     st.add_argument("--session", required=True, help="your full session id (local_… or a CLI uuid)")
     st.add_argument("--n", type=int, help=argparse.SUPPRESS)
     st.add_argument("--name", help="title (default: \"Hub <stage> #1\")")
     st.add_argument("--main-merge-until", default="+30d", help="main-merge expiry with --take-main-merge")
     st.add_argument("--take-main-merge", action="store_true", help="also take main-merge of this repository")
     st.add_argument("--dry-run", action="store_true")
-    t = sub.add_parser("takeover", help="take over the hub role")
-    t.add_argument("--stage", required=True)
+    t = sub.add_parser("takeover", parents=[stage_opt], help="take over the hub role")
     t.add_argument("--n", type=int, help="number of the new hub (default: derived from roles.json / the handoff)")
     t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid; `self` = "
                                                      "$CLAUDE_CODE_SESSION_ID)")
@@ -1039,15 +1042,13 @@ def main(argv: list) -> int:
                    help="this is the successor `hub succeed` started (its prompt gives the command): keeps the chain of "
                         "automatic handoffs, which any other takeover resets")
     t.add_argument("--dry-run", action="store_true")
-    h = sub.add_parser("handoff", help="write a handoff draft")
-    h.add_argument("--stage", required=True)
+    h = sub.add_parser("handoff", parents=[stage_opt], help="write a handoff draft")
     h.add_argument("--n", type=int, help="number of the outgoing hub (default: the registered hub's)")
     h.add_argument("--out")
     h.add_argument("--session", help="the hub's session whose sub-agents are checked (default: the registered hub's)")
     h.add_argument("--allow-live-subagents", action="store_true",
                    help="write the draft although sub-agents of the hub still run; the list goes into its TODO")
-    sc = sub.add_parser("succeed", help="start the successor of an automatic handoff (autopilot)")
-    sc.add_argument("--stage", required=True)
+    sc = sub.add_parser("succeed", parents=[stage_opt], help="start the successor of an automatic handoff (autopilot)")
     sc.add_argument("--handoff", help="the filled handoff draft")
     sc.add_argument("--model", help="the successor's model (default: AGENT_HUB_SUCCESSOR_MODEL, else the hub's own)")
     sc.add_argument("--permission-mode", help="the successor's mode (default: AGENT_HUB_SUCCESSOR_PERMISSION_MODE, "
@@ -1062,20 +1063,30 @@ def main(argv: list) -> int:
                                                          "drop its record and start a new one")
     sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand)")
     sc.add_argument("--dry-run", action="store_true")
-    r = sub.add_parser("reviewer", help="choose the reviewer for a change and print how to start it")
+    r = sub.add_parser("reviewer", parents=[stage_opt], help="choose the reviewer for a change and print how to start it "
+                       "(with a stage, the `agent spawn` line carries --stage)")
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
     r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
     r.add_argument("--json", action="store_true")
-    ho = sub.add_parser("home", help="where the hub keeps its files; `home migrate` moves them")
+    ho = sub.add_parser("home", parents=[stage_opt], help="where the hub keeps its files; `home migrate` moves them "
+                        "(--stage is accepted, the hub home does not depend on it)")
     ho.add_argument("--cwd", help="resolve for this directory (default: here)")
     ho.add_argument("--json", action="store_true")
     hos = ho.add_subparsers(dest="home_cmd")
-    hm = hos.add_parser("migrate", help="move the hub home (default: the legacy ~/.claude/agent-hub to the resolved one)")
+    hm = hos.add_parser("migrate", parents=[stage_opt], help="move the hub home (default: the legacy ~/.claude/agent-hub to the resolved one)")
     hm.add_argument("--from", dest="src", metavar="DIR", help="default: ~/.claude/agent-hub")
     hm.add_argument("--to", dest="dst", metavar="DIR", help="default: the resolved hub home (~/agent-hub when that is "
                                                             "the source)")
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
     a = p.parse_args(argv)
+    explicit, a.stage = a.stage, a.stage or os.environ.get("HUB_STAGE") or None
+    needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed")
+    if needs_stage and not a.stage:
+        p.error(f"{a.cmd}: --stage is required (or set HUB_STAGE)")
+    if a.stage and not hc.STAGE_RE.fullmatch(a.stage):  # check_stage does the rest for the commands that use the stage
+        if explicit or needs_stage:
+            p.error(f"bad stage name {a.stage!r} (lowercase letters, digits, '-' and '_')")
+        a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home}[a.cmd](a)
 

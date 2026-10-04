@@ -8,9 +8,9 @@ ME=aaaaaaaa-0000-4000-8000-000000000001; OTHER=bbbbbbbb-0000-4000-8000-000000000
 CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --until +1h --why x > $R/unknown.out 2>&1; check $? 2 "negative: a resource no lock-rules.json names is refused"
 grep -q "unknown resource 'stage'.*Known: main-merge" $R/unknown.out; check $? 0 "…with the list of known resources"
 printf '{"resources": {"stage": "the shared staging environment", "deploy-window": "a production rollout"}}\n' > $R/lock-rules.json
-CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +2h --why "merging #700" --owner-name "merge steward" >/dev/null; check $? 0 "take main-merge"
-CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "mine" >/dev/null 2>&1; check $? 1 "negative: another session's active lock refused"
-CLAUDE_CODE_SESSION_ID=$ME $B/lock release main-merge >/dev/null 2>&1; check $? 1 "negative: release of another's lock refused"
+CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --repo '*' --until +2h --why "merging #700" --owner-name "merge steward" >/dev/null; check $? 0 "take main-merge"
+CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --repo '*' --until +1h --why "mine" >/dev/null 2>&1; check $? 1 "negative: another session's active lock refused"
+CLAUDE_CODE_SESSION_ID=$ME $B/lock release main-merge --repo '*' >/dev/null 2>&1; check $? 1 "negative: release of another's lock refused"
 $B/lock list | grep -q '^main-merge .*active .*merge steward'; check $? 0 "list shows the active lock"
 CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --repo webapp --until +1h --why "staging refresh" --owner-name "hub" >/dev/null; check $? 0 "take stage for one repo"
 CLAUDE_CODE_SESSION_ID=$ME $B/lock take deploy-window --until 2000-01-01T00:00 --why x >/dev/null 2>&1; check $? 2 "usage: --until in the past"
@@ -87,4 +87,27 @@ for ev, groups in d["hooks"].items():
             for m in re.findall(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)", h["command"]):
                 assert os.path.isfile(os.path.join(root, m)), m
 PY
+# ---- lock take without --repo: the enclosing git repository (a worktree: its main repository), `*` only on request
+new_home; R=$AGENT_HUB_HOME
+G=$(mktemp -d); MAIN=$G/shop; BLOG=$G/blog; PLAIN=$G/plain; mkdir $PLAIN
+for r in $MAIN $BLOG; do git init -q -b main $r && git -C $r -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; done
+git -C $MAIN worktree add -q -b feat $G/shop-wt; WT=$G/shop-wt
+[ ! -e $MAIN/.agent-hub ] && [ ! -e $WT/.agent-hub ]; check $? 0 "control: the fixture repositories have no .agent-hub/"
+(cd $WT && CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "from the worktree") > $R/wt.out; check $? 0 "take in a fresh worktree without .agent-hub/"
+grep -q '"kind": "main-merge", "repo": "shop"' $R/board.md; check $? 0 "…the lock's repo is the repository name, not *"
+deny "gh pr merge 3" $OTHER $MAIN; check $? 0 "the hook finds a worktree's lock from the main checkout"
+deny "gh pr merge 3" $OTHER $WT; check $? 0 "…and from the worktree itself"
+deny "gh pr merge 3" $OTHER $BLOG; check $? 1 "negative: a merge in another repository is not held up"
+(cd $MAIN && CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --until +1h --why "from the main checkout") > $R/mc.out 2>&1; check $? 1 "negative: the main checkout resolves to the same lock key (held by another session)"
+(cd $MAIN && CLAUDE_CODE_SESSION_ID=$ME $B/lock release main-merge) > /dev/null; check $? 0 "release from the main checkout finds the worktree's lock"
+(cd $WT && CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --repo '*' --until +1h --why "everything") > /dev/null; check $? 0 "explicit --repo '*' still works"
+grep -q '"kind": "main-merge", "repo": "\*"' $R/board.md; check $? 0 "…and records the wildcard"
+deny "gh pr merge 3" $OTHER $BLOG; check $? 0 "…which holds up every repository"
+rm -f $R/board.md
+ln -s $MAIN $G/shop-link
+(cd $G/shop-link && CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "via a symlink") > /dev/null; check $? 0 "take from a symlinked checkout"
+grep -q '"kind": "main-merge", "repo": "shop"' $R/board.md; check $? 0 "…a symlinked checkout names the same repository as its worktree"
+rm -f $R/board.md
+(cd $PLAIN && CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --until +1h --why "no repository") > /dev/null; check $? 0 "take outside any git repository"
+grep -q '"kind": "main-merge", "repo": "\*"' $R/board.md; check $? 0 "…falls back to *"
 exit $fail

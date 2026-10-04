@@ -35,9 +35,10 @@ JOURNAL_LINE_RE = re.compile(r"^- (\d{1,2}:\d{2}) \[([^\]]+)\]\s?(.*)$")
 CONFIG_DIRNAME = ".agent-hub"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` takes
 MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
-# The first Claude Code CLI whose aliases resolve to the latest models (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1);
-# an older CLI resolves the same aliases to older models. The plugin pins no ids: the alias follows the CLI.
-MIN_CLI_VERSION = (2, 1, 285)
+# The oldest supported Claude Code CLI: it runs the agent-top mod (2.1.287) and resolves the aliases to the latest models
+# (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1, as 2.1.285 did); an older CLI is unsupported and resolves the same aliases
+# to older models. The plugin pins no ids: the alias follows the CLI.
+MIN_CLI_VERSION = (2, 1, 287)
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -294,6 +295,41 @@ def main_checkout(worktree: Path) -> Optional[Path]:
     except (OSError, ValueError):
         return None
     return common.parent if common.name == ".git" else None
+
+
+def git_repo_name(path) -> Optional[str]:
+    """Name of the git repository enclosing `path` (a `.git` directory or file found upwards from it); a worktree
+    resolves to its main repository. None outside any repository. The board hook names the repository of a command
+    this way, so a lock taken with this name is matched there."""
+    try:
+        p = Path(os.path.realpath(os.path.expanduser(str(path))))  # a symlinked checkout and its worktrees agree
+    except (OSError, ValueError):
+        return None
+    for d in [p] + list(p.parents):
+        g = d / ".git"
+        if g.is_dir():
+            return d.name
+        if g.is_file():  # a worktree or submodule: "gitdir: <main>/.git/worktrees/<name>"
+            try:
+                m = re.match(r"gitdir:\s*(.+)", g.read_text(encoding="utf-8").strip())
+            except OSError:
+                return d.name
+            if m:
+                gitdir = Path(m.group(1).strip())
+                if not gitdir.is_absolute():
+                    gitdir = (d / gitdir).resolve()
+                parts = gitdir.parts
+                if ".git" in parts:
+                    return parts[parts.index(".git") - 1]
+            return d.name
+    return None
+
+
+def default_repo(cwd=None) -> Optional[str]:
+    """The repository a lock taken from `cwd` guards: AGENT_HUB_DEFAULT_REPO (env, the project's config.json, the hub
+    home's), else the name of the git repository enclosing `cwd` (a worktree resolves to its main repository), else
+    None: the caller falls back to "*" (every repository) only outside any checkout."""
+    return setting("AGENT_HUB_DEFAULT_REPO", cwd=cwd) or git_repo_name(cwd or os.getcwd())
 
 
 def in_scope(path) -> bool:
@@ -690,9 +726,9 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
     """One line when the chosen CLI is older than MIN_CLI_VERSION, else None."""
     if cli is None or cli.version is None or cli.version >= MIN_CLI_VERSION:
         return None
-    return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}: update "
-            "Claude Code; with an older CLI the aliases (opus, sonnet, haiku, fable) resolve to older models "
-            "(pin ids with AGENT_HUB_MODEL_MAP if you must stay on it)")
+    return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}, the "
+            "oldest version agent-hub supports: update Claude Code; with an older CLI the aliases (opus, sonnet, haiku, "
+            "fable) resolve to older models and the agent-top mod does not run")
 
 
 def plugin_tools() -> list:
@@ -703,15 +739,78 @@ def plugin_tools() -> list:
         return []
 
 
+# A personal wrapper that dispatches into the plugin (a shim in ~/.local/bin that picks the newest installed `bin/`)
+# says so with this comment line near the top of its file; the shadow check then treats it as the plugin's own.
+DISPATCHER_MARKER = "# agent-hub: dispatcher"
+
+
+def plugin_version(bin_dir) -> Optional[tuple]:
+    """(major, minor, patch) of the plugin that owns `bin_dir`: its manifest's version (.claude-plugin or
+    .codex-plugin), else a cache folder named <version>; None when neither says."""
+    root = Path(bin_dir).parent
+    for manifest in (root / ".claude-plugin" / "plugin.json", root / ".codex-plugin" / "plugin.json"):
+        try:
+            raw = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+        except (OSError, ValueError, AttributeError):
+            continue
+        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(raw or ""))
+        if m:
+            return tuple(int(x) for x in m.groups())
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", root.name)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def installed_plugin_bins() -> list:
+    """Real paths of the installed agent-hub plugin `bin/` directories that are not older than this plugin: the Claude
+    and Codex plugin caches (`<config>/plugins/cache/*/agent-hub/*/bin`) and a marketplace folder that is the plugin
+    itself (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
+    $CODEX_HOME / ~/.codex. An older copy stays a shadow: it is the old tool on PATH the warning exists for (a version
+    nobody can read counts as current)."""
+    home = Path.home()
+    current = plugin_version(BIN)
+    out = []
+    for config in (Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"),
+                   Path(os.environ.get("CODEX_HOME") or home / ".codex")):
+        plugins = config / "plugins"
+        found = list(plugins.glob("cache/*/agent-hub/*/bin")) + [
+            d for d in plugins.glob("marketplaces/*/bin") if (d / "hubcore.py").is_file()]
+        for d in found:
+            version = plugin_version(d)
+            if current is None or version is None or version >= current:
+                out.append(os.path.realpath(d))
+    return out
+
+
+def is_dispatcher(path) -> bool:
+    """Whether the file `path` (symlinks resolved) carries the DISPATCHER_MARKER line among its first lines."""
+    try:
+        with open(os.path.realpath(path), "rb") as fh:
+            head = fh.read(2048).decode("utf-8", "replace")
+    except OSError:
+        return False
+    return any(line.strip() == DISPATCHER_MARKER for line in head.splitlines()[:10])
+
+
 def shadowed_tools(path=None) -> list:
-    """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file outside this
-    bin/ (`command -v`: the first match on PATH; a symlink into this bin/ counts as ours)."""
+    """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file that is not
+    the plugin's own (`command -v`: the first match on PATH). Ours: a file whose real path is in this bin/ (a symlink
+    into it counts) or in an installed agent-hub plugin's bin/ that is not older than this one
+    (installed_plugin_bins), or a personal dispatcher that carries the DISPATCHER_MARKER line (is_dispatcher)."""
     path = os.environ.get("PATH", "") if path is None else path
     out = []
+    installed = None
     for name in plugin_tools():
         found = shutil.which(name, path=path)
-        if found and os.path.dirname(os.path.realpath(found)) != str(BIN):
-            out.append((name, found))
+        if not found:
+            continue
+        folder = os.path.dirname(os.path.realpath(found))
+        if folder == str(BIN):
+            continue
+        if installed is None:
+            installed = installed_plugin_bins()
+        if folder in installed or is_dispatcher(found):
+            continue
+        out.append((name, found))
     return out
 
 
