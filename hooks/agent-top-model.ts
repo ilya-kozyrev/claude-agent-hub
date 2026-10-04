@@ -529,12 +529,16 @@ export function findByRole(agents: readonly Agent[], name: string, stages: reado
 // ---------------------------------------------------------------- drawing helpers (the view: hooks/agent-top-view.tsx)
 
 /** A state's badge: the word on a fill. `fg` is the text colour on that fill; `isDim` draws the whole pill faint. */
-export type Badge = { label: string; bg: string; fg: string; isDim: boolean }
+export type Badge = { label: string; glyph: string; bg: string; fg: string; isDim: boolean }
 
 export function badgeOf(a: Agent): Badge {
-  if (a.state === 'live') return a.quiet ? { label: 'QUIET', bg: 'yellow', fg: 'black', isDim: false } : { label: 'LIVE', bg: 'green', fg: 'black', isDim: false }
-  if (a.state === 'done') return { label: 'DONE', bg: 'gray', fg: 'black', isDim: false }
-  return a.state === 'error' ? { label: 'FAIL', bg: 'red', fg: 'white', isDim: false } : { label: 'DIED', bg: 'red', fg: 'white', isDim: false }
+  if (a.state === 'live') {
+    return a.quiet ? { label: 'QUIET', glyph: '◐', bg: 'yellow', fg: 'black', isDim: false } : { label: 'LIVE', glyph: '●', bg: 'green', fg: 'black', isDim: false }
+  }
+  if (a.state === 'done') return { label: 'DONE', glyph: '✓', bg: 'gray', fg: 'black', isDim: false }
+  return a.state === 'error'
+    ? { label: 'FAIL', glyph: '✗', bg: 'red', fg: 'white', isDim: false }
+    : { label: 'DIED', glyph: '✗', bg: 'red', fg: 'white', isDim: false }
 }
 
 /** The colour of a fill level (limits, context): below 60 % green, below 85 % yellow, else red. */

@@ -181,8 +181,8 @@ test('/agent-top opens the pane; rows open the card with the feed, Back returns 
     expect((await ui.find({ key: 'card-tag' }))?.text).toMatch(/^Tag +w-1/)
     expect((await ui.find({ key: 'card-now' }))?.text).toMatch(/^Now +▸ Bash: run the tests/)
     expect((await ui.find({ key: 'feed:0' }))?.text).toMatch(/^12:00:01 ▸ Bash +run the tests$/)
-    expect((await ui.find({ key: 'feed:1' }))?.text).toMatch(/^12:00:02 ◂ +12 passed$/)
-    expect((await ui.find({ key: 'feed:2' }))?.text).toMatch(/^12:00:03 ✎ +all green, writing the report$/)
+    expect((await ui.find({ key: 'feed:1' }))?.text).toMatch(/^12:00:02 ◂ output +12 passed$/)
+    expect((await ui.find({ key: 'feed:2' }))?.text).toMatch(/^12:00:03 ✎ says +all green, writing the report$/)
     expect(await ui.find({ key: 'open:stage-a/worker' })).toBeUndefined()
 
     await ui.press({ key: 'back' })
@@ -527,7 +527,7 @@ const paneProps = (o: { placement?: 'dock' | 'inline'; cols?: number; rows?: num
 })
 
 /** The stubs every pane test needs; `json` answers every CLI call, `focus` the bottom of `ui.focus`. */
-function stubPane(on: On, json: () => string, focus: () => { deny?: string } = () => ({}), moves: string[] = []): void {
+function stubPane(on: On, json: () => string, focus: () => { deny?: string } = () => ({}), moves: string[] = [], feed: Row[] = []): void {
   on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
@@ -539,7 +539,7 @@ function stubPane(on: On, json: () => string, focus: () => { deny?: string } = (
     if (!deny) moves.push(`${e.origin.kind}:${e.element ?? ''}`)
     return deny ? { deny } : {}
   })
-  on('process.run', ($, e) => ran(e.argv.includes('--agent') ? cardJson(JSON.parse(json()).agents[0], []) : json()))
+  on('process.run', ($, e) => ran(e.argv.includes('--agent') ? cardJson(JSON.parse(json()).agents[0], feed) : json()))
 }
 
 /** The person moving the pane's focus ring onto `element` (as Tab or an arrow does): the `ui.focus` chain. */
@@ -592,19 +592,115 @@ test('the list is a window around the cursor that fits the body: 30 agents in 12
 
   await focus($, 'open:stage-a/w3', 'agent-top') // the last drawn row: the next one comes in
   rows = await rowKeys(ui)
-  expect(rows).toEqual(['row:stage-a/w2', 'row:stage-a/w3', 'row:stage-a/w4', 'row:stage-a/w5'])
-  expect((await ui.find({ key: 'footer' }))?.text).toMatch(/^↑ 2 more {2}↓ 24 more/)
+  expect(rows).toEqual(['row:stage-a/w2', 'row:stage-a/w3', 'row:stage-a/w4'])
+  expect((await ui.find({ key: 'more-up' }))?.props.label).toBe('↑ 2 more') // a Button: the ring can always go up
+  expect((await ui.find({ key: 'more-down' }))?.props.label).toBe('↓ 25 more')
   expect((await ui.find({ key: 'open:stage-a/w2' }))?.props.hotkey).toBe('1') // hotkeys number the window's rows
   // The module then puts the ring back on w3 with $.ui.focus (the ring keeps its place among the Buttons, not its
   // element). The kit does not route a module's own $.ui.focus to a test's ui.focus hook ("no implementation for
   // ui.focus"), so that step is checked in the live pty run (inline, where the window moves), not here.
   await clock.advance(3000) // a poll with the same rows: the window stays where the cursor put it
-  expect(await rowKeys(ui)).toEqual(['row:stage-a/w2', 'row:stage-a/w3', 'row:stage-a/w4', 'row:stage-a/w5'])
+  expect(await rowKeys(ui)).toEqual(['row:stage-a/w2', 'row:stage-a/w3', 'row:stage-a/w4'])
   expect(moves).toEqual(['person:open:stage-a/w3'])
 
-  await focus($, 'open:stage-a/w5', 'agent-top')
-  await focus($, 'open:stage-a/w6', 'agent-top')
-  expect(await rowKeys(ui)).toContain('row:stage-a/w7')
+  await focus($, 'more-up', 'agent-top') // the ring onto `↑ 2 more`: the cursor goes to w1
+  expect((await ui.find({ key: 'row:stage-a/w1' }))?.text).toMatch(/^❯ /)
+  await ui.press({ key: 'more-down' }) // Enter on `↓ N more` moves it past the bottom edge
+  expect((await rowKeys(ui)).length).toBeGreaterThan(0)
+  expect((await ui.find({ key: 'row:stage-a/w1' }))?.text ?? '').not.toMatch(/^❯ /)
+  await ui.unmount()
+})
+
+/** The person's ↑ / ↓: the ring onto the drawn Button before / after the cursor row's, as the engine walks them. */
+async function arrow($: Engine, ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined }[]> }, cursor: string, dir: -1 | 1): Promise<void> {
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '')
+  const next = keys[keys.indexOf(`open:${cursor}`) + dir]
+  if (next !== undefined) await focus($, next)
+}
+
+test('↑ and ↓ reach every agent and come back, docked and inline, two-line and one-line rows', async ($, on) => {
+  mock.clock(on)
+  const many = Array.from({ length: 12 }, (_, i) => agent({ role: `w${i}`, dir_name: `w${i}`, stage: i < 6 ? 'stage-a' : 'stage-b' }))
+  stubPane(on, () => snapshot(many, { stages: ['stage-a', 'stage-b'] }))
+  await run($)
+  for (const props of [paneProps({ rows: 8 }), paneProps({ rows: 12 }), paneProps({ placement: 'dock', cols: 76, rows: 14 })]) {
+    const ui = await $.ui.mount({ ...props, surface: 'terminal' })
+    const cursor = async () => {
+      const rows = (await ui.findAll({ type: 'Box' })).filter(b => (b.key ?? '').startsWith('row:'))
+      return rows.find(r => r.text.startsWith('❯'))?.key?.slice(4) ?? ''
+    }
+    const seen: string[] = [await cursor()]
+    for (let i = 0; i < 11; i += 1) {
+      await arrow($, ui, seen[seen.length - 1] ?? '', 1)
+      seen.push(await cursor())
+    }
+    expect(seen).toEqual(many.map(a => `${a.stage}/${a.dir_name}`))
+    for (let i = 0; i < 11; i += 1) {
+      await arrow($, ui, seen[seen.length - 1] ?? '', -1)
+      seen.push(await cursor())
+    }
+    expect(seen.at(-1)).toBe('stage-a/w0')
+    await ui.unmount()
+  }
+})
+
+/** Cells a found element takes on one line: text, a plain Button's `1: ` and a framed one's `[ ]`. */
+function cells(node: unknown): number {
+  if (typeof node === 'string') return Array.from(node).length
+  if (typeof node === 'number') return String(node).length
+  if (!node || typeof node !== 'object') return 0
+  const n = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  if (n.type === 'Button') return Array.from(String(n.props?.label ?? '')).length + (n.props?.plain ? (n.props?.hotkey ? 3 : 0) : 4)
+  const kids = Array.isArray(n.children) ? n.children : []
+  if (n.type === 'Box' && n.props?.flexDirection === 'column') return Math.max(0, ...kids.map(cells))
+  return kids.reduce((sum: number, k) => sum + cells(k), 0)
+}
+
+test('no row is wider than the body: every view at 24, 30, 40, 44, 60 and 76 columns, inline and docked', async ($, on) => {
+  mock.clock(on)
+  const rows = [
+    agent({ role: 'a-rather-long-role-name', dir_name: 'a', title: 'A task title long enough to need clipping everywhere (w-1)', ctx_window: 200000 }),
+    agent({ role: 'q', dir_name: 'q', quiet: true, stage: 'a-very-long-stage-name' }),
+    agent({ role: 'e', dir_name: 'e', state: 'error', alive: false, action: null, result: { subtype: 'error_max_turns', is_error: true, text: 'ran out of turns after a long while' } }),
+  ]
+  const json = snapshot(rows, {
+    stages: ['stage-a', 'a-very-long-stage-name'],
+    journal_tail: [{ stage: 'stage-a', time: '12:01', tag: 'a-long-journal-tag', text: 'done: a journal line long enough to wrap twice in a narrow pane' }],
+    locks: [{ kind: 'main-merge-and-more', repo: 'santinel', owner_name: 'Hub core-c #28', until: '2026-10-31T23:59:00+03:00', active: true, why: 'held' }],
+    questions: { 'a-very-long-stage-name': { open: 12, overdue: 3, line: 'x', items: ['Q-9 [a-very-long-stage-name] open OVERDUE — decide this long question?'] } },
+    limits: { info: { unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1791547735 } } }, seen_at: 1790972433 },
+    codex_limits: { 'codex-second': { info: { primary: { used_percent: 21, window_minutes: 10080, resets_at: 1791547735 } }, seen_at: 1790972433 } },
+  })
+  stubPane(on, () => json, undefined, [], [{ at: '12:00:01', kind: 'tool', sub: false, tool: 'MultiEditorTool', text: 'a long tool call text', detail: null }])
+  await run($)
+  const wide: string[] = []
+  for (const placement of ['inline', 'dock'] as const) {
+    for (const cols of [24, 30, 40, 44, 60, 76]) {
+      const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 40 }), surface: 'terminal' })
+      const framed = placement === 'dock' && cols >= 44
+      const w = cols - (framed ? 4 : 0)
+      for (const view of ['view-agents', 'card', 'view-journal', 'view-summary']) {
+        if (view === 'card') await ui.press({ key: 'open:stage-a/a' })
+        else await ui.press({ key: view })
+        for (const b of await ui.findAll({ type: 'Box' })) {
+          const k = b.key ?? ''
+          if (!k || k === 'frame' || k === 'card' || k.startsWith('sum-') || k.startsWith('tab:')) continue
+          const inner = framed && (k.startsWith('card-') || k.startsWith('limit:') || k.startsWith('q:') || k.startsWith('lock:')) ? w - 4 : w
+          const used = cells(b)
+          if (used > inner) wide.push(`${placement} ${cols}: ${k} takes ${used} > ${inner}`)
+        }
+        if (view === 'card') await ui.press({ key: 'back' })
+      }
+      await ui.unmount()
+    }
+  }
+  expect(wide).toEqual([])
+  // the measure sees whole rows: an agent row fills the body exactly, and a row too wide for a body is caught
+  const ui = await $.ui.mount({ ...paneProps({ cols: 76 }), surface: 'terminal' })
+  await ui.press({ key: 'view-agents' })
+  const agentRow = await ui.find({ key: 'row:stage-a/a' })
+  expect(cells(agentRow)).toBe(76)
+  expect(cells(agentRow) > 60).toBe(true)
   await ui.unmount()
 })
 

@@ -65,6 +65,7 @@ let cursorKey: string | null = null // agentKey of the list row the cursor is on
 let isAutoFocus = true // until the ring first lands on a row, the cursor row is drawn autoFocus
 let ringKey: string | null = null // the element the ring was last moved onto (ui.focus)
 let lastControls = '' // the drawn Buttons' keys, in order, at the last drawing
+let edges: { prev: string | null; next: string | null } = { prev: null, next: null } // the agents past the list's window
 
 // ---------------------------------------------------------------- data
 
@@ -332,8 +333,11 @@ export const register: Register = on => {
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const done = await next(e)
     if (done.deny) return done
-    ringKey = e.element ?? null
-    const row = e.element?.startsWith('open:') ? e.element.slice(5) : null
+    // the ring on `↑ more` / `↓ more` means the agent just past the window: the cursor goes there, the window follows
+    // and the drawing that brings its row puts the ring on it
+    const past = e.element === 'more-up' ? edges.prev : e.element === 'more-down' ? edges.next : null
+    ringKey = past !== null ? `open:${past}` : (e.element ?? null)
+    const row = ringKey?.startsWith('open:') ? ringKey.slice(5) : null
     if (row !== null && (row !== cursorKey || isAutoFocus)) {
       cursorKey = row
       isAutoFocus = false
@@ -374,7 +378,17 @@ export const register: Register = on => {
       },
       open: a => void openCard($, a),
       back: () => back($),
+      step: dir => {
+        const to = dir < 0 ? edges.prev : edges.next
+        if (to === null) return
+        cursorKey = to
+        isAutoFocus = false
+        ringKey = `open:${to}`
+        $.ui.invalidate('ui.render')
+        focusOn($, `open:${to}`)
+      },
     })
+    edges = drawn.edges
     // The ring keeps its place among the Buttons, not its element: when the drawn Buttons change (the window moved, a
     // poll reordered the rows), put it back on the element it means, once this drawing is in (a timer: never from here).
     const sig = drawn.controls.join('\n')
