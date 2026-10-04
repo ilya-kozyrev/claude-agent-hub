@@ -7,7 +7,7 @@ LIVE_PID is a sleeper whose command line holds SID_ALIVE and SID_QUIET (the same
 pid alive AND session id in its command line). Agents:
   alive1   live, a Bash tool call in flight, one read and one unread inbox message, a sub-agent event, a half-written last line
   quiet1   live, log untouched for 15 min                       -> quiet
-  done1    finished, `result` event with "duration_api_ms" first   -> done, $1.25
+  done1    finished, `result` event with "duration_api_ms" first   -> done, $1.25, modelUsage reports a 777k window
   crash1   no process, no result                                   -> dead
   err1     result with is_error                                    -> error
   resumed1 result, then a resume init, no process                  -> dead (running after the last result)
@@ -66,10 +66,13 @@ def tool_result(tid, out, sid, err=False):
                  "parent_tool_use_id": None, "session_id": sid})
 
 
-def result(sid, cost, err=False, subtype="success", msg="finished"):
+def result(sid, cost, err=False, subtype="success", msg="finished", usage=None):
     # the real CLI writes this event with "duration_api_ms" first, not "type"
-    return line({"duration_api_ms": 12, "type": "result", "subtype": subtype, "is_error": err, "num_turns": 3, "result": msg,
-                 "total_cost_usd": cost, "session_id": sid})
+    ev = {"duration_api_ms": 12, "type": "result", "subtype": subtype, "is_error": err, "num_turns": 3, "result": msg,
+          "total_cost_usd": cost, "session_id": sid}
+    if usage:
+        ev["modelUsage"] = usage
+    return line(ev)
 
 
 def agent(stage, name, log, *, role=None, pid=DEAD_PID, sid=None, tag=None, mtime_off=0, model="claude-opus-5-5", unread=None, registry=True):
@@ -106,7 +109,8 @@ unread = [{"at": "2026-01-15T10:00:00+00:00", "msg": "old message", "log_offset"
           {"at": "2026-01-15T10:30:00+00:00", "msg": "new message from the hub", "log_offset": len(head.encode("utf-8"))}]
 agent("stage-a", "alive1", log, pid=live_pid, sid=sid_alive, unread=unread)
 agent("stage-a", "quiet1", init(sid_quiet) + text("q1", "thinking about the schema", -900, sid_quiet), pid=live_pid, sid=sid_quiet, mtime_off=-900)
-agent("stage-a", "done1", init("sid-done1") + text("d1", "finished: task 1", -700, "sid-done1") + result("sid-done1", 1.25, msg="finished: task 1"), mtime_off=-600)
+agent("stage-a", "done1", init("sid-done1") + text("d1", "finished: task 1", -700, "sid-done1") + result("sid-done1", 1.25, msg="finished: task 1",
+             usage={"claude-haiku-4-5-20251001": {"contextWindow": 200000}, "claude-opus-5-5": {"contextWindow": 777000}}), mtime_off=-600)
 agent("stage-a", "crash1", init("sid-crash1") + text("c1", "started work", -300, "sid-crash1")
       + tool("c2", "tc", "Bash", {"command": "make build"}, -290, "sid-crash1"), mtime_off=-280, registry=False)
 agent("stage-a", "err1", init("sid-err1") + text("e1", "hit the turn limit", -200, "sid-err1")

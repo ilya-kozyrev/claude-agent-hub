@@ -33,6 +33,13 @@
   effort (default `high`; it used to get the CLI default, medium) — in `claude --bg`, in the headless fallback and in the
   command the context-budget message prints. Codex successors keep inheriting the hub's effort; `--effort` overrides it.
 - `AGENTS.md` at the repository root (Claude Code reads it through `.claude/CLAUDE.md`): how to run the tests and where things live.
+- **The agent-top pane is redrawn as a mod, not a text dump** (`hooks/agent-top-view.tsx`): a `❯` cursor that follows
+  the pane's focus ring (↑/↓, Enter opens the card) over a list windowed to the pane's height, two lines per agent with
+  a filled state badge; tabs with the active one filled and the stage and time on the right; a rounded cyan frame when
+  docked, the card framed in its state's colour, framed Summary sections (no frames above the prompt or below 44
+  columns); label/value columns in the card and fixed time/tool columns in the feed; `█░` bars for plan limits and the
+  context, coloured by level. `bin/agent-top --json` gains `ctx_window` per agent: the window the log reported (the
+  result's `modelUsage`, Codex's rollout), else by model id, else 200k.
 
 ## 0.8.0 — 2026-10-04
 

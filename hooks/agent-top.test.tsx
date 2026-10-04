@@ -1,10 +1,17 @@
 // Tests of the agent-top mod (run: `claude plugin test hooks`, a Claude Code with mods). `process.run` is stubbed with
 // fixture JSON of `agent-top --json`; nothing reads real agents. Each test loads the module afresh.
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine, TestBody } from 'claude-code/testing'
+
+type On = Parameters<TestBody>[1]
 
 import {
+  barCells,
   capToasts,
+  ctxPercent,
   isOwnCommand,
+  journalColor,
+  levelColor,
   notices,
   onceArgs,
   parseArgs,
@@ -12,7 +19,9 @@ import {
   planRun,
   remember,
   statusText,
+  tagColor,
   taskText,
+  windowAround,
 } from './agent-top-model'
 
 // The plugin's name (plugin.json). The dev copy is checked by running this file there with this line set to 'agent-top-dev'.
@@ -20,6 +29,13 @@ const PLUGIN: string = 'agent-hub'
 const BIN = /\/bin\/agent-top$/
 
 type Row = Record<string, unknown>
+
+// typed answers of the stubbed engine calls
+const REGISTERED = () => ({ value: { command: 'agent-top' } })
+const DONE_VOID = () => ({ value: undefined })
+const ran = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+const run = ($: Engine, args = '', command = 'agent-top') =>
+  $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
 
 const agent = (o: Row = {}): Row => ({
   kind: 'headless', parent: null, engine: 'claude', stage: 'stage-a', role: 'worker', dir_name: 'worker', tag: 'w-1',
@@ -31,7 +47,7 @@ const agent = (o: Row = {}): Row => ({
 
 const snapshot = (agents: Row[], extra: Row = {}): string => {
   const counts = { live: 0, done: 0, error: 0, dead: 0 } as Record<string, number>
-  for (const a of agents) counts[a.state as string] += 1
+  for (const a of agents) counts[a.state as string] = (counts[a.state as string] ?? 0) + 1
   return JSON.stringify({
     generated_at: '2026-10-04T12:00:00+00:00', stages: ['stage-a'], counts, agents, roles: {}, locks: [], questions: {}, questions_ok: true,
     limits: null, codex_limits: {}, journal_tail: [], ...extra,
@@ -56,10 +72,10 @@ test('status line has the counts; the first snapshot never toasts, a transition 
   let json = snapshot([agent(), agent({ role: 'rev', dir_name: 'rev', state: 'done', alive: false, action: null, result: DONE })])
   const toasts: string[] = []
   const statuses: (string | undefined)[] = []
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: json, stderr: '' } }))
+  on('process.run', () => ran(json))
   on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
   on('ui.status', ($, e) => (statuses.push(e.text), { value: undefined }))
   on('session.start', () => ({ cwd: '/work' }))
@@ -83,12 +99,12 @@ test('a failed and a died agent toast; a new open owner question toasts once', a
   const q = (...ids: string[]) => withQuestions('stage-a', ids)
   let json = snapshot([agent(), agent({ role: 'b', dir_name: 'b' })], { questions: q('Q-A-001') })
   const toasts: string[] = []
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: json, stderr: '' } }))
+  on('process.run', () => ran(json))
   on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', DONE_VOID)
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
   await clock.advance(3000)
@@ -110,11 +126,11 @@ test('a failed and a died agent toast; a new open owner question toasts once', a
 test('no agents in the default view: nothing in the status line', async ($, on) => {
   const clock = mock.clock(on)
   const statuses: (string | undefined)[] = []
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: snapshot([]), stderr: '' } }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('process.run', () => ran(snapshot([])))
+  on('ui.toast', DONE_VOID)
   on('ui.status', ($, e) => (statuses.push(e.text), { value: undefined }))
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
@@ -131,38 +147,42 @@ test('/agent-top opens the pane; rows open the card with the feed, Back returns 
     { at: '12:00:02', kind: 'result', sub: false, tool: 'Bash', text: '12 passed', detail: null },
     { at: '12:00:03', kind: 'text', sub: false, tool: null, text: 'all green, writing the report', detail: null },
   ]
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
   on('process.run', ($, e) => {
     calls.push([...e.argv])
-    return { value: { exitCode: 0, stdout: e.argv.includes('--agent') ? cardJson(agent(), feed) : list, stderr: '' } }
+    return ran(e.argv.includes('--agent') ? cardJson(agent(), feed) : list)
   })
-  const answer = await $.command.run({ command: 'agent-top', args: '' })
+  const answer = await run($, '', 'agent-top')
   expect(answer.text).toBe('agent-top pane opened: ● 1 ✓ 1 ✗ 0')
-  expect(calls[0].slice(1)).toEqual(['--json']) // the plugin's own CLI, JSON only
-  expect(calls[0][0]).toMatch(BIN)
+  expect(calls[0]?.slice(1)).toEqual(['--json']) // the plugin's own CLI, JSON only
+  expect(calls[0]?.[0]).toMatch(BIN)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /^agent-top$/ })).toBeDefined()
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/^◆ agent-top +● 1 +✓ 1 +✗ 0 /)
     expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
     expect(await ui.find({ key: 'open:stage-a/rev' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /▸ Bash: run the tests/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /looks fine/ })).toBeDefined()
+    expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/▸ Bash: run the tests/)
+    expect((await ui.find({ key: 'now:stage-a/rev' }))?.text).toMatch(/looks fine/)
     expect(await ui.find({ key: 'back' })).toBeUndefined()
 
     await ui.press({ key: 'open:stage-a/worker' })
     const lastCall = calls.at(-1) ?? []
     expect(lastCall.slice(1)).toEqual(['--json', '--agent', 'worker', '--stage', 'stage-a', '--feed', '30'])
-    expect(await ui.find({ type: 'Text', text: /worker · live pid 123 · 4s ago/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /stage-a · sonnet-5-5\/hi · tag w-1/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /▸ Bash: run the tests/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /◂ 12 passed/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /✎ all green, writing the report/ })).toBeDefined()
+    const title = (await ui.find({ key: 'card-title' }))?.text ?? ''
+    expect(title).toMatch(/LIVE +worker · pid 123 · 4s ago/)
+    expect(title).toMatch(/stage-a$/)
+    expect((await ui.find({ key: 'card-model' }))?.text).toMatch(/^Model +sonnet-5-5\/hi/)
+    expect((await ui.find({ key: 'card-tag' }))?.text).toMatch(/^Tag +w-1/)
+    expect((await ui.find({ key: 'card-now' }))?.text).toMatch(/^Now +▸ Bash: run the tests/)
+    expect((await ui.find({ key: 'feed:0' }))?.text).toMatch(/^12:00:01 ▸ Bash +run the tests$/)
+    expect((await ui.find({ key: 'feed:1' }))?.text).toMatch(/^12:00:02 ◂ output +12 passed$/)
+    expect((await ui.find({ key: 'feed:2' }))?.text).toMatch(/^12:00:03 ✎ says +all green, writing the report$/)
     expect(await ui.find({ key: 'open:stage-a/worker' })).toBeUndefined()
 
     await ui.press({ key: 'back' })
@@ -175,28 +195,28 @@ test('an agent opened from the --all list is asked for with --all (old and archi
   mock.clock(on)
   const calls: string[][] = []
   const old = agent({ role: 'old', dir_name: 'old', state: 'done', alive: false, action: null, age_s: 90000, archived: true, result: DONE })
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
   on('process.run', ($, e) => {
     calls.push([...e.argv])
     const isAll = e.argv.includes('--all')
-    if (e.argv.includes('--agent')) return { value: { exitCode: 0, stdout: isAll ? cardJson(old, []) : snapshot([], { feed: { agent: 'old', stage: 'stage-a', items: [] } }), stderr: '' } }
-    return { value: { exitCode: 0, stdout: snapshot(isAll ? [agent(), old] : [agent()]), stderr: '' } }
+    if (e.argv.includes('--agent')) return ran(isAll ? cardJson(old, []) : snapshot([], { feed: { agent: 'old', stage: 'stage-a', items: [] } }))
+    return ran(snapshot(isAll ? [agent(), old] : [agent()]))
   })
-  await $.command.run({ command: 'agent-top', args: '--all' })
+  await run($, '--all', 'agent-top')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'open:stage-a/old' })
   expect(calls.at(-1)?.slice(1)).toEqual(['--json', '--all', '--agent', 'old', '--stage', 'stage-a', '--feed', '30'])
-  expect(await ui.find({ type: 'Text', text: /old · done/ })).toBeDefined()
+  expect((await ui.find({ key: 'card-title' }))?.text).toMatch(/^ DONE +old · /)
   await ui.unmount()
 
   // the role argument of the command itself takes the same path
   calls.length = 0
-  await $.command.run({ command: 'agent-top', args: 'old --all' })
+  await run($, 'old --all', 'agent-top')
   expect(calls.some(c => c.join(' ').endsWith('--json --all --agent old --stage stage-a --feed 30'))).toBe(true)
 })
 
@@ -209,24 +229,26 @@ test('Journal and Summary views draw the journal tail, locks, questions and plan
     limits: { info: { unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1791547735 }, seven_day: { utilization: 0.1 } } }, seen_at: 1790972433 },
     codex_limits: { codex: { info: { primary: { used_percent: 21, window_minutes: 10080, resets_at: 1791547735 }, secondary: null }, seen_at: 1790972433 } },
   })
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: json, stderr: '' } }))
-  await $.command.run({ command: 'agent-top', args: '' })
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('process.run', () => ran(json))
+  await run($, '', 'agent-top')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'view-journal' })
-    expect(await ui.find({ type: 'Text', text: /12:01 \[hub-1\] plan: ship the mod/ })).toBeDefined()
+    expect((await ui.find({ key: 'journal:0' }))?.text).toMatch(/^12:01 +hub-1 +plan: ship the mod$/)
     await ui.press({ key: 'view-summary' })
-    expect(await ui.find({ type: 'Text', text: /main-merge santinel until 2026-10-31 23:59/ })).toBeDefined()
+    expect((await ui.find({ key: 'lock:0' }))?.text).toMatch(/^ main-merge +santinel +until 10-31 23:59 +Hub core-c #28: held$/)
+    expect((await ui.find({ key: 'q:stage-a' }))?.text).toMatch(/^stage-a +1 open +OVERDUE 1 $/)
     expect(await ui.find({ type: 'Text', text: /Q-9 \[stage-a\] open OVERDUE/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /5h: 42% used/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /7d: 21% used/ })).toBeDefined()
+    expect((await ui.find({ key: 'limit:claude:5h' }))?.text).toMatch(/^Claude +5h +█+░+ +42%/)
+    expect((await ui.find({ key: 'limit:claude:7d' }))?.text).toMatch(/^ +7d +█+░+ +10%$/)
+    expect((await ui.find({ key: 'limit:codex:7d' }))?.text).toMatch(/^Codex +7d +█+░+ +21% +↻ /)
     await ui.press({ key: 'view-agents' })
     expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
     await ui.unmount()
@@ -237,31 +259,31 @@ test('/agent-top <role> --stage S opens that agent card; an unknown role says so
   mock.clock(on)
   const calls: string[][] = []
   const rows = [agent(), agent({ stage: 'stage-b', dir_name: 'worker' })]
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
   on('process.run', ($, e) => {
     calls.push([...e.argv])
-    return { value: { exitCode: 0, stdout: e.argv.includes('--agent') ? cardJson(agent({ stage: e.argv[e.argv.indexOf('--stage') + 1] }), []) : snapshot(rows, { stages: ['stage-a', 'stage-b'] }), stderr: '' } }
+    return ran(e.argv.includes('--agent') ? cardJson(agent({ stage: e.argv[e.argv.indexOf('--stage') + 1] }), []) : snapshot(rows, { stages: ['stage-a', 'stage-b'] }))
   })
-  const ok = await $.command.run({ command: 'agent-top', args: 'worker --stage stage-b' })
+  const ok = await run($, 'worker --stage stage-b', 'agent-top')
   expect(ok.text).toMatch(/^agent-top pane opened: /)
   expect(calls.some(c => c.join(' ').endsWith('--agent worker --stage stage-b --feed 30'))).toBe(true)
 
-  const none = await $.command.run({ command: 'agent-top', args: 'ghost' })
+  const none = await run($, 'ghost', 'agent-top')
   expect(none.text).toBe('agent-top pane opened: no agent "ghost"; ● 2 ✓ 0 ✗ 0')
 })
 
 test('where no pane can be placed, /agent-top answers with the text picture', async ($, on) => {
   const calls: string[][] = []
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.open', () => ({ value: { isPlaced: false, reason: 'no pane here' } }))
-  on('process.run', ($, e) => (calls.push([...e.argv]), { value: { exitCode: 0, stdout: 'agent-top picture\n', stderr: '' } }))
-  const answer = await $.command.run({ command: 'agent-top', args: 'worker --stage s --all' })
+  on('process.run', ($, e) => (calls.push([...e.argv]), ran('agent-top picture\n')))
+  const answer = await run($, 'worker --stage s --all', 'agent-top')
   expect(answer.text).toBe('agent-top picture')
   expect(calls.at(-1)?.slice(1)).toEqual(['--once', '--width', '100', '--stage', 's', '--all', '--agent', 'worker'])
 })
@@ -270,17 +292,17 @@ test("only agent-top and this plugin's own <name>:agent-top are answered; anothe
   mock.clock(on)
   const own = `${PLUGIN}:agent-top`
   const isDev = PLUGIN === 'agent-top-dev'
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: [] }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: 'picture\n', stderr: '' } }))
+  on('process.run', () => ran('picture\n'))
   on('command.run', () => ({ text: 'the engine ran it' }))
-  expect((await $.command.run({ command: 'agent-top', args: '' })).text).toBe('picture')
-  expect((await $.command.run({ command: own, args: '' })).text).toBe('picture')
-  expect((await $.command.run({ command: 'agent-hub:agent-top', args: '' })).text).toBe(isDev || PLUGIN === 'agent-hub' ? 'picture' : 'the engine ran it')
+  expect((await run($, '', 'agent-top')).text).toBe('picture')
+  expect((await run($, '', own)).text).toBe('picture')
+  expect((await run($, '', 'agent-hub:agent-top')).text).toBe(isDev || PLUGIN === 'agent-hub' ? 'picture' : 'the engine ran it')
   for (const other of ['compact', 'other-plugin:agent-top', 'other-plugin:agent-topic', 'agent-top-dev-x:agent-top']) {
-    expect((await $.command.run({ command: other, args: '' })).text).toBe('the engine ran it')
+    expect((await run($, '', other)).text).toBe('the engine ran it')
   }
-  expect((await $.command.run({ command: 'agent-top-dev:agent-top', args: '' })).text).toBe(isDev ? 'picture' : 'the engine ran it')
+  expect((await run($, '', 'agent-top-dev:agent-top')).text).toBe(isDev ? 'picture' : 'the engine ran it')
 })
 
 test('isOwnCommand: the dev copy also answers agent-hub:agent-top, nobody else does', async () => {
@@ -297,11 +319,11 @@ test('isOwnCommand: the dev copy also answers agent-hub:agent-top, nobody else d
 
 test('with no surface at all (a -p run) /agent-top answers with the text picture and opens nothing', async ($, on) => {
   let opened = 0
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: [] }))
   on('ui.open', () => (opened += 1, { value: { isPlaced: true } }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: 'picture\n', stderr: '' } }))
-  const answer = await $.command.run({ command: 'agent-top', args: '' })
+  on('process.run', () => ran('picture\n'))
+  const answer = await run($, '', 'agent-top')
   expect(answer.text).toBe('picture')
   expect(opened).toBe(0)
 })
@@ -309,26 +331,26 @@ test('with no surface at all (a -p run) /agent-top answers with the text picture
 test('a failing CLI shows one dim line and keeps the last good snapshot', async ($, on) => {
   const clock = mock.clock(on)
   let isBroken = false
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [{ id: 'agent-top', title: 'Agents', isShown: true, isFocused: false, isPlaced: true }] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
   on('process.run', () =>
     isBroken
-      ? { value: { exitCode: 2, stdout: '', stderr: 'FAILED: hub home is unreadable\nmore\n' } }
-      : { value: { exitCode: 0, stdout: snapshot([agent()]), stderr: '' } },
+      ? ran('', 2, 'FAILED: hub home is unreadable\nmore\n')
+      : ran(snapshot([agent()])),
   )
-  await $.command.run({ command: 'agent-top', args: '' })
+  await run($, '', 'agent-top')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   isBroken = true
   await clock.advance(3000) // the pane is open: polls every 3 s
-  expect(await ui.find({ type: 'Text', text: '! FAILED: hub home is unreadable' })).toBeDefined()
+  expect((await ui.find({ key: 'error' }))?.text).toBe(' !  FAILED: hub home is unreadable')
   expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined() // the last good snapshot is still drawn
   isBroken = false
   await clock.advance(3000)
-  expect(await ui.find({ type: 'Text', text: /^!/ })).toBeUndefined()
+  expect(await ui.find({ key: 'error' })).toBeUndefined()
 })
 
 test('a missing agent-top stops the polling: status cleared, no toasts, no more calls', async ($, on) => {
@@ -337,13 +359,13 @@ test('a missing agent-top stops the polling: status cleared, no toasts, no more 
   let isGone = false
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [] }))
   on('process.run', () => {
     runs += 1
     if (isGone) return { deny: 'spawn ENOENT: no such file or directory' }
-    return { value: { exitCode: 0, stdout: snapshot([agent()]), stderr: '' } }
+    return ran(snapshot([agent()]))
   })
   on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
   on('ui.status', ($, e) => (statuses.push(e.text), { value: undefined }))
@@ -365,20 +387,20 @@ test('never two runs in flight', async ($, on) => {
   const clock = mock.clock(on)
   let active = 0
   let most = 0
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
   on('ui.panes', () => ({ value: [{ id: 'agent-top', title: 'Agents', isShown: true, isFocused: false, isPlaced: true }] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
   on('process.run', async () => {
     active += 1
     most = Math.max(most, active)
     await clock.sleep(7000) // slower than two ticks
     active -= 1
-    return { value: { exitCode: 0, stdout: snapshot([agent()]), stderr: '' } }
+    return ran(snapshot([agent()]))
   })
-  const opening = $.command.run({ command: 'agent-top', args: '' })
+  const opening = run($, '', 'agent-top')
   await clock.advance(60000)
   await opening
   expect(most).toBe(1)
@@ -410,7 +432,7 @@ test('notices, status text and toast cap on parsed snapshots', async () => {
   expect(statusText(after)).toBe('agents ● 1 ✓ 3 ✗ 0')
   expect(statusText(parseSnapshot(snapshot([]), 0))).toBeUndefined()
   expect(capToasts(['a', 'b', 'c', 'd', 'e'])).toEqual(['a', 'b', '+3 more events (open /agent-top)'])
-  expect(taskText(parseSnapshot(snapshot([agent()]), 0).agents[0])).toBe('Build the thing')
+  expect(parseSnapshot(snapshot([agent()]), 0).agents.map(taskText)).toEqual(['Build the thing'])
   expect(() => parseSnapshot('not json', 0)).toThrow('agent-top printed no JSON')
   expect(() => parseSnapshot('{"x":1}', 0)).toThrow('unexpected agent-top output')
 })
@@ -495,4 +517,342 @@ test('a resumed agent that finishes again between two polls (done, runs 1 -> 2) 
   const done = (runs: number) => parseSnapshot(snapshot([agent({ state: 'done', alive: false, action: null, age_s: 600, runs, result: DONE })]), 0)
   expect(notices(remember(done(1)), done(2))).toEqual(['✓ worker · stage-a finished'])
   expect(notices(remember(done(2)), done(2))).toEqual([])
+})
+
+// ---------------------------------------------------------------- the drawing: cursor, window, badges, bars, layouts
+
+const paneProps = (o: { placement?: 'dock' | 'inline'; cols?: number; rows?: number } = {}) => ({
+  ...PANE,
+  props: { ...PANE.props, placement: o.placement ?? 'inline', bodyColumns: o.cols ?? 70, scroll: { offset: 0, bodyRows: o.rows ?? 20 } },
+})
+
+/** The stubs every pane test needs; `json` answers every CLI call, `focus` the bottom of `ui.focus`. */
+function stubPane(on: On, json: () => string, focus: () => { deny?: string } = () => ({}), moves: string[] = [], feed: Row[] = []): void {
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', ($, e) => {
+    const deny = focus().deny
+    if (!deny) moves.push(`${e.origin.kind}:${e.element ?? ''}`)
+    return deny ? { deny } : {}
+  })
+  on('process.run', ($, e) => ran(e.argv.includes('--agent') ? cardJson(JSON.parse(json()).agents[0], feed) : json()))
+}
+
+/** The person moving the pane's focus ring onto `element` (as Tab or an arrow does): the `ui.focus` chain. */
+const focus = ($: Engine, element: string, requestId = 'agent-top') =>
+  $.ui.focus({ component: 'Pane', requestId, element, origin: { kind: 'person' } })
+
+const rowKeys = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined }[]> }): Promise<string[]> =>
+  (await ui.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(k => k.startsWith('row:'))
+
+test('the cursor follows the focus ring: ❯ on that row; the first row is autoFocus at open; another pane and a denied move change nothing', async ($, on) => {
+  mock.clock(on)
+  let deny: string | undefined
+  stubPane(on, () => snapshot([agent(), agent({ role: 'rev', dir_name: 'rev' })]), () => ({ deny }))
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps(), surface: 'terminal' })
+  expect((await ui.find({ key: 'open:stage-a/worker' }))?.props.autoFocus).toBe(true)
+  expect((await ui.find({ key: 'row:stage-a/worker' }))?.text).toMatch(/^❯ /)
+  expect((await ui.find({ key: 'row:stage-a/rev' }))?.text).not.toMatch(/^❯/)
+
+  expect(await focus($, 'open:stage-a/rev', 'agent-top')).toEqual({})
+  expect((await ui.find({ key: 'row:stage-a/rev' }))?.text).toMatch(/^❯ /)
+  expect((await ui.find({ key: 'row:stage-a/worker' }))?.text).not.toMatch(/^❯/)
+  expect((await ui.find({ key: 'open:stage-a/worker' }))?.props.autoFocus).toBeUndefined() // the ring has been placed
+
+  await focus($, 'open:stage-a/worker', 'another-pane')
+  expect((await ui.find({ key: 'row:stage-a/rev' }))?.text).toMatch(/^❯ /)
+  deny = 'the site does not hold the keyboard'
+  expect((await focus($, 'open:stage-a/worker', 'agent-top')).deny).toBe(deny)
+  expect((await ui.find({ key: 'row:stage-a/rev' }))?.text).toMatch(/^❯ /)
+
+  // a tab keeps the cursor where it was; Back from a card puts it on that agent's row
+  await focus($, 'refresh', 'agent-top')
+  expect((await ui.find({ key: 'row:stage-a/rev' }))?.text).toMatch(/^❯ /)
+  await ui.unmount()
+})
+
+test('the list is a window around the cursor that fits the body: 30 agents in 12 rows, "↓ N more", the window follows the ring', async ($, on) => {
+  const clock = mock.clock(on)
+  const moves: string[] = []
+  const many = Array.from({ length: 30 }, (_, i) => agent({ role: `w${i}`, dir_name: `w${i}` }))
+  stubPane(on, () => snapshot(many), undefined, moves)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 12 }), surface: 'terminal' })
+  let rows = await rowKeys(ui)
+  expect(rows).toEqual(['row:stage-a/w0', 'row:stage-a/w1', 'row:stage-a/w2', 'row:stage-a/w3'])
+  expect(rows.length * 2 + 4).toBeLessThanOrEqual(12) // header, tabs, the rule, two lines per agent, the footer
+  expect((await ui.find({ key: 'footer' }))?.text).toMatch(/^↓ 26 more/)
+  expect((await ui.find({ key: 'open:stage-a/w0' }))?.props.hotkey).toBe('1')
+  moves.length = 0
+
+  await focus($, 'open:stage-a/w3', 'agent-top') // the last drawn row: the next one comes in
+  rows = await rowKeys(ui)
+  expect(rows).toEqual(['row:stage-a/w2', 'row:stage-a/w3', 'row:stage-a/w4'])
+  expect((await ui.find({ key: 'more-up' }))?.props.label).toBe('↑ 2 more') // a Button: the ring can always go up
+  expect((await ui.find({ key: 'more-down' }))?.props.label).toBe('↓ 25 more')
+  expect((await ui.find({ key: 'open:stage-a/w2' }))?.props.hotkey).toBe('1') // hotkeys number the window's rows
+  // The module then puts the ring back on w3 with $.ui.focus (the ring keeps its place among the Buttons, not its
+  // element). The kit does not route a module's own $.ui.focus to a test's ui.focus hook ("no implementation for
+  // ui.focus"), so that step is checked in the live pty run (inline, where the window moves), not here.
+  await clock.advance(3000) // a poll with the same rows: the window stays where the cursor put it
+  expect(await rowKeys(ui)).toEqual(['row:stage-a/w2', 'row:stage-a/w3', 'row:stage-a/w4'])
+  expect(moves).toEqual(['person:open:stage-a/w3'])
+
+  await focus($, 'more-up', 'agent-top') // the ring onto `↑ 2 more`: the cursor goes to w1
+  expect((await ui.find({ key: 'row:stage-a/w1' }))?.text).toMatch(/^❯ /)
+  await ui.press({ key: 'more-down' }) // Enter on `↓ N more` moves it past the bottom edge
+  expect((await rowKeys(ui)).length).toBeGreaterThan(0)
+  expect((await ui.find({ key: 'row:stage-a/w1' }))?.text ?? '').not.toMatch(/^❯ /)
+  await ui.unmount()
+})
+
+/** The person's ↑ / ↓: the ring onto the drawn Button before / after the cursor row's, as the engine walks them. */
+async function arrow($: Engine, ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined }[]> }, cursor: string, dir: -1 | 1): Promise<void> {
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '')
+  const next = keys[keys.indexOf(`open:${cursor}`) + dir]
+  if (next !== undefined) await focus($, next)
+}
+
+test('↑ and ↓ reach every agent and come back, docked and inline, two-line and one-line rows', async ($, on) => {
+  mock.clock(on)
+  const many = Array.from({ length: 12 }, (_, i) => agent({ role: `w${i}`, dir_name: `w${i}`, stage: i < 6 ? 'stage-a' : 'stage-b' }))
+  stubPane(on, () => snapshot(many, { stages: ['stage-a', 'stage-b'] }))
+  await run($)
+  for (const props of [paneProps({ rows: 8 }), paneProps({ rows: 12 }), paneProps({ placement: 'dock', cols: 76, rows: 14 })]) {
+    const ui = await $.ui.mount({ ...props, surface: 'terminal' })
+    const cursor = async () => {
+      const rows = (await ui.findAll({ type: 'Box' })).filter(b => (b.key ?? '').startsWith('row:'))
+      return rows.find(r => r.text.startsWith('❯'))?.key?.slice(4) ?? ''
+    }
+    const seen: string[] = [await cursor()]
+    for (let i = 0; i < 11; i += 1) {
+      await arrow($, ui, seen[seen.length - 1] ?? '', 1)
+      seen.push(await cursor())
+    }
+    expect(seen).toEqual(many.map(a => `${a.stage}/${a.dir_name}`))
+    for (let i = 0; i < 11; i += 1) {
+      await arrow($, ui, seen[seen.length - 1] ?? '', -1)
+      seen.push(await cursor())
+    }
+    expect(seen.at(-1)).toBe('stage-a/w0')
+    await ui.unmount()
+  }
+})
+
+/** Cells a found element takes on one line: text, a plain Button's `1: ` and a framed one's `[ ]`. */
+function cells(node: unknown): number {
+  if (typeof node === 'string') return Array.from(node).length
+  if (typeof node === 'number') return String(node).length
+  if (!node || typeof node !== 'object') return 0
+  const n = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  if (n.type === 'Button') return Array.from(String(n.props?.label ?? '')).length + (n.props?.plain ? (n.props?.hotkey ? 3 : 0) : 4)
+  const kids = Array.isArray(n.children) ? n.children : []
+  if (n.type === 'Box' && n.props?.flexDirection === 'column') return Math.max(0, ...kids.map(cells))
+  return kids.reduce((sum: number, k) => sum + cells(k), 0)
+}
+
+test('no row is wider than the body: every view at 24, 30, 40, 44, 60 and 76 columns, inline and docked', async ($, on) => {
+  mock.clock(on)
+  const rows = [
+    agent({ role: 'a-rather-long-role-name', dir_name: 'a', title: 'A task title long enough to need clipping everywhere (w-1)', ctx_window: 200000 }),
+    agent({ role: 'q', dir_name: 'q', quiet: true, stage: 'a-very-long-stage-name' }),
+    agent({ role: 'e', dir_name: 'e', state: 'error', alive: false, action: null, result: { subtype: 'error_max_turns', is_error: true, text: 'ran out of turns after a long while' } }),
+  ]
+  const json = snapshot(rows, {
+    stages: ['stage-a', 'a-very-long-stage-name'],
+    journal_tail: [{ stage: 'stage-a', time: '12:01', tag: 'a-long-journal-tag', text: 'done: a journal line long enough to wrap twice in a narrow pane' }],
+    locks: [{ kind: 'main-merge-and-more', repo: 'santinel', owner_name: 'Hub core-c #28', until: '2026-10-31T23:59:00+03:00', active: true, why: 'held' }],
+    questions: { 'a-very-long-stage-name': { open: 12, overdue: 3, line: 'x', items: ['Q-9 [a-very-long-stage-name] open OVERDUE — decide this long question?'] } },
+    limits: { info: { unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1791547735 } } }, seen_at: 1790972433 },
+    codex_limits: { 'codex-second': { info: { primary: { used_percent: 21, window_minutes: 10080, resets_at: 1791547735 } }, seen_at: 1790972433 } },
+  })
+  stubPane(on, () => json, undefined, [], [{ at: '12:00:01', kind: 'tool', sub: false, tool: 'MultiEditorTool', text: 'a long tool call text', detail: null }])
+  await run($)
+  const wide: string[] = []
+  for (const placement of ['inline', 'dock'] as const) {
+    for (const cols of [24, 30, 40, 44, 60, 76]) {
+      const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 40 }), surface: 'terminal' })
+      const framed = placement === 'dock' && cols >= 44
+      const w = cols - (framed ? 4 : 0)
+      for (const view of ['view-agents', 'card', 'view-journal', 'view-summary']) {
+        if (view === 'card') await ui.press({ key: 'open:stage-a/a' })
+        else await ui.press({ key: view })
+        for (const b of await ui.findAll({ type: 'Box' })) {
+          const k = b.key ?? ''
+          if (!k || k === 'frame' || k === 'card' || k.startsWith('sum-') || k.startsWith('tab:')) continue
+          const inner = framed && (k.startsWith('card-') || k.startsWith('limit:') || k.startsWith('q:') || k.startsWith('lock:')) ? w - 4 : w
+          const used = cells(b)
+          if (used > inner) wide.push(`${placement} ${cols}: ${k} takes ${used} > ${inner}`)
+        }
+        if (view === 'card') await ui.press({ key: 'back' })
+      }
+      await ui.unmount()
+    }
+  }
+  expect(wide).toEqual([])
+  // the measure sees whole rows: an agent row fills the body exactly, and a row too wide for a body is caught
+  const ui = await $.ui.mount({ ...paneProps({ cols: 76 }), surface: 'terminal' })
+  await ui.press({ key: 'view-agents' })
+  const agentRow = await ui.find({ key: 'row:stage-a/a' })
+  expect(cells(agentRow)).toBe(76)
+  expect(cells(agentRow) > 60).toBe(true)
+  await ui.unmount()
+})
+
+test('state badges: LIVE green, QUIET yellow, DONE grey, FAIL and DIED red', async ($, on) => {
+  mock.clock(on)
+  const rows = [
+    agent({ role: 'a', dir_name: 'a' }),
+    agent({ role: 'q', dir_name: 'q', quiet: true }),
+    agent({ role: 'd', dir_name: 'd', state: 'done', alive: false, action: null, result: DONE }),
+    agent({ role: 'e', dir_name: 'e', state: 'error', alive: false, action: null, result: { subtype: 'error_max_turns', is_error: true, text: 'x' } }),
+    agent({ role: 'x', dir_name: 'x', state: 'dead', alive: false, action: null }),
+  ]
+  stubPane(on, () => snapshot(rows))
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...paneProps({ rows: 30 }), surface })
+    const badge = async (label: string) => (await ui.find({ type: 'Text', text: new RegExp(`^ ${label} *$`) }))?.props
+    expect(await badge('LIVE')).toMatchObject({ backgroundColor: 'green', color: 'black', bold: true })
+    expect(await badge('QUIET')).toMatchObject({ backgroundColor: 'yellow', color: 'black' })
+    expect(await badge('DONE')).toMatchObject({ backgroundColor: 'gray', color: 'black', bold: true })
+    expect(await badge('FAIL')).toMatchObject({ backgroundColor: 'red', color: 'white' })
+    expect(await badge('DIED')).toMatchObject({ backgroundColor: 'red', color: 'white' })
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/● 2 +✓ 1 +✗ 2/)
+    expect((await ui.find({ type: 'Text', text: ' ✗ 2 ' }))?.props.backgroundColor).toBe('red')
+    expect(await ui.findAll({ type: 'Raster' })).toEqual([])
+    expect(await ui.findAll({ type: 'Svg' })).toEqual([])
+    await ui.unmount()
+  }
+})
+
+test('limit bars: 20 cells, coloured by level (42% green, 91% red); the context bar uses ctx_window', async ($, on) => {
+  mock.clock(on)
+  const json = snapshot([agent({ ctx_tokens: 52000, ctx_window: 200000 })], {
+    limits: { info: { unifiedWindows: { five_hour: { utilization: 0.42 } } }, seen_at: 1790972433 },
+    codex_limits: { codex: { info: { primary: { used_percent: 91, window_minutes: 300 } }, seen_at: 1790972433 } },
+  })
+  stubPane(on, () => json)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 30 }), surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: ' 26%' }))?.props.dimColor).toBe(true) // the list's context column: low, so quiet
+  await ui.press({ key: 'view-summary' })
+  expect((await ui.find({ type: 'Text', text: /^█{8}$/ }))?.props.color).toBe('green')
+  expect((await ui.find({ type: 'Text', text: /^░{12}$/ }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^█{18}$/ }))?.props.color).toBe('red')
+  await ui.press({ key: 'view-agents' })
+  await ui.press({ key: 'open:stage-a/worker' })
+  expect((await ui.find({ key: 'card-context' }))?.text).toMatch(/^Context +█+░+ 26% 52k \/ 200k/)
+  await ui.unmount()
+})
+
+test('a context near its window is red in the list; an older CLI without ctx_window shows the size alone', async ($, on) => {
+  mock.clock(on)
+  let json = snapshot([agent({ ctx_tokens: 170000, ctx_window: 200000 })])
+  stubPane(on, () => json)
+  await run($)
+  let ui = await $.ui.mount({ ...paneProps(), surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: ' 85%' }))?.props.color).toBe('red')
+  await ui.unmount()
+
+  const older = agent()
+  delete older.ctx_window
+  json = snapshot([older])
+  await run($)
+  ui = await $.ui.mount({ ...paneProps(), surface: 'terminal' })
+  expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/· 52k$/)
+  await ui.press({ key: 'open:stage-a/worker' })
+  expect((await ui.find({ key: 'card-context' }))?.text).toMatch(/^Context +52k/)
+  expect((await ui.find({ key: 'card-context' }))?.text).not.toMatch(/%/)
+  await ui.unmount()
+})
+
+test('layouts: dock has the cyan frame, a card framed in its state colour and framed Summary sections; inline and narrow have none', async ($, on) => {
+  mock.clock(on)
+  stubPane(on, () => snapshot([agent()], { locks: [{ kind: 'main-merge', repo: 'r', owner_name: 'o', until: '2026-10-31T23:59:00+03:00', active: false, why: 'w' }] }))
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    let ui = await $.ui.mount({ ...paneProps({ placement: 'dock', cols: 76, rows: 40 }), surface })
+    expect((await ui.find({ key: 'frame' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: 'cyan' })
+    expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/sonnet-5-5\/hi · 7t · 52k$/)
+    await ui.press({ key: 'view-summary' })
+    expect((await ui.find({ key: 'sum-limits' }))?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true })
+    expect((await ui.find({ key: 'lock:0' }))?.text).toMatch(/main-merge/)
+    expect((await ui.find({ type: 'Text', text: / r +until/ }))?.props.strikethrough).toBe(true) // the expired lock
+    await ui.press({ key: 'view-agents' })
+    await ui.press({ key: 'open:stage-a/worker' })
+    expect((await ui.find({ key: 'card' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: 'green' })
+    expect((await ui.find({ key: 'back' }))?.props.autoFocus).toBe(true)
+    await ui.press({ key: 'back' })
+    await ui.unmount()
+
+    ui = await $.ui.mount({ ...paneProps({ placement: 'inline', cols: 76 }), surface })
+    expect(await ui.find({ key: 'frame' })).toBeUndefined()
+    await ui.press({ key: 'view-summary' })
+    expect(await ui.find({ key: 'sum-limits' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^── Plan limits ─+$/ })).toBeDefined()
+    await ui.press({ key: 'view-agents' })
+    await ui.press({ key: 'open:stage-a/worker' })
+    expect((await ui.find({ key: 'card' }))?.props.borderStyle).toBeUndefined()
+    await ui.press({ key: 'back' })
+    await ui.unmount()
+
+    ui = await $.ui.mount({ ...paneProps({ placement: 'dock', cols: 40 }), surface }) // narrow: compact even in the dock
+    expect(await ui.find({ key: 'frame' })).toBeUndefined()
+    expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).not.toMatch(/sonnet/)
+    expect((await ui.find({ key: 'refresh' }))?.props.label).toBe('↻')
+    await ui.unmount()
+  }
+})
+
+test('the journal: a tag pill in a stable colour, the line coloured by its first word, a rule per stage', async ($, on) => {
+  mock.clock(on)
+  stubPane(on, () =>
+    snapshot([agent()], {
+      journal_tail: [
+        { stage: 'stage-a', time: '12:01', tag: 'w-1', text: 'DONE: tests green' },
+        { stage: 'stage-b', time: '12:02', tag: 'rev', text: 'FAIL lint' },
+      ],
+    }),
+  )
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps(), surface: 'terminal' })
+  await ui.press({ key: 'view-journal' })
+  expect((await ui.find({ type: 'Text', text: /^ w-1 +$/ }))?.props).toMatchObject({ backgroundColor: tagColor('w-1'), color: 'black' })
+  expect((await ui.find({ type: 'Text', text: 'DONE: tests green' }))?.props.color).toBe('green')
+  expect((await ui.find({ type: 'Text', text: 'FAIL lint' }))?.props.color).toBe('red')
+  expect(await ui.find({ type: 'Text', text: /^── stage-b ─+$/ })).toBeDefined()
+  expect((await ui.find({ key: 'tab:journal' }))?.props.backgroundColor).toBe('cyan') // the active tab: filled
+  expect((await ui.find({ key: 'view-journal' }))?.props.label).toBe(' Journal ') // and still a Button: the ring never loses it
+  expect((await ui.find({ key: 'view-summary' }))?.props).toMatchObject({ label: 'Summary', hotkey: 's', dimColor: true })
+  await ui.unmount()
+})
+
+test('windowAround, barCells, levelColor, tagColor, journalColor, ctxPercent', async () => {
+  const two = (n: number) => Array.from({ length: n }, () => 2)
+  expect(windowAround([], 0, 10)).toEqual({ start: 0, end: 0 })
+  expect(windowAround(two(3), 0, 100)).toEqual({ start: 0, end: 3 })
+  expect(windowAround(two(30), 0, 8)).toEqual({ start: 0, end: 4 })
+  expect(windowAround(two(30), 3, 8)).toEqual({ start: 2, end: 6 })
+  expect(windowAround(two(30), 29, 8)).toEqual({ start: 26, end: 30 })
+  expect(windowAround(two(30), 15, 1)).toEqual({ start: 15, end: 16 }) // the cursor's row even when nothing fits
+  expect(windowAround([1, 2, 2, 1, 2], 4, 5)).toEqual({ start: 2, end: 5 })
+  expect(barCells(42, 20)).toEqual({ full: '█'.repeat(8), empty: '░'.repeat(12) })
+  expect(barCells(0, 4)).toEqual({ full: '', empty: '░░░░' })
+  expect(barCells(1, 20).full).toBe('█') // any use shows one cell
+  expect(barCells(250, 5)).toEqual({ full: '█████', empty: '' })
+  expect([levelColor(0), levelColor(59), levelColor(60), levelColor(84), levelColor(85), levelColor(100)]).toEqual(['green', 'green', 'yellow', 'yellow', 'red', 'red'])
+  expect(tagColor('hub-1')).toBe(tagColor('hub-1'))
+  expect(new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(tagColor)).size).toBeGreaterThan(2)
+  expect([journalColor('done: x'), journalColor('FAIL y'), journalColor('review: z'), journalColor('plan: w'), journalColor('just text')]).toEqual(['green', 'red', 'magenta', 'cyan', undefined])
+  const [a] = parseSnapshot(snapshot([agent({ ctx_tokens: 52000, ctx_window: 200000 })]), 0).agents
+  const [b] = parseSnapshot(snapshot([agent({ ctx_window: 0 })]), 0).agents
+  expect(a && ctxPercent(a)).toBe(26)
+  expect(b?.ctx_window).toBeNull()
+  expect(b && ctxPercent(b)).toBeNull()
 })
