@@ -52,7 +52,7 @@ Rules the tool enforces:
 ## Choosing
 
 ```
-hub reviewer [--for CLASS] [--json] [--all]
+hub reviewer [--for CLASS] [--stage STAGE] [--json] [--all]
 ```
 
 It walks the list in order and stops at the first entry that is available now: not past its `until`, serving the
@@ -70,7 +70,8 @@ start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high -
 ```
 
 For an `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief file) and
-runs the line as it is — **no `--worktree`**: a reviewer only reads. `agent spawn` refuses a role whose agent still
+runs the line as it is — **no `--worktree`**: a reviewer only reads. With `--stage S` (else `$HUB_STAGE`) the line
+carries `--stage S`, so the reviewer joins that stage whatever the shell's `HUB_STAGE` is. `agent spawn` refuses a role whose agent still
 runs, so a second review at the same time takes another `--role`. For a `skill` reviewer the hub loads the skill and
 gives it the four inputs of the contract.
 
@@ -111,7 +112,9 @@ entries still override that default. Check actual CLI model availability before 
 `${CLAUDE_PLUGIN_ROOT}/templates/brief-review.md` is a self-contained review brief: what changed and why, the diff
 (`git diff <base sha>..<head sha>`), where to look hardest, read-only, findings ranked high / medium / low with
 `file:line`, a concrete failing scenario and a one-sentence fix, a verdict (`merge`, `merge after fixes`, `changes
-requested`), and "say if you ran the tests". Its *Round N* section is for the next rounds: paste the previous round's
+requested`), and "say if you ran the tests". A read-only reviewer (a Codex `read-only` sandbox cannot write files or
+create temp dirs) returns the review as its final answer and the caller saves it; the brief carries the author's test
+commands with their exit codes and tells the reviewer not to rerun them unless a finding needs it. Its *Round N* section is for the next rounds: paste the previous round's
 findings verbatim and limit the scope to the fix commits. At most three rounds per artifact (the hub skill's rule 5).
 
 ## The skill reviewer contract
@@ -123,8 +126,9 @@ A reviewer skill is any skill that follows this contract; the hub knows nothing 
 - **It may run detached** — a CLI started in the background, a cloud session, a queue. It then says how the hub should
   wait for it (typically a file to watch with `jwait --file`, or a `Monitor`), and the hub waits the way its skill
   says: one waiter, no polling loop.
-- **Output**: the review in a file, and the file's path in its final message. The format is the brief's: findings
-  ranked, each with `file:line`, a scenario and a fix, then a verdict line.
+- **Output**: the review in a file, and the file's path in its final message (a reviewer that cannot write returns the
+  review as its final answer, and the caller saves it). The format is the brief's: findings ranked, each with
+  `file:line`, a scenario and a fix, then a verdict line.
 - **The hub verifies each finding against the code before acting on it.** A review is a colleague's opinion: the hub
   confirms the cited line says what the finding claims, reproduces the scenario or reads it through, and only then
   hands the author a fix list — dropping what does not hold.
