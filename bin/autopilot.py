@@ -921,7 +921,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             sandbox_policy = {"type": mode}
         sandbox_policy = engines.sandbox_policy(sandbox_policy)
     else:
-        effort = successor_effort(effort_arg)
+        # --again without a new --effort: the previous attempt's effort, not the default
+        effort = successor_effort(effort_arg or (retry.get("effort") if retry.get("engine") != "codex" else None))
         model = successor_model(model)
         if not model:
             raise hc.UsageError("no model for the successor: pass --model (the hub's transcript was not found and "
@@ -1059,13 +1060,14 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
                   f"`{tool('hub')} succeed --stage {stage} --handoff {shlex.quote(str(pend.get('handoff', '<the handoff>')))}`")
             return 1
         bg = dict(pend, kind="bg") if pend.get("kind") == "falling-back" else pend  # a stale run of --fallback
+        effort = successor_effort(bg.get("effort"))  # a bad setting is refused before the reservation is saved
         data["pending"] = dict(bg, kind="falling-back", at=now, bg_at=bg.get("bg_at") or bg.get("at"))
         save_state(stage, data)
     timeout_s = takeover_timeout()
     try:
         s = Successor(stage, n, Path(bg["handoff"]), bg["model"], bg.get("mode") or "default",
                       Path(bg.get("cwd") or os.getcwd()), bg.get("k") or data["chain"], chain_limit(), succ,
-                      bg.get("effort"))
+                      effort)
     except hc.Failure:
         _record(stage, succ, bg)
         raise

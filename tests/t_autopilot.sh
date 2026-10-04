@@ -226,6 +226,17 @@ setup; AGENT_HUB_SUCCESSOR_EFFORT=max succeed --model opus --headless > /dev/nul
 setup; succeed --model opus --effort xhigh > /dev/null 2>&1
 $B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "xhigh:xhigh" "effort: --fallback's headless hub keeps the effort of the background one"
 
+# --fallback of a record without an effort (state from before the upgrade) with a bad setting: refused before the
+# reservation, so the retry is not blocked
+setup; succeed --model opus > /dev/null 2>&1
+python3 - $R/stage-a/auto-handoff.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["pending"].pop("effort"); json.dump(d, open(sys.argv[1], "w"))
+PY
+AGENT_HUB_SUCCESSOR_EFFORT=bogus $B/hub succeed --stage stage-a --fallback > $R/fbb.out 2>&1
+check "$?:$(grep -c "AGENT_HUB_SUCCESSOR_EFFORT 'bogus'" $R/fbb.out):$(pending kind):$(call stop count)" "2:1:bg:none" "effort: --fallback with a bad setting is refused before the reservation"
+$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check "$?:$(pending kind):$(pending effort)" "0:headless:high" "effort: …and the retry is not blocked (an old record falls back to the default)"
+
 # ================================================================== review round 2
 setst(){ python3 - $R/stage-a/auto-handoff.json "$@" <<'PY'
 import json, sys, datetime as d
@@ -267,6 +278,11 @@ setup; setst 1 bg 700 id=bg-from-list
 succeed --model opus --again > $R/r2b.out 2>&1; check "$?:$(grep -c 'is still running' $R/r2b.out):$(call --bg count)" "1:1:none" "r2(2): --again refuses while the bg successor still runs"
 setup; setst 1 bg 700 id=bg-gone
 FAKE_AGENTS=stale succeed --model opus --again > /dev/null 2>&1; check "$?:$(call --bg count)" "0:1" "r2(2): --again with the bg session gone starts a new one"
+# --again reuses the previous attempt's effort unless a new --effort is given
+setup; setst 1 headless 700 role=hub-2 effort=max
+succeed --model opus --again > /dev/null 2>&1; call --bg argv | grep -q -- "--model opus --effort max --settings"; check "$? $(pending effort)" "0 max" "effort: --again reuses the recorded effort"
+setup; setst 1 headless 700 role=hub-2 effort=max
+succeed --model opus --again --effort low > /dev/null 2>&1; call --bg argv | grep -q -- "--model opus --effort low --settings"; check "$? $(pending effort)" "0 low" "effort: --again with --effort uses the new one"
 # (6) `claude --bg` hangs past its timeout: only a session started since this start counts; a late one is stopped
 bgrun(){ python3 - "$B" "$H" "$W" <<'PY'
 import sys
