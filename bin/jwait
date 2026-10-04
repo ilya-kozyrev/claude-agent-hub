@@ -316,6 +316,8 @@ def main(argv: list) -> int:
     if args.journal:
         what.append(f"journal {stage}")
     what += [f"file {f}" for f in args.file]
+    if has_source:
+        scan()  # the baseline read comes first: the line below means "armed", what is written after it is news
     print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {fmt_deadline(deadline)}", flush=True)
 
     try:

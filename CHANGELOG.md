@@ -2,6 +2,9 @@
 
 ## 0.8.1 — unreleased
 
+- **`jwait` prints its `waiting for …` line after the baseline read of the journal**, so the line means "armed": whatever is
+  written after it is news. A script that starts the writer once it sees that line no longer loses a line to a slow start
+  (`t_jwait` flaked under the parallel test run that way).
 - **The hub skill grills before it plans.** First-commands step 3 now reads in order: the `grilling` skill (by hand when it is
   not installed), `ask add`/`ask close` for each answer, then the plan and the owner's yes.
 - **`ask plan` records the plan the owner approved** (kind `P-…`, status `approved`; not an unresolved entry). `agent

@@ -31,6 +31,9 @@ except subprocess.TimeoutExpired:
     sys.exit(124)
 PY
 }
+# armed FILE: wait (bounded, 60 s) until the jwait writing to FILE has printed its "waiting for" line, which comes after its
+# baseline read of the journal; a line written before that is not news to it. Fails the check if jwait never gets there.
+armed(){ local i; for i in $(seq 1 600); do grep -q '^jwait \[.*\]: waiting for' "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
 journal(){ echo "$AGENT_HUB_HOME/${1:-stage-a}/coordinator/work/journal-$(today).md"; }
 # in-place regex substitution on a file, portable (no sed -i flavours)
 subst(){ python3 - "$1" "$2" "$3" <<'PY'

@@ -6,7 +6,8 @@ new_home; export HUB_STAGE=stage-a; O=$AGENT_HUB_HOME
 J=$(journal stage-a)
 $B/jlog --tag old "old line before the first run" >/dev/null
 # 1. first run: baseline; a line from another process wakes it
-( sleep 2; $B/jlog --tag hub-16-builder "DONE builder finished" >/dev/null ) &
+# the writer waits until jwait has baselined: a fixed sleep raced a jwait that started late on a loaded machine
+( armed $O/o1.out; $B/jlog --tag hub-16-builder "DONE builder finished" >/dev/null ) &
 HUB_TAG=hub-16 $B/jwait --journal --settle 1 --for 30s > $O/o1.out 2>&1; rc=$?
 check $rc 0 "positive: line from another process delivered"
 grep -q 'DONE builder' $O/o1.out && ! grep -q 'old line' $O/o1.out; check $? 0 "baseline: old line not delivered"
