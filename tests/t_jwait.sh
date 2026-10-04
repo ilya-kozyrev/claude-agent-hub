@@ -40,19 +40,27 @@ check $rc 0 "file source delivered"
 check "$(grep -c 'AWAITING ANSWER' $O/o6.out)" 2 "settle batched both questions into one block"
 $B/jwait --file $F --match 'AWAITING ANSWER' --settle 0 --for 3s --caller t6 > $O/o7.out 2>&1; rc=$?
 check $rc 3 "negative: same file lines not re-delivered"
-# 7. pure alarm, a few seconds ahead: HH:MM:SS and ISO with seconds fire at the second, not at the next minute
-hms=$(utc_hms 3); case $hms in *:00) hms=$(utc_hms 4);; esac   # a :00 deadline prints without seconds
+# 7. pure alarm, a few seconds ahead: HH:MM:SS and ISO with seconds fire at the second, not at the next minute.
+# Every alarm runs under a hard limit: a clock time that has already passed when jwait parses it (a loaded machine)
+# means tomorrow for HH:MM:SS, and the runner must fail, not wait a day.
+hms=$(utc_hms 6); case $hms in *:00) hms=$(utc_hms 7);; esac   # a :00 deadline prints without seconds
 t0=$(date +%s)
-$B/jwait --until "$hms" --note "check the nightly import" > $O/o8.out 2>&1; rc=$?
+bounded 45 $B/jwait --until "$hms" --note "check the nightly import" > $O/o8.out 2>&1; rc=$?
 el=$(( $(date +%s) - t0 ))
 check $rc 3 "pure alarm (HH:MM:SS) exit 3"; grep -q '^ALARM check the nightly import' $O/o8.out; check $? 0 "pure alarm text"
-[ $el -le 10 ]; check $? 0 "HH:MM:SS fires within seconds, not at the next minute (${el}s)"
+[ $el -le 30 ]; check $? 0 "HH:MM:SS fires within seconds, not at the next minute (${el}s)"
 grep -Eq 'deadline [0-9.]+ [0-9]{2}:[0-9]{2}:[0-9]{2}\)' $O/o8.out; check $? 0 "the alarm line shows the deadline with seconds"
+# ISO with seconds is a date: one already past fires at once whatever the start delay, one ahead waits for its second
 t0=$(date +%s)
-$B/jwait --until "$(utc_iso_s 3)" --note "iso alarm" > $O/o8b.out 2>&1; rc=$?
+bounded 45 $B/jwait --until "$(utc_iso_s -2)" --note "iso past" > $O/o8c.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check $rc 3 "ISO with seconds already past: alarm exit 3"; grep -q '^ALARM iso past' $O/o8c.out; check $? 0 "ISO past alarm text"
+[ $el -le 10 ]; check $? 0 "ISO past fires at once, not tomorrow (${el}s)"
+t0=$(date +%s)
+bounded 45 $B/jwait --until "$(utc_iso_s 5)" --note "iso alarm" > $O/o8b.out 2>&1; rc=$?
 el=$(( $(date +%s) - t0 ))
 check $rc 3 "pure alarm (ISO with seconds) exit 3"; grep -q '^ALARM iso alarm' $O/o8b.out; check $? 0 "ISO alarm text"
-[ $el -le 10 ]; check $? 0 "ISO with seconds fires within seconds (${el}s)"
+[ $el -ge 2 ] && [ $el -le 30 ]; check $? 0 "ISO with seconds waits for its second, not the next minute (${el}s)"
 # HH:MM keeps its meaning: the start of that minute, a past one is tomorrow; HH:MM:SS the same by the second
 python3 - "$B" <<'PY'
 import datetime as dt, sys
