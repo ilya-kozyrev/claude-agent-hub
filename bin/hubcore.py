@@ -81,7 +81,7 @@ BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DEL
 # Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their
 # permission mode.
 HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",
-                  "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
+                  "AGENT_HUB_SUCCESSOR_EFFORT", "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
 HUB_WIDE_KEYS += ("AGENT_HUB_SUCCESSOR_ENGINE",)
 BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and

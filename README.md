@@ -668,7 +668,8 @@ hub:
 
 1. At the warn threshold the context-budget message becomes the procedure: at the next quiet point (no agent waiting
    for a reply, no merge or lock operation in flight) `hub handoff`, fill the TODOs, then `hub succeed` — the hook
-   writes the exact command with the hub's model, permission mode and directory.
+   writes the exact command with the hub's model, effort, permission mode and directory (`--effort`, else
+   `AGENT_HUB_SUCCESSOR_EFFORT`, else `high`: the CLI's own default would start the successor at medium).
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
    `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, its Remote Control link and
    `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
@@ -746,6 +747,7 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_AUTO_HANDOFF` | `off` | hub home only | `on` (or JSON `true`): [autopilot](#autopilot-the-hub-hands-over-by-itself) — the stage hub hands over to a successor by itself. |
 | `AGENT_HUB_AUTO_HANDOFF_CHAIN` | `10` | hub home only | Automatic handoffs in a row without the owner; `0` = never start a successor. |
 | `AGENT_HUB_SUCCESSOR_MODEL` | the hub's own | hub home only | The successor's model (alias or `claude-…` id); default: the model of the hub's last turn. |
+| `AGENT_HUB_SUCCESSOR_EFFORT` | `high` | hub home only | The Claude successor's `--effort` (`low`…`max`); `hub succeed --effort` overrides it. Not readable from the hub's session, so it is not inherited. Codex successors inherit the hub's effort. |
 | `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` | `inherit` | hub home only | The successor's `--permission-mode`; `inherit` = the hub's own (plan mode starts it in the default mode). |
 | `AGENT_HUB_SUCCESSOR_TIMEOUT` | `600` | hub home only | Seconds to wait for the successor's takeover line before the headless fallback. |
 | `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |
