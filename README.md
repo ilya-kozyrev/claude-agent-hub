@@ -167,6 +167,24 @@ The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` pro
 
 ![agent-top chat widget sketch](docs/agent-top-widget.svg)
 
+### agent-top inside Claude Code: a live pane
+
+Claude Code ≥ 2.1.287 (mods are on by default) runs the plugin's mod, `hooks/agent-top.tsx`, in the terminal and in the
+Desktop Code tab. It replaces the chat widget as the primary view there:
+
+- **`/agent-top [role] [--stage S] [--all]` opens a pane.** It never opens by itself. Views: **Agents** (`a`; a row or
+  its digit key `1`–`9` opens the agent card), the **agent card** (header and a live feed of the last 30 events; `b`
+  goes back), **Journal** (`j`) and **Summary** (`s`: locks, owner questions, plan limits including Codex). It refreshes
+  every 3 s while open; a role opens that agent's card. Claude and Codex agents are listed alike, as in the console.
+- **A status line and toasts.** The status line reads `agents ● 2 ✓ 5 ✗ 1` (nothing when there are no agents). A toast
+  appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
+  session started is never announced. With the pane closed the mod looks every 15 s.
+- **Read-only.** No send, stop or message button. The mod writes nothing: it runs `bin/agent-top --json` and draws the
+  result. Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`.
+- **Older Claude Code ignores the module**, and the `agent-top` skill keeps working there, in Codex and in VS Code chat.
+  Where no pane can be drawn (`claude -p`), `/agent-top` prints the text picture, like `agent-top --once --width 100`.
+  If `bin/agent-top` is missing the mod goes quiet instead of failing.
+
 ## Install
 
 **Platform.** macOS and Linux, Python 3.10+ for Claude or 3.11+ for Codex (standard library only), the selected `claude` or `codex` CLI on `PATH`. Windows is not
@@ -223,7 +241,8 @@ use the separately configured hook-trust policy; hooks stay enabled. See [Codex 
   `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
   first on `PATH` or remove the old tool.
 - **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
-  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name); four pinned-effort Claude worker subagents.
+  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name; in Claude Code ≥ 2.1.287 the mod answers it
+  with a live pane before the skill runs); four pinned-effort Claude worker subagents.
   Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
 - **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
   delegation dial and subagent rules — are described in their own section):
@@ -818,6 +837,10 @@ bash tests/run_all.sh
 
 Every test runs with `HOME` and `AGENT_HUB_HOME` in throw-away directories and a stand-in CLI
 (`tests/fake_claude.py`) instead of `claude`, so nothing touches your real hub home and no model is called.
+
+The agent-top mod has its own tests, `hooks/agent-top.test.tsx`: `claude plugin test .` from the plugin root, with a
+Claude Code that has mods. `tests/t_mod.sh` checks the packaging and runs them when such a `claude` is on `PATH` (or in
+`MOD_CLAUDE`); without one it prints SKIP.
 
 ## License
 

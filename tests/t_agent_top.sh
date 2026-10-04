@@ -174,6 +174,35 @@ sys.exit(fails)
 PY
 [ $? -eq 0 ] || fail=1
 
+# ---- owner questions in --json: full id list beyond the 12 display lines, questions_ok, unknown on a failed ask
+QH=$(mktemp -d)
+for i in 1 2 3 4 5; do
+  AGENT_HUB_HOME=$QH python3 $B/ask add --stage stage-q --blocks "test" --default "nothing" --due 2030-01-01T00:00 --by test --source test "Question $i?" > /dev/null 2>&1 || fail=1
+done
+AGENT_HUB_HOME=$QH $B/agent-top --json --stage stage-q > $R/st-q.out 2> $R/st-q.err; check $? 0 "questions: --json exit 0 (5 open questions in a fresh home)"
+python3 - $R/st-q.out <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+q = d["questions"]["stage-q"]
+ok = (q["open"] == 5 and len(q["items"]) == 12 and q["ids"] == [f"Q-Q-00{i}" for i in range(1, 6)] and d["questions_ok"] is True)
+print(("PASS" if ok else "FAIL") + " questions: ids carry all 5 open questions while items are cut to 12 lines; questions_ok true")
+sys.exit(0 if ok else 1)
+PY
+[ $? -eq 0 ] || fail=1
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 $QH/stage-q/questions.md
+  AGENT_HUB_HOME=$QH $B/agent-top --json --stage stage-q > $R/st-q-bad.out 2> /dev/null; check $? 0 "questions: --json still exits 0 when the register cannot be read"
+  chmod 600 $QH/stage-q/questions.md
+  python3 - $R/st-q-bad.out <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ok = d["questions_ok"] is False and d["questions"] == {}
+print(("PASS" if ok else "FAIL") + " questions: a failed ask summary gives questions_ok false (negative control: not 'no registers')")
+sys.exit(0 if ok else 1)
+PY
+  [ $? -eq 0 ] || fail=1
+fi
+
 # ---- nothing written by the non-interactive runs
 fingerprint > $R/fp-after.txt
 diff -q $R/fp-before.txt $R/fp-after.txt > /dev/null; check $? 0 "agent-top --once/--json wrote nothing (sha1+mtime of every file under the hub home)"

@@ -69,6 +69,7 @@ _RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` e
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _DONE_RE = re.compile(r"\bDONE\b")
 ASK_LINE_RE = re.compile(r"^(\S+) — open (\d+), overdue (\d+)")
+QUESTION_ID_RE = re.compile(r"^(Q-[A-Za-z0-9]+-\d+)(?=\s|$)")  # the unindented id line of `ask list`; blocks:/asked are indented
 
 
 # ---------------------------------------------------------------- text helpers
@@ -593,6 +594,7 @@ class External:
 
     def __init__(self):
         self.data, self.at, self.busy = {}, 0.0, False
+        self.ok = False  # True only when the last `ask summary` succeeded: {} then means "no registers", not "ask failed"
 
     def poll(self, stages: list, wait: bool = False) -> dict:
         if not self.busy and time.monotonic() - self.at > self.TTL:
@@ -610,11 +612,16 @@ class External:
             for ln in (r or "").splitlines():
                 m = ASK_LINE_RE.match(ln)
                 if m and m.group(1) in stages:
-                    out[m.group(1)] = {"open": int(m.group(2)), "overdue": int(m.group(3)), "line": ln.strip(), "items": []}
+                    out[m.group(1)] = {"open": int(m.group(2)), "overdue": int(m.group(3)), "line": ln.strip(),
+                                       "items": [], "ids": []}
             for stage, q in out.items():
                 if q["open"]:
                     lst = self._ask(["list", "--stage", stage, "--open"])
                     q["items"] = [ln.rstrip() for ln in (lst or "").splitlines() if ln.strip()][:12]
+                    # `items` are display lines cut to 12; `ids` are all open question ids of the untruncated output
+                    # (None: the list failed and the set is unknown), so a consumer diffs sets, not truncated text.
+                    q["ids"] = None if lst is None else [m.group(1) for m in map(QUESTION_ID_RE.match, lst.splitlines()) if m]
+            self.ok = r is not None
             self.data = out
         finally:
             self.at, self.busy = time.monotonic(), False
@@ -674,7 +681,7 @@ class Collector:
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
         return {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
                 "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles,
-                "questions": self.ext.poll(stages, wait=wait_ext),
+                "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
                 "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
                 "codex_limits": self.codex_limits.snapshot()}
 
@@ -1385,7 +1392,8 @@ def render_widget(snap: dict) -> str:
 def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> dict:
     agents = [{k: v for k, v in a.items() if not k.startswith("_")} for a in snap["agents"]]
     out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "counts": snap["counts"], "agents": agents,
-           "roles": snap["roles"], "locks": snap["locks"], "questions": snap["questions"], "limits": snap["limits"],
+           "roles": snap["roles"], "locks": snap["locks"], "questions": snap["questions"],
+           "questions_ok": snap.get("questions_ok", False), "limits": snap["limits"],
            "codex_limits": snap.get("codex_limits", {}),
            "journal_tail": [{"stage": s, "time": hh, "tag": t, "text": x} for s, hh, t, x in coll.journal(snap["stages"], 0)[-20:]]}
     if agent:

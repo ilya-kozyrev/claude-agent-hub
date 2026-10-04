@@ -11,6 +11,13 @@
 - Port lifecycle guards, apply_patch handoff checks, context-window budgets, monitoring and headless autopilot.
   Keep cumulative usage separate from context size and do not invent costs or model metadata.
 - Add lifecycle/permission/installation controls and Linux/macOS CI.
+- **agent-top inside Claude Code as a mod** (Claude Code ≥ 2.1.287; older versions ignore it and the skill keeps working).
+  `hooks/hooks.json` gains `"modules": ["./agent-top.tsx"]` beside the unchanged settings hooks. `/agent-top [role]
+  [--stage S] [--all]` opens a read-only pane (Agents, agent card with a live feed, Journal, Summary with locks, owner
+  questions and Claude/Codex plan limits), refreshed every 3 s while open; a status line `agents ● 2 ✓ 5 ✗ 1`; toasts
+  when an agent finishes, fails or dies and when a new owner question opens (never on a session's first look). Data comes
+  only from `bin/agent-top --json`; nothing is written. The `agent-top` skill stays the fallback for Codex, VS Code chat
+  and `claude -p`, and now says so. Tests: `hooks/agent-top.test.tsx` (`claude plugin test .`) and `tests/t_mod.sh`.
 
 ## 0.7.1 — 2026-10-02
 
