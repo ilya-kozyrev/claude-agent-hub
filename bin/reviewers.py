@@ -310,8 +310,9 @@ def walk(loaded: Loaded, change_class: Optional[str], every: bool = False) -> tu
 
 # ---------------------------------------------------------------- how to start it
 
-def start_line(entry: Entry) -> str:
-    """What the hub does to start this reviewer. An `agent` reviewer only reads: no --worktree."""
+def start_line(entry: Entry, stage: str | None = None) -> str:
+    """What the hub does to start this reviewer. An `agent` reviewer only reads: no --worktree. With a stage the
+    `agent spawn` line names it, so the reviewer joins that stage whatever the shell's HUB_STAGE is."""
     if entry.kind == "skill":
         return (f"load skill `{entry.skill}`; give it the brief file, the repository, the base sha and the head ref "
                 "(the skill reviewer contract: docs/reviewers.md)")
@@ -319,8 +320,9 @@ def start_line(entry: Entry) -> str:
     engine = f" --engine {entry.engine}" if entry.explicit_engine or entry.engine == "codex" else ""
     sandbox = " --sandbox read-only" if entry.engine == "codex" else ""
     model = f" --model {shlex.quote(entry.model)}" if entry.model else ""
+    in_stage = f" --stage {shlex.quote(stage)}" if stage else ""
     return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd <REPO>{engine}{sandbox}{model}"
-            f"{effort} --brief <BRIEF>")
+            f"{effort}{in_stage} --brief <BRIEF>")
 
 
 def describe(entry: Entry) -> str:

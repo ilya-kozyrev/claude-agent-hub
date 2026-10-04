@@ -369,4 +369,18 @@ printf '{"AGENT_HUB_MODEL_MAP": {"mine": "claude-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 check "$(RV_DIR=$REPO AGENT_HUB_REVIEWERS="$(mklist '{"model": "mine"}' agent)" rv 2>/dev/null | grep -c 'review-ok')" 1 "a repository's map with a newline in a value: that pair is dropped…"
 check "$(RV_DIR=$REPO AGENT_HUB_REVIEWERS="$(mklist '{"model": "ok1"}' agent)" rv 2>$P/mm4.err | grep -c -- '--model ok1 ')-$(grep -c IGNORE $P/mm4.err)" "1-0" "…the other pair stays, and the dropped text is not echoed"
 rm $REPO/.agent-hub/config.json
+# ---- --stage on every hub subcommand (reviewer and home had none), HUB_STAGE as the fallback
+rm -f $R/config.json
+rv --for code --stage web > $P/st1.out 2> $P/st1.err; check $? 0 "hub reviewer --for code --stage S is accepted"
+grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --stage web --brief <BRIEF>$' $P/st1.out; check $? 0 "…and the agent spawn line it prints carries --stage"
+check "$(wc -c < $P/st1.err | tr -d ' ')" 0 "…with nothing on stderr"
+rv --for code > $P/st2.out 2>&1; grep -q -- '--stage' $P/st2.out; check $? 1 "negative: without a stage the printed line is unchanged"
+check "$(HUB_STAGE=web2 rv | grep -c -- '--stage web2 ')" 1 "HUB_STAGE is the fallback"
+check "$(HUB_STAGE=web2 rv --stage web3 | grep -c -- '--stage web3 ')" 1 "…and --stage wins over it"
+rv --stage 'Bad Stage' > $P/st3.out 2>&1; check $? 2 "negative: a bad stage name is a usage error"
+$B/hub home --stage web > $P/st4.out 2>&1; check $? 0 "hub home --stage S is accepted"
+$B/hub start --session 11111111-1111-4111-8111-111111111111 > $P/st5.out 2>&1; check $? 2 "negative: start with neither --stage nor HUB_STAGE still needs a stage"
+grep -q 'start: --stage is required' $P/st5.out; check $? 0 "…and says so"
+(cd $OUT && HUB_STAGE=web $B/hub start --session 11111111-1111-4111-8111-111111111111 --dry-run) > $P/st6.out 2>&1; check $? 0 "start takes its stage from HUB_STAGE"
+grep -q 'starts stage web' $P/st6.out; check $? 0 "…the stage it names"
 exit $fail
