@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2 — unreleased
+
+- **`tests/run_all.sh` prints what failed:** for each failing script its `FAIL` lines with the detail under them and the last 20
+  log lines, so a CI run shows the failed checks without downloading the logs. The pty scenarios of `t_agent_top` wait until
+  the screen stops changing instead of fixed pauses, which flaked on a loaded machine.
+
 ## 0.8.1 — 2026-10-05
 
 - **`jwait` prints its `waiting for …` line after the baseline read of the journal**, so the line means "armed": whatever is

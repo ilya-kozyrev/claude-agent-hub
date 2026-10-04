@@ -39,7 +39,16 @@ for t in "$T"/t_*.sh; do
   p=$(grep -c '^PASS' "$OUT/$name.log" 2>/dev/null); f=$(grep -c '^FAIL' "$OUT/$name.log" 2>/dev/null)
   p=${p:-0}; f=${f:-0}; total=$((total + p + f))
   echo "$name: exit=$rc pass=$p fail=$f"
-  [ "$rc" = 0 ] && [ "$f" = 0 ] || failed=1
+  if [ "$rc" != 0 ] || [ "$f" != 0 ]; then
+    failed=1
+    # what failed, in the output itself (CI shows no log files): each FAIL line with the detail printed under it (up to the
+    # next PASS/FAIL line), at most 60 lines, and the log's tail
+    echo "---- $name: FAIL lines ----"
+    awk '/^PASS/ { on = 0 } /^FAIL/ { on = 1 } on' "$OUT/$name.log" 2>/dev/null | head -60 | cut -c1-300
+    echo "---- $name: last 20 lines of $OUT/$name.log ----"
+    tail -20 "$OUT/$name.log" 2>/dev/null | cut -c1-300
+    echo "---- end $name ----"
+  fi
 done
 echo "checks: $total; logs: $OUT; jobs: $JOBS"
 exit $failed

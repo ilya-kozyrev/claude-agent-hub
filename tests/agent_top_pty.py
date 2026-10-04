@@ -213,10 +213,24 @@ class Session:
                 return re.search(needle, self.screen.text()) is not None
         return False
 
+    def settle(self, quiet=0.3, cap=6.0):
+        """Pump until the screen has not changed for `quiet` s: a key's effect is on the screen before it is read. A fixed
+        pause is not enough on a loaded machine, where the program may not get a turn for a while."""
+        end = time.monotonic() + cap
+        last, since = self.screen.text(), time.monotonic()
+        while time.monotonic() < end:
+            self.pump(0.05)
+            cur = self.screen.text()
+            if cur != last:
+                last, since = cur, time.monotonic()
+            elif time.monotonic() - since >= quiet:
+                return
+
     def send(self, *keys):
         for k in keys:
             os.write(self.master, KEYS.get(k, k.encode("utf-8")))
             self.pump(0.12)
+        self.settle()
 
     def text(self):
         return self.screen.text()
@@ -245,9 +259,9 @@ def peek(argv):
     rows, cols = (int(argv[1]), int(argv[2])) if len(argv) >= 3 else (30, 110)
     keys = argv[3:]
     s = Session([sys.executable, TOP, "--interval", "0.5"], dict(os.environ, AGENT_HUB_HOME=root) if root != "-" else dict(os.environ), rows, cols)
-    s.pump(1.5)
+    s.settle(0.8, cap=10.0)
     s.send(*keys)
-    s.pump(0.8)
+    s.settle(0.6)
     print(s.text())
     s.send("q")
     print("exit:", s.wait_exit())
@@ -375,8 +389,7 @@ def run(argv):
     s.send("a")
     check("ui a: old and archived agents appear", s.wait_for(r"oldie") and "done1*" in s.text(), s.text())
     s.send("a")
-    time.sleep(0.8)
-    s.pump(0.6)
+    s.settle(0.8)
     check("ui a: toggles back", "oldie" not in s.text(), s.text())
     check("ui: no action leaked into the stub", len(stub_calls(log)) == 2, str(stub_calls(log)))
     s.send("q")
@@ -397,13 +410,13 @@ def run(argv):
     s.wait_for(r"alive1")
     wide = s.text()
     s.resize(12, 50)
-    s.pump(1.5)
+    s.settle(0.8, cap=10.0)
     t = s.text()
     check("ui resize: the layout follows the terminal (12x50: no stage/tag/model columns, key bar fits)",
           "alive1" in t and "STATUS" not in t and "MODEL" not in t and len(t.splitlines()) <= 12 and all(len(l) <= 50 for l in t.splitlines()), t)
     check("ui resize: the wide layout had them", "STATUS" in wide and "MODEL" in wide, wide)
     s.resize(30, 130)
-    s.pump(1.5)
+    s.settle(0.8, cap=10.0)
     check("ui resize back: wide layout again", "MODEL" in s.text() and "NOW / LAST" in s.text(), s.text())
     s.send("q")
     check("ui resize: quits cleanly", s.wait_exit() == 0)
@@ -414,7 +427,7 @@ def run(argv):
     s.wait_for(r"alive1")
     s.send("ENTER", "TAB", "TAB", "1", "ESC", "j", "s", "?")
     s.send("x")
-    s.pump(0.5)
+    s.settle(0.5)
     raw = bytes(s.raw)
     check("ui colour: green for live and red for failed agents are emitted",
           re.search(rb"\x1b\[(?:[0-9;]*;)?32m", raw) is not None and re.search(rb"\x1b\[(?:[0-9;]*;)?31m", raw) is not None)
