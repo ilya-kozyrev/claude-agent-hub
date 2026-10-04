@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.1 — unreleased
+
+- **The hub skill grills before it plans.** First-commands step 3 now reads in order: the `grilling` skill (by hand when it is
+  not installed), `ask add`/`ask close` for each answer, then the plan and the owner's yes.
+- **`ask plan` records the plan the owner approved** (kind `P-…`, status `approved`; not an unresolved entry). `agent
+  spawn` prints one warning line, never a refusal, while its stage has none (the implicit `default` stage is exempt).
+- **`ask add|decided|plan --print-id`** prints only the new id, so a script can capture it.
+- **`lock take` guards the repository you run in.** Without `--repo`, `AGENT_HUB_DEFAULT_REPO` or `.agent-hub/config.json`
+  the lock took the repository `*` and held up merges everywhere; now it takes the enclosing git repository's name (a
+  worktree resolves to its main repository, the way the board hook reads it). `*` only with an explicit `--repo '*'` or
+  outside any git checkout. `hub takeover --take-main-merge` follows the same default.
+- **The PATH shadow check knows a dispatcher.** A command that resolves into an installed agent-hub plugin's `bin/` (the
+  Claude or Codex plugin cache, a marketplace folder), or into a file carrying the line `# agent-hub: dispatcher` among its
+  first ten lines (symlinks followed), is no longer reported as a foreign tool; GitHub CLI's `hub` still is.
+- **Every `hub` subcommand takes `--stage`** (default `$HUB_STAGE`); `hub reviewer --stage S` puts it into the `agent spawn`
+  line it prints.
+- **Claude Code 2.1.287 is the minimum** (was 2.1.285): `agent spawn` and `hub start` warn below it. Older versions are
+  unsupported.
+- **Review brief:** a read-only reviewer returns the review as its final answer and the caller saves it; the brief lists
+  the author's test commands with their exit codes and asks the reviewer not to rerun them unless a finding needs it.
+- `CLAUDE.md` at the repository root: how to run the tests and where things live.
+
 ## 0.8.0 — 2026-10-04
 
 Codex support and agent-top as a Claude Code mod: one file protocol for Claude and Codex hubs and executors, and a
