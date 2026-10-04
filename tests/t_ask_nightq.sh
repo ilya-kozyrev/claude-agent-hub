@@ -22,6 +22,18 @@ $B/ask digest | grep -q '^Q-A-001 yes, on by default'; check $? 0 "digest line p
 $B/ask withdraw Q-A-002 --reason "not needed" >/dev/null; grep -q 'withdrawn: not needed' $F; check $? 0 "withdraw"
 $B/ask close Q-A-009 --answer x >/dev/null 2>&1; check $? 1 "negative: unknown id"
 $B/ask add --stage Bad_Stage "x" >/dev/null 2>&1; check $? 1 "negative: bad stage name"
+# ---- plan kind and --print-id
+id=$($B/ask add --stage stage-a --print-id "Capture the id?"); check "$id" "Q-A-003" "add --print-id prints only the new id"
+check "$($B/ask decided --stage stage-a --print-id "Another decision")" "D-A-002" "decided --print-id prints only the new id"
+out=$($B/ask plan --stage stage-a --by hub-3 --source "owner, chat" "Build X, then Y, then ship")
+check "$(echo "$out" | head -1)" "P-A-001" "plan prints the new id"
+echo "$out" | sed -n 2p | grep -q '^P-A-001 recorded [0-9][0-9]\.[0-9][0-9] [0-9:]*: Build X'; check $? 0 "plan prints a ready journal line"
+grep -q '^## P-A-001 — Build X, then Y, then ship' $F && grep -q '^- kind: plan' $F && grep -q '^- status: approved' $F; check $? 0 "plan writes a P entry with status approved"
+check "$($B/ask plan --stage stage-a --print-id "Second plan")" "P-A-002" "plan --print-id prints only the new id"
+$B/ask list --stage stage-a | grep -q '^P-A-'; check $? 1 "negative: an approved plan is not an unresolved entry"
+$B/ask list --stage stage-a --all | grep -q '^P-A-001 \[stage-a\] approved — Build X'; check $? 0 "list --all shows the plan"
+$B/ask search "build x" | grep -q '^P-A-001'; check $? 0 "search finds the plan"
+$B/ask close P-A-001 --answer x >/dev/null 2>&1; check $? 1 "negative: a plan is not a question to close"
 # ---- nightq
 cp $T/fixtures/night-queue.md $R/stage-a/night-queue.md
 subst $R/stage-a/night-queue.md 'PREV_ID' 'abababab-abab-4bab-8bab-abababababab'

@@ -49,6 +49,7 @@ agent status flags them). spawn and resume succeed only once the run writes its 
 stop: SIGTERM to the process group (SIGKILL after 10 s), role retired.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
+spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: `ask plan`.
 Exit: 0 ok, 1 failure / unknown agent, 2 usage.
 """
 from __future__ import annotations
@@ -77,6 +78,25 @@ _loader = importlib.machinery.SourceFileLoader("roles_cli", os.path.join(os.path
 _spec = importlib.util.spec_from_loader("roles_cli", _loader)
 roles_cli = importlib.util.module_from_spec(_spec)
 _loader.exec_module(roles_cli)
+
+# `ask` is a script without .py too; loaded on demand for the plan check of spawn.
+def plan_warning(stage: str) -> str | None:
+    """One line when the stage's register (`ask`) holds no owner-approved plan (`ask plan`), else None. The implicit
+    `default` stage is a minimal-mode stage without a plan; an unreadable register says nothing."""
+    if stage == hc.DEFAULT_STAGE:
+        return None
+    try:
+        loader = importlib.machinery.SourceFileLoader("ask_register", os.path.join(os.path.dirname(os.path.realpath(__file__)), "ask"))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("ask_register", loader))
+        sys.modules["ask_register"] = mod  # dataclasses look the module up while the class is built
+        loader.exec_module(mod)
+        if mod.has_plan(stage):
+            return None
+    except Exception:
+        return None
+    return (f"stage {stage} has no owner-approved plan on record: after the owner's yes, "
+            f"`ask plan --stage {stage} \"<the plan in one line>\"`; spawning anyway")
+
 
 ALIASES = hc.MODEL_ALIASES
 EFFORTS = hc.EFFORTS
@@ -421,6 +441,9 @@ def cmd_spawn(a) -> int:
             hc.warn(old_cli)
     else:
         print(f"CLI {engines.codex_bin(cwd)} (codex)")
+    no_plan = plan_warning(stage)
+    if no_plan:
+        hc.warn(no_plan)
     own = hc.caller_tag(stage)
     if own and hc.tag_is(a.tag or a.role, own):
         # jwait drops the caller's own tag and its sub-tags: the agent's DONE would never wake the hub

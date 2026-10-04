@@ -56,6 +56,18 @@ $B/agent-stop probe >/dev/null; $B/agent-status nobody >/dev/null 2>&1; check $?
 $B/agent-spawn --role x --cwd $W --model opus --brief $W/nope.md >/dev/null 2>&1; check $? 2 "usage: missing brief"
 $B/agent-spawn --role x --cwd $W --model gpt --brief $W/b.md >/dev/null 2>&1; check $? 2 "usage: unknown model alias"
 HUB_TAG=hub-3 $B/agent-spawn --role x --tag hub-3/x --cwd $W --model opus --brief $W/b.md >/dev/null 2>&1; check $? 2 "usage: a sub-tag of the caller's own tag is refused"
+# 3b. a stage without an owner-approved plan: spawn warns on stderr, never refuses; a recorded plan silences it
+$B/agent-spawn --role noplan --cwd $W --model haiku --brief $W/b.md > $R/np1.out 2> $R/np1.err; check $? 0 "no plan: spawn still succeeds"
+grep -q 'stage stage-a has no owner-approved plan' $R/np1.err; check $? 0 "no plan: spawn warns once on stderr"
+check "$(grep -c 'no owner-approved plan' $R/np1.err)" 1 "no plan: exactly one warning line"
+wait_dead noplan; $B/agent-stop noplan >/dev/null
+$B/ask plan --stage stage-a "Do the thing" >/dev/null
+$B/agent-spawn --role withplan --cwd $W --model haiku --brief $W/b.md > $R/np2.out 2> $R/np2.err; check $? 0 "plan on record: spawn succeeds"
+grep -q 'no owner-approved plan' $R/np2.err; check $? 1 "plan on record: no warning"
+wait_dead withplan; $B/agent-stop withplan >/dev/null
+HUB_STAGE=default $B/agent-spawn --role dflt --cwd $W --model haiku --brief $W/b.md > $R/np3.out 2> $R/np3.err; check $? 0 "default stage: spawn succeeds"
+grep -q 'no owner-approved plan' $R/np3.err; check $? 1 "default stage (minimal mode): no warning"
+sleep 1; $B/agent-stop dflt --stage default >/dev/null
 # 4. configurable defaults: model map, default effort, permission mode
 AGENT_HUB_MODEL_MAP="sonnet=claude-sonnet-test-1" AGENT_HUB_DEFAULT_EFFORT=xhigh AGENT_HUB_PERMISSION_MODE=acceptEdits \
   $B/agent-spawn --role cfg --cwd $W --model sonnet --brief $W/b.md >/dev/null; check $? 0 "spawn with env defaults"
