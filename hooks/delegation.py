@@ -13,7 +13,7 @@ CLI subcommands (the /delegation skill, through bin/delegation):
   clear               drop this session's override
   try [TYPE [MODEL]] [--tool T] [--type NAME] [--model M]   evaluate the rules for a hypothetical Agent call
 
-Settings (hub home config.json or environment; see README "Agent discipline"):
+Settings (hub home config.json or environment; see docs/reference.md "Agent discipline"):
   AGENT_HUB_DELEGATION          on | off (default off)
   AGENT_HUB_DELEGATION_DEFAULT  level when nothing else is set (default 3)
   AGENT_HUB_DELEGATION_LEVEL    environment only: the level for every session started with it

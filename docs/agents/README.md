@@ -26,8 +26,9 @@ two directories above `skills/hub/SKILL.md`. The same files are readable on GitH
    Done when every capability the user needs has its prerequisites satisfied or a named missing prerequisite.
 3. Return **install**, **skip**, or **defer setup** with a short reason. Install when a need in step 1 is present
    and its prerequisites are satisfied; defer when the need exists but a prerequisite is missing.
-   State the needed permissions before recommending a detached launch. Avoid promising measured cost savings
-   or distributed team coordination. Done when the user has a recommendation and one concrete next action.
+   State the needed permissions before recommending a detached launch. Describe benefits as verified
+   capabilities: continuity, reachability and recorded decisions. State the scope as local to one person and
+   machine; support any cost claim with evidence. Done when the user has a recommendation and one concrete next action.
 
 ## Install or operate
 

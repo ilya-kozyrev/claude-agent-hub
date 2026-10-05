@@ -1,29 +1,22 @@
 # Installation and setup
 
-**Platform.** macOS and Linux, Python 3.10+ for Claude or 3.11+ for Codex (standard library only), the selected `claude` or `codex` CLI on `PATH`. Claude Code 2.1.287 or later: older versions are unsupported. Windows is not
-supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself does run natively on Windows
-([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
+**Platform.** macOS and Linux; Python and the selected CLI on `PATH` (standard library only).
+Windows is unsupported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself runs natively on
+Windows ([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
 
-**Claude Code:**
+Follow the [README's three-step recipe](../README.md#start): install, set up the project, then give the hub a job.
+If you start the hub first, it offers `agent-hub:setup` when the repository has no `.agent-hub/`.
+
+**Claude Code:** Python 3.10+ and Claude Code 2.1.287+; older CLI versions are unsupported.
 
 ```text
 /plugin marketplace add ilya-kozyrev/claude-agent-hub
 /plugin install agent-hub@claude-agent-hub
 ```
 
-**Codex:** follow [Install in Codex](codex.md#install-in-codex), including hook trust.
-That page owns the Codex commands and prerequisites.
-
-Review and trust its hooks before starting an interactive Codex hub. The explicit Codex manifest selects
-`hooks/codex-hooks.json` and packages the same four skills. Full access and hook trust are separate settings;
-[Codex support](codex.md) explains detached defaults and restricted reviewers.
-
 After Claude installation, follow the activation instruction in the install summary and confirm
 `/agent-hub:hub` appears. See [official installation instructions](https://code.claude.com/docs/en/discover-plugins)
 (checked 2026-10-05).
-
-The order: install, then your first message `/agent-hub:hub …` in the repository (see [Quickstart](reference.md#quickstart)), then
-[`agent-hub:setup`](#after-install-run-agent-hubsetup-in-each-repository) once per repository.
 
 > **Permissions.** Headless agents run with `--permission-mode bypassPermissions` by default: a `claude -p` run has
 > nobody to approve a prompt, and any other mode silently stalls on the first blocked tool. Treat every agent as a
@@ -38,9 +31,10 @@ The order: install, then your first message `/agent-hub:hub …` in the reposito
 > successor inherits the mode (`AGENT_HUB_SUCCESSOR_PERMISSION_MODE`); bypass needs its disclaimer accepted once in a
 > terminal (`claude --dangerously-skip-permissions`), otherwise the successor falls back to `auto`.
 
-For Codex, `bypassPermissions` maps to `--dangerously-bypass-approvals-and-sandbox` (full access and no approval
-prompts). `--sandbox read-only` or `workspace-write` chooses a restricted worker instead. Detached Codex runs also
-use the separately configured hook-trust policy; hooks stay enabled. See [Codex permissions](codex.md#full-access-and-hook-trust).
+**Codex:** follow [Install in Codex](codex.md#install-in-codex) for its commands and prerequisites, then
+[Full access and hook trust](codex.md#full-access-and-hook-trust) before launching workers. That page owns
+Codex permission mappings, detached defaults and restricted reviewer settings. Full access and hook trust
+are separate controls.
 
 ### What installing changes
 
