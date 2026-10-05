@@ -15,9 +15,10 @@ Composition: landscape around 2:1. One readable focal scene with generous breath
 Text: only two short labels, rendered exactly in a large clear dark pixel font: "HUB" above the conductor, "WORKERS" above the worker ensemble. No other letters or words; task details use simple recognizable icons.
 Constraints: original character designs; no brand logos, watermark, fake UI screenshots, dense scenery, decorative confetti, glowing neon, smooth vector edges, gradients or blur. Show one coordinator and workers performing distinct tasks, not six identical bots standing idle. The image must explain coordination even if its two labels are ignored. Solid opaque background.
 
-## Hub handoff
+## Hub handoff — initial generation (superseded)
 
-Output: docs/assets/hub-handoff-pixel.png
+Historical output: [hub-handoff-pixel.png at a5a83c3](https://github.com/ilya-kozyrev/claude-agent-hub/blob/a5a83c30a974eea744891aaf63a5108f333cbee8/docs/assets/hub-handoff-pixel.png).
+This initial image is the edit target for the current revision below.
 
 Reference: the generated agent-orchestra.png above, for cast and style consistency.
 
@@ -28,4 +29,25 @@ Primary request: one clear original scene that explains "the conductor changes; 
 Composition: wide landscape about 2:1, one spacious scene with the two hub robots and shared notebook clearly readable at the foreground, workers as a simple continuing ensemble in the background. Give characters comfortable separation. Make the handoff interaction visually obvious without complex arrows. Same small charming game-world scale and restrained palette as the reference.
 Text: exactly three large clear pixel-font labels, no other words: "HANDOFF" above the shared notebook and baton exchange, "FRESH HUB" above the incoming conductor, "SAME WORKERS" above the continuing worker ensemble. Task details use simple icons.
 Constraints: preserve the reference cast style and palette; sharp visible pixel grid, no blur, no smooth gradients, no logos or watermark, no extra decorative scenery or fake software windows. Outgoing and incoming hub are different sessions; the same workers and shared notebook persist. Keep the scene calm and understandable.
+
+# Hub handoff illustration — owner-requested revision
+
+Built-in image generator, edit mode, 2026-10-05.
+
+Current output: docs/assets/hub-handoff-pixel.png
+
+Edit target: the initial hub-handoff-pixel.png preserved in Git commit a5a83c3. The generated source original also remains in the image generator output directory.
+
+Use case: precise-object-edit / illustration-story.
+Input image is the edit target: the pixel-art handoff illustration. Revise its composition and labels to make the user's requested relationship explicit.
+Preserve: the same crisp pixel-art robot character designs, dark conductor tailcoats, outgoing teal conductor, incoming lighter teal conductor with navy cap, the five original orange/green/blue/yellow/purple worker characters and recognizable code/check/magnifier/document/puzzle tasks; warm off-white opaque background and limited palette.
+Change the scene to one very clear LEFT-TO-RIGHT transfer:
+1. The outgoing conductor is on the far left, labelled exactly "OLD HUB".
+2. A large clear pixel arrow points from the old conductor toward the incoming conductor, visibly reading OLD HUB -> FRESH HUB. It must be an unmistakable rightward arrow, not decorative dotted lines.
+3. The incoming conductor is centre-right, labelled exactly "FRESH HUB", actively conducting the worker group with his baton.
+4. ALL FIVE worker robots are grouped ONLY to the right of, or immediately below, the fresh conductor, under exactly one label "WORKERS". Every worker faces the fresh conductor or has a short task/result connection pointing to him. No workers remain beside the old hub; no worker can be visually mistaken for still reporting to the old hub. They are the same continuing workers, not freshly created replacement robots.
+5. The open shared notebook stays between the two conductors on a shared stand, and the old conductor gestures toward its recorded task pages as the fresh conductor takes over. Notebook has clear task icons and checkmarks. This is a coordination handoff, not erasing workers or moving to another machine.
+Composition: landscape approximately 2:1. Give the OLD HUB a smaller quiet outgoing position and the FRESH HUB + five workers a clearly dominant active ensemble. The arrow and the full worker cluster should make the meaning obvious at small README width. Rearrange characters and desks as necessary; keep complete silhouettes and comfortable spacing.
+Text: exactly "OLD HUB", "FRESH HUB", "WORKERS", large correct dark pixel letters above their respective characters/group. Remove the old labels "SAME WORKERS" and "HANDOFF"; add no other words.
+Style constraints: authentic crisp square pixels, stepped sprite silhouettes, readable task icons and faces, simple cream background, no added logos, blur, gradient lighting, extra characters, extra scenery or watermark.
 

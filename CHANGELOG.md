@@ -3,8 +3,8 @@
 ## Unreleased
 
 - **Pixel-art illustrations explain worker coordination and hub handoff.** The README shows distinct worker tasks
-  feeding a shared journal; the walkthrough shows a fresh hub reading shared records while the same workers continue.
-  Original built-in generation prompts and their reference are recorded beside the PNGs; the precise SVG remains in the reference.
+  feeding a shared journal; the handoff scene shows OLD HUB → FRESH HUB, with all continuing workers under the fresh hub.
+  Original generation and owner-directed edit prompts, including the historical reference, are recorded beside the PNGs; the precise SVG remains in the reference.
 
 - **A shorter starting page for humans and a task router for agents.** README now gives fit criteria and a small
   installation/start recipe. The agent guide routes installation assessment, operation and contribution separately;
