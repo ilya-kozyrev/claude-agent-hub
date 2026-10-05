@@ -151,6 +151,13 @@ check "$(answer --session self)" "low env" "--session self is the caller"
 unset CLAUDE_EFFORT
 reset; printf '4242 1 %s --session-id %s --effort max\n' $CLAUDE $OTHER > $PSTAB
 check "$(answer --session $OTHER)" "max argv" "--session: another session's process found by --session-id"
+# another process's prompt may quote the flag: only the launch options (before the prompt) name a session
+reset; printf '4242 1 %s --session-id %s --effort high -n worker -p Example for the docs: %s --session-id %s --effort max\n' $CLAUDE $SID $CLAUDE $OTHER > $PSTAB
+check "$(answer --session $OTHER)" none "--session: a prompt that quotes \`--session-id B\` does not make that process B's"
+printf '4242 1 %s --session-id %s --effort max -n worker -p Reminder: --session-id %s --effort low\n' $CLAUDE $OTHER $OTHER > $PSTAB
+check "$(answer --session $OTHER)" "max argv" "positive control: the launch option --session-id B before the prompt is B's, and its --effort is read from the options too"
+printf '4242 1 %s --resume %s --effort low\n4243 1 %s --session-id %s-extra --effort max\n' $CLAUDE $OTHER $CLAUDE $OTHER > $PSTAB
+check "$(answer --session $OTHER)" "low argv" "--resume B counts; a longer id that merely starts with B does not"
 reset; desktop local_3333 $OTHER high; transcript $OTHER xhigh
 check "$(answer --session local_3333)" "xhigh transcript" "--session local_…: the Desktop record names the CLI session"
 hub_effort --session local_9999 > $W/nolocal.out 2>&1; check "$?:$(grep -c 'no Desktop session record for local_9999' $W/nolocal.out)" "1:1" "--session local_…: an unknown Desktop session is an error"

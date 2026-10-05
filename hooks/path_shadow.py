@@ -7,7 +7,8 @@ reads.
 Also keeps $HUB_BIN, which the briefs and tools call as "$HUB_BIN/jlog", pointing at this plugin's bin/: a `claude --bg`
 session gets the environment of the long-running Claude Code daemon, and with it the HUB_BIN of whichever plugin version
 was current when the daemon started, so a background hub would run an old jlog and jwait. When $HUB_BIN is unset or points
-elsewhere the hook appends `export HUB_BIN=<this bin/>` to $CLAUDE_ENV_FILE (Claude Code runs that file before every
+elsewhere the hook appends `export HUB_BIN=<the bin/> of the plugin copy it belongs to` (its own location; an inherited
+PLUGIN_ROOT is ignored, and a CLAUDE_PLUGIN_ROOT naming another copy makes it leave HUB_BIN alone) to $CLAUDE_ENV_FILE (Claude Code runs that file before every
 Bash command of the session; without the variable — Codex — nothing is written) and, if it replaced a stale value, says so
 in one line.
 
@@ -28,8 +29,9 @@ from pathlib import Path
 
 
 def bin_dir() -> Path:
-    root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-    return Path(root) / "bin"
+    """The bin/ of the plugin copy this hook belongs to: its own location. Not an inherited root: a Claude worker started
+    from a Codex host carries the host's PLUGIN_ROOT, which may be an older version's."""
+    return Path(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))) / "bin"
 
 
 def correct_hub_bin() -> str:
@@ -39,6 +41,9 @@ def correct_hub_bin() -> str:
     want = bin_dir()
     have = os.environ.get("HUB_BIN", "").strip()
     if not env_file or (have and os.path.realpath(have) == os.path.realpath(want)):
+        return ""
+    claimed = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()  # a cross-check only: when it names another copy, leave HUB_BIN alone
+    if claimed and os.path.realpath(os.path.join(claimed, "bin")) != os.path.realpath(want):
         return ""
     with open(env_file, "a", encoding="utf-8") as f:
         f.write(f"export HUB_BIN={shlex.quote(str(want))}\n")

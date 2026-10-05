@@ -129,4 +129,17 @@ hubbin NOFILE > $P/hb5.out; check "$?:$(wc -c < $P/hb5.out | tr -d ' ')" "0:0" "
 mkdir -p $P/shadow; printf '#!/bin/sh\n' > $P/shadow/hub; chmod +x $P/shadow/hub
 env HUB_BIN=$P/old-0.7.1/bin CLAUDE_ENV_FILE=$P/envfile CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$P/shadow:$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null > $P/hb7.out
 python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert "HUB_BIN" in c and "`hub` is" in c, c' $P/hb7.out; check $? 0 "a stale HUB_BIN and a shadowing command: both lines, one hook output"
+
+# The plugin whose hook runs decides, not a root the session inherited: a Claude worker started from a Codex host carries
+# the host's PLUGIN_ROOT (an older copy) next to the correct HUB_BIN `agent spawn` set.
+rm -rf $P/shadow; mkdir -p $P/oldroot; cp -R $BP $P/oldroot/bin
+hb(){ env CLAUDE_ENV_FILE=$P/envfile PATH="$BP:$P/pybin" "$@" python3 $HOOKS/path_shadow.py < /dev/null; }
+: > $P/envfile; hb HUB_BIN=$BP PLUGIN_ROOT=$P/oldroot CLAUDE_PLUGIN_ROOT=$(dirname $BP) > $P/hb8.out
+check "$(wc -c < $P/envfile | tr -d ' '):$(wc -c < $P/hb8.out | tr -d ' ')" "0:0" "HUB_BIN: a correct value is not rewritten to an inherited PLUGIN_ROOT's older bin/"
+: > $P/envfile; hb HUB_BIN=$P/old-0.7.1/bin PLUGIN_ROOT=$P/oldroot CLAUDE_PLUGIN_ROOT=$(dirname $BP) > $P/hb9.out
+check "$(cat $P/envfile)" "export HUB_BIN=$BP" "…and a stale one is replaced with the bin/ of the hook that runs, not the inherited root's"
+: > $P/envfile; hb HUB_BIN=$P/old-0.7.1/bin CLAUDE_PLUGIN_ROOT=$P/oldroot > $P/hb10.out
+check "$(wc -c < $P/envfile | tr -d ' '):$(wc -c < $P/hb10.out | tr -d ' ')" "0:0" "negative: CLAUDE_PLUGIN_ROOT naming another copy than the hook's own — ambiguous, nothing is rewritten"
+: > $P/envfile; hb HUB_BIN=$P/old-0.7.1/bin CLAUDE_PLUGIN_ROOT=$(dirname $BP) > $P/hb11.out
+check "$(cat $P/envfile)" "export HUB_BIN=$BP" "positive control: with the two agreeing, a stale value is replaced"
 exit $fail

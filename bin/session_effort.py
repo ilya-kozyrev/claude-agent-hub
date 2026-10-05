@@ -45,7 +45,7 @@ ORDER = ("hook", "env", "transcript", "job", "desktop", "argv")
 TAIL_BYTES = 4 << 20
 CLAUDE_CMD_RE = re.compile(r"^(?:\S*/)?claude(?:\s|$)|/claude\.app/Contents/MacOS/claude(?:\s|$)")
 EFFORT_FLAG_RE = re.compile(r"(?:^|\s)--effort(?:=|\s+)(\S+)")
-SID_FLAG_RE = r"(?:^|\s)(?:--session-id|--resume|-r)(?:=|\s+){}(?:\s|$)"
+SESSION_FLAGS = ("--session-id", "--resume", "-r")
 
 
 class Reading(NamedTuple):
@@ -201,6 +201,14 @@ def _argv_reading(pid: str, cmd: str) -> tuple:
     return (valid(m.group(1)), f"pid {pid} argv") if valid(m.group(1)) else (None, bad(m.group(1), f"pid {pid} argv"))
 
 
+def _names_session(cmd: str, sid: str) -> bool:
+    """Whether the launch options of a command line (before the prompt: a prompt may quote any flag) carry this session id
+    as a whole token: `--session-id B`, `--resume B`, `-r B` or the `=` forms."""
+    opts = _before_prompt(cmd).split()
+    return any((tok in SESSION_FLAGS and i + 1 < len(opts) and opts[i + 1] == sid)
+               or tok in (f"{flag}={sid}" for flag in SESSION_FLAGS) for i, tok in enumerate(opts))
+
+
 def argv_effort(sid: str, own: bool) -> tuple:
     if own:  # the nearest claude ancestor of this process
         pid = str(os.getppid())
@@ -216,10 +224,9 @@ def argv_effort(sid: str, own: bool) -> tuple:
                 break
             pid = ppid
         return None, "no claude process among the ancestors of this one"
-    pat = re.compile(SID_FLAG_RE.format(re.escape(sid)))
     for row in _ps("-axo", "pid=,command=").splitlines():
         pid, _, cmd = row.strip().partition(" ")
-        if CLAUDE_CMD_RE.search(cmd.strip()) and pat.search(cmd):
+        if CLAUDE_CMD_RE.search(cmd.strip()) and _names_session(cmd, sid):
             return _argv_reading(pid, cmd.strip())
     return None, f"no claude process with --session-id/--resume {sid}"
 

@@ -34,7 +34,8 @@
   long-running Claude Code daemon, including the `HUB_BIN` of the plugin version that was current when the daemon
   started, so `"$HUB_BIN/jlog"` and `"$HUB_BIN/jwait"` ran an older copy. The SessionStart hook now appends
   `export HUB_BIN=<this plugin's bin/>` to `$CLAUDE_ENV_FILE` when `HUB_BIN` is unset or points elsewhere (a symlink to
-  this `bin/` counts as the same) and says so in one line when it replaced a stale value.
+  this `bin/` counts as the same) and says so in one line when it replaced a stale value. The `bin/` is that of the plugin
+  copy the hook belongs to; an inherited `PLUGIN_ROOT` (a Claude worker started from a Codex host) is ignored.
 - **Hub-to-hub addressing no longer loses requests.** `jwait --tag hub-30` on stage `core-c` also wakes on the
   stage-qualified address `@core-c-hub-30` (and `--tag hub` on `@core-c-hub`); `@hub-300`, `@xcore-c-hub-30` and another
   stage's `@dolya-hub-30` still do not match. `jlog` writing into another stage's journal signs a derived tag
