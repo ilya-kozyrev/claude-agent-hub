@@ -4,7 +4,7 @@
   agent-top [--stage S ...] [--all] [--interval 1.5] [--read-only]   interactive (curses)
   agent-top --once [--stage S ...] [--all] [--width N] [--agent R] [--lines N]   text picture, no curses
   agent-top --json [--stage S ...] [--all] [--agent R] [--feed N]     the same data for scripts
-  agent-top --widget [--stage S ...] [--all]                          HTML fragment for the chat widget (skill /agent-top)
+  agent-top --widget [--stage S ...] [--all]                          HTML fragment of the snapshot (host CSS variables, no scripts)
 
 Shows every agent of every stage (<hub home>/<stage>/agents/<R>/): state (live / done / error / died — decided as
 `agent status` does: the pid is alive AND its command line holds the session id; else the last `result` event of
@@ -1360,7 +1360,7 @@ WIDGET_STATE = {"live": ("live", "success"), "done": ("done", "secondary"), "err
 
 
 def render_widget(snap: dict) -> str:
-    """An HTML fragment for the chat widget (skill /agent-top): host CSS variables only, no scripts."""
+    """An HTML fragment of the snapshot: host CSS variables only, no scripts (the chat widget of the removed skill; kept for scripts)."""
     e = html.escape
     c = snap["counts"]
     locks = [lk for lk in snap["locks"] if lk["active"]]
@@ -1920,7 +1920,7 @@ def main(argv: list) -> int:
     p.add_argument("--all", action="store_true", help="also finished agents older than 24 h and the archive folders of old runs")
     p.add_argument("--once", action="store_true", help="print a text picture and exit")
     p.add_argument("--json", action="store_true", help="the same data as JSON, for scripts")
-    p.add_argument("--widget", action="store_true", help="HTML fragment for the chat widget (skill /agent-top)")
+    p.add_argument("--widget", action="store_true", help="HTML fragment of the snapshot, for scripts")
     p.add_argument("--agent", help="with --once/--json: card and feed of this agent (role or folder name)")
     p.add_argument("--lines", type=int, default=25, help="with --once --agent: feed lines")
     p.add_argument("--feed", type=int, default=40, help="with --json --agent: feed events")

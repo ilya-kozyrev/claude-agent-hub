@@ -67,13 +67,13 @@ const PANE = {
 
 const DONE = { subtype: 'success', is_error: false, text: 'all green' }
 
-test('status line has the counts; the first snapshot never toasts, a transition toasts once', async ($, on) => {
+test('status line has the counts where a phone looks on too; the first snapshot never toasts, a transition toasts once', async ($, on) => {
   const clock = mock.clock(on)
   let json = snapshot([agent(), agent({ role: 'rev', dir_name: 'rev', state: 'done', alive: false, action: null, result: DONE })])
   const toasts: string[] = []
   const statuses: (string | undefined)[] = []
   on('command.register', REGISTERED)
-  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('session.surfaces', () => ({ value: ['terminal', 'mobile'] }))
   on('ui.panes', () => ({ value: [] }))
   on('process.run', () => ran(json))
   on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
@@ -333,8 +333,7 @@ test('a failing CLI shows one dim line and keeps the last good snapshot', async 
   let isBroken = false
   on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
-  on('ui.panes', () => ({ value: [{ id: 'agent-top', title: 'Agents', isShown: true, isFocused: false, isPlaced: true }] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  stubPaneRecord(on)
   on('ui.toast', DONE_VOID)
   on('ui.status', DONE_VOID)
   on('process.run', () =>
@@ -360,7 +359,7 @@ test('a missing agent-top stops the polling: status cleared, no toasts, no more 
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   on('command.register', REGISTERED)
-  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('session.surfaces', () => ({ value: ['terminal', 'vscode'] }))
   on('ui.panes', () => ({ value: [] }))
   on('process.run', () => {
     runs += 1
@@ -389,8 +388,7 @@ test('never two runs in flight', async ($, on) => {
   let most = 0
   on('command.register', REGISTERED)
   on('session.surfaces', () => ({ value: ['terminal'] }))
-  on('ui.panes', () => ({ value: [{ id: 'agent-top', title: 'Agents', isShown: true, isFocused: false, isPlaced: true }] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  stubPaneRecord(on)
   on('ui.toast', DONE_VOID)
   on('ui.status', DONE_VOID)
   on('process.run', async () => {
@@ -404,6 +402,116 @@ test('never two runs in flight', async ($, on) => {
   await clock.advance(60000)
   await opening
   expect(most).toBe(1)
+})
+
+/** `ui.open` / `ui.close` / `ui.panes` as the engine keeps its record: the pane is listed from its open to its close. */
+function stubPaneRecord(on: On, log: string[] = []): void {
+  let isUp = false
+  on('ui.panes', () => ({ value: isUp ? [{ id: 'agent-top', title: 'Agents', isShown: true, isFocused: true, isPlaced: true }] : [] }))
+  on('ui.open', ($, e) => ((isUp = true), log.push(`open ${e.id}`), { value: { isPlaced: true } }))
+  on('ui.close', ($, e) => ((isUp = false), log.push(`close ${e.id}`), { value: undefined }))
+}
+
+const FOOTER = (modes: string[]) => ({ plugin: PLUGIN, component: 'SessionMode', props: { modes } }) as const
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the footer Button on ${surface}: the counts, the engine modes kept, a press opens then closes the pane, no status line`, async ($, on) => {
+    const clock = mock.clock(on)
+    const panes: string[] = []
+    const statuses: (string | undefined)[] = []
+    on('command.register', REGISTERED)
+    on('session.surfaces', () => ({ value: [surface] }))
+    stubPaneRecord(on, panes)
+    on('process.run', () => ran(snapshot([agent(), agent({ role: 'rev', dir_name: 'rev', state: 'error', alive: false, action: null })])))
+    on('ui.toast', DONE_VOID)
+    on('ui.status', ($, e) => (statuses.push(e.text), { value: undefined }))
+    on('session.start', () => ({ cwd: '/work' }))
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.advance(3000)
+    expect(statuses).toEqual([]) // the Button holds the counts: never both
+
+    const ui = await $.ui.mount({ ...FOOTER(['focus', 'memory paused']), surface })
+    const button = await ui.find({ key: 'agent-top-toggle' })
+    expect(button?.type).toBe('Button')
+    expect(button?.props?.label).toBe('agents ● 1 ✓ 0 ✗ 1')
+    expect(await ui.find({ type: 'Text', text: /^focus & memory paused/ })).toBeDefined()
+
+    await ui.press({ key: 'agent-top-toggle' })
+    expect(panes).toEqual(['open agent-top'])
+    const pane = await $.ui.mount({ ...PANE, surface })
+    expect(await pane.find({ key: 'open:stage-a/worker' })).toBeDefined()
+    await pane.unmount()
+    await ui.press({ key: 'agent-top-toggle' })
+    expect(panes).toEqual(['open agent-top', 'close agent-top'])
+    await ui.press({ key: 'agent-top-toggle' })
+    expect(panes).toEqual(['open agent-top', 'close agent-top', 'open agent-top'])
+    await ui.unmount()
+
+    // no engine modes: the Button alone
+    const bare = await $.ui.mount({ ...FOOTER([]), surface })
+    expect(await bare.find({ key: 'agent-top-toggle' })).toBeDefined()
+    expect(await bare.find({ type: 'Text', text: /&|·/ })).toBeUndefined()
+    await bare.unmount()
+  })
+}
+
+test('where a surface without the footer looks on, the counts are the status line and the footer is left to the engine', async ($, on) => {
+  const clock = mock.clock(on)
+  let surfaces: string[] = ['terminal']
+  const statuses: (string | undefined)[] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: surfaces as ('terminal' | 'mobile')[] }))
+  stubPaneRecord(on)
+  on('process.run', () => ran(snapshot([agent()])))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', ($, e) => (statuses.push(e.text), { value: undefined }))
+  on('ui.render', { component: 'SessionMode' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{`engine: ${e.props.modes.join(' & ')}`}</Text>
+  })
+  on('session.start', () => ({ cwd: '/work' }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(3000)
+  expect(statuses).toEqual([])
+  let ui = await $.ui.mount({ ...FOOTER(['focus']), surface: 'terminal' })
+  expect(await ui.find({ key: 'agent-top-toggle' })).toBeDefined()
+  await ui.unmount()
+
+  surfaces = ['terminal', 'mobile'] // a phone attached: from the next poll on, the status line
+  await clock.advance(15000)
+  expect(statuses).toEqual(['agents ● 1 ✓ 0 ✗ 0'])
+  ui = await $.ui.mount({ ...FOOTER(['focus']), surface: 'terminal' })
+  expect(await ui.find({ key: 'agent-top-toggle' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^engine: focus$/ })).toBeDefined() // the engine's own footer, untouched
+  await ui.unmount()
+
+  surfaces = ['terminal'] // it left: the Button again, the status line cleared
+  await clock.advance(15000)
+  expect(statuses).toEqual(['agents ● 1 ✓ 0 ✗ 0', undefined])
+  ui = await $.ui.mount({ ...FOOTER([]), surface: 'terminal' })
+  expect(await ui.find({ key: 'agent-top-toggle' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('/agent-top toggles as the Button does: a bare second one closes the pane; with a role it stays open on the card', async ($, on) => {
+  mock.clock(on)
+  const panes: string[] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  stubPaneRecord(on, panes)
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => ran(e.argv.includes('--agent') ? cardJson(agent(), []) : snapshot([agent()])))
+  expect((await run($)).text).toBe('agent-top pane opened: ● 1 ✓ 0 ✗ 0')
+  expect((await run($)).text).toBe('agent-top pane closed')
+  expect((await run($, '', `${PLUGIN}:agent-top`)).text).toBe('agent-top pane opened: ● 1 ✓ 0 ✗ 0')
+  expect((await run($, 'worker')).text).toBe('agent-top pane opened: ● 1 ✓ 0 ✗ 0')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'card-title' })).toBeDefined()
+  await ui.unmount()
+  expect((await run($, '', `${PLUGIN}:agent-top`)).text).toBe('agent-top pane closed')
+  expect(panes).toEqual(['open agent-top', 'close agent-top', 'open agent-top', 'open agent-top', 'close agent-top'])
 })
 
 // ---------------------------------------------------------------- the pure helpers
@@ -656,7 +764,7 @@ function cells(node: unknown): number {
   return kids.reduce((sum: number, k) => sum + cells(k), 0)
 }
 
-test('no row is wider than the body: every view at 24, 30, 40, 44, 60 and 76 columns, inline and docked', async ($, on) => {
+test('no row is wider than the body: every view at 23, 24, 25, 30, 40, 44, 60 and 76 columns, inline and docked', async ($, on) => {
   mock.clock(on)
   const rows = [
     agent({ role: 'a-rather-long-role-name', dir_name: 'a', title: 'A task title long enough to need clipping everywhere (w-1)', ctx_window: 200000 }),
@@ -675,7 +783,7 @@ test('no row is wider than the body: every view at 24, 30, 40, 44, 60 and 76 col
   await run($)
   const wide: string[] = []
   for (const placement of ['inline', 'dock'] as const) {
-    for (const cols of [24, 30, 40, 44, 60, 76]) {
+    for (const cols of [23, 24, 25, 30, 40, 44, 60, 76]) {
       const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 40 }), surface: 'terminal' })
       const framed = placement === 'dock' && cols >= 44
       const w = cols - (framed ? 4 : 0)
@@ -855,4 +963,37 @@ test('windowAround, barCells, levelColor, tagColor, journalColor, ctxPercent', a
   expect(a && ctxPercent(a)).toBe(26)
   expect(b?.ctx_window).toBeNull()
   expect(b && ctxPercent(b)).toBeNull()
+})
+
+test('the card fits a pane 23, 24 and 25 columns wide: the Feed rows too (time, kind, text)', async ($, on) => {
+  mock.clock(on)
+  const feed = [
+    { at: '12:00:01', kind: 'tool', sub: false, tool: 'MultiEditorTool', text: 'abcdefgh ijklmnopq rstuvwxyz', detail: null },
+    { at: '12:00:02', kind: 'text', sub: false, tool: null, text: 'abcdefghij klmnopqrst', detail: null },
+    { at: '12:00:03', kind: 'result', sub: false, tool: 'Bash', text: 'abcdefghijklmnop', detail: null },
+    { at: null, kind: 'end', sub: true, tool: null, text: 'end of run: abcdefghijkl', detail: null },
+  ]
+  stubPane(on, () => snapshot([agent()]), undefined, [], feed)
+  await run($)
+  const wide: string[] = []
+  for (const placement of ['inline', 'dock'] as const) {
+    for (const cols of [23, 24, 25]) {
+      const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 40 }), surface: 'terminal' })
+      await ui.press({ key: 'open:stage-a/worker' })
+      expect(await ui.find({ key: 'feed:0' })).toBeDefined()
+      for (const b of await ui.findAll({ type: 'Box' })) {
+        const k = b.key ?? ''
+        if (k === 'frame' || k === 'card') continue
+        const used = cells(b)
+        if (used > cols) wide.push(`${placement} ${cols}: ${k || 'a row'} takes ${used}`)
+      }
+      for (const key of ['feed:0', 'feed:1', 'feed:2', 'feed:3']) {
+        const used = cells(await ui.find({ key }))
+        if (used > cols) wide.push(`${placement} ${cols}: ${key} takes ${used}`)
+      }
+      await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  }
+  expect(wide).toEqual([])
 })

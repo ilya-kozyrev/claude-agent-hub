@@ -233,7 +233,7 @@ export function onceArgs(a: CommandArgs): string[] {
   return out
 }
 
-/** The dev copy of the mod is tested beside the installed agent-hub, whose skill `agent-top` then owns the plain name. */
+/** The dev copy of the mod is tested beside the installed agent-hub, whose own mod then registers the plain name. */
 const DEV_PLUGIN = 'agent-top-dev'
 const DEV_ALSO_ANSWERS = 'agent-hub:agent-top'
 
@@ -270,6 +270,16 @@ export function statusText(s: Snapshot | null): string | undefined {
   if (!s || s.agents.length === 0) return undefined
   return `agents ● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}`
 }
+
+/** The surfaces that draw the prompt footer (`SessionMode`), where the counts are a Button and not the status line. */
+const FOOTER_SURFACES: readonly string[] = ['terminal', 'desktop']
+
+/** True when every surface the session draws on holds the footer Button; none at all (a -p run) is false. */
+export const footerHolds = (surfaces: readonly string[]): boolean =>
+  surfaces.length > 0 && surfaces.every(s => FOOTER_SURFACES.includes(s))
+
+/** `/agent-top` with no role, stage or --all: the toggle (an open pane closes). */
+export const isBare = (a: CommandArgs): boolean => a.role === null && a.stages.length === 0 && !a.isAll
 
 export const agentKey = (a: Pick<Agent, 'stage' | 'dir_name'>): string => `${a.stage}/${a.dir_name}`
 /**
@@ -368,7 +378,7 @@ export const padEnd = (s: string, w: number): string => {
 
 /** Word wrap to `width`, at most `maxLines` lines (the last one clipped with an ellipsis). */
 export function wrapLines(text: string, width: number, maxLines = 2): string[] {
-  const w = Math.max(8, width)
+  const w = Math.max(1, width) // the caller's width holds: a floor above it overflows a narrow body
   const words = oneLine(text).split(' ').filter(Boolean)
   const lines: string[] = []
   let cur = ''

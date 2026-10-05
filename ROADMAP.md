@@ -17,8 +17,8 @@ What is planned next, in order. An item moves to the [CHANGELOG](CHANGELOG.md) w
 ## Next
 
 1. **Interface language.** `AGENT_HUB_LANG` (default `en`; `ru` ships too; any other language is a JSON
-   catalog in the hub home, no fork). It covers what a person reads — `agent-top` in every view (screen, `--once`,
-   the widget) and the summaries printed for the owner. Journal status words (`DONE`, `BLOCKED`) stay as they are:
+   catalog in the hub home, no fork). It covers what a person reads — `agent-top` in every view (screen, `--once`)
+   and the summaries printed for the owner. Journal status words (`DONE`, `BLOCKED`) stay as they are:
    waiters match them. Text written for the model (skills, hook messages) stays English; the hub answers in the
    user's language anyway. A test fails the build when a catalog misses a key.
 2. **First-run setup wizard.** `agent-hub:setup` grows from lock resources into the one flow a new user runs after

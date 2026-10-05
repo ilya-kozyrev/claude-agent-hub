@@ -7,7 +7,7 @@ The hub is your interactive Claude Code or Codex session. It writes a brief and 
 ask the owner through a **question register**, and respect **locks** on shared resources such as merging to main.
 When the hub's context fills up, it writes a **handoff** and a fresh hub takes over — the agents keep running.
 With **autopilot** on, the hub starts its successor automatically: Claude supports its background Remote Control
-workflow; Codex starts a detached Codex successor. `agent-top` shows both engines in the terminal or as a chat widget.
+workflow; Codex starts a detached Codex successor. `agent-top` shows both engines in the terminal, and in Claude Code as a live side pane.
 
 Codex installation, full access, hook trust and native worker definitions: [Codex support](docs/codex.md).
 
@@ -111,7 +111,7 @@ flowchart LR
     hub <-->|"lock take / release"| board
     hub <-->|"roles set / get"| roles
     board -.->|"board_locks hook refuses merges to protected branches and the commands you list under another's lock"| agents
-    log -->|"read-only"| top["agent-top<br/>console + /agent-top widget"]
+    log -->|"read-only"| top["agent-top<br/>console + Claude Code pane"]
     journal --> top
     questions --> top
     board --> top
@@ -128,7 +128,7 @@ flowchart LR
 | `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. |
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub. |
 | `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
-| `agent-top` | Live console of all agents (curses), `--once` text, `--json`, `--widget` HTML. |
+| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. |
 
 More diagrams and the file formats: [docs/architecture.md](docs/architecture.md).
 
@@ -163,16 +163,14 @@ Journal (last 5 lines):
 Interactively, `agent-top` adds a live feed per agent (thoughts ✎, commands ▸, results ◂), its brief and inbox, the
 journal with a filter, and `m` / `x` to message or stop an agent after a y/N prompt.
 
-The `/agent-top` chat widget (a sketch of the HTML that `agent-top --widget` produces, same data):
-
-![agent-top chat widget sketch](docs/agent-top-widget.svg)
-
 ### agent-top inside Claude Code: a live pane
 
 Claude Code (mods are on by default) runs the plugin's mod, `hooks/agent-top.tsx`, in the terminal and in the
-Desktop Code tab. It replaces the chat widget as the primary view there:
+Desktop Code tab:
 
-- **`/agent-top [role] [--stage S] [--all]` opens a pane.** It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
+- **`/agent-top [role] [--stage S] [--all]` opens a pane**, and so does the `agents ● 4 ✓ 9 ✗ 0` button in the prompt
+  footer next to the model picker; a second `/agent-top` or a second press closes it. The mod registers `/agent-top`
+  itself and also answers `/agent-hub:agent-top`. It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
   the `❯` cursor, Enter or the row's digit `1`–`9` opens the agent card), the **agent card** (state, model, turns, a
   context bar against the model's window, cost, result; a live feed of the last 30 events; `b` goes back), **Journal**
   (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks). Each agent is two lines with a
@@ -185,9 +183,9 @@ Desktop Code tab. It replaces the chat widget as the primary view there:
   session started is never announced. With the pane closed the mod looks every 15 s.
 - **Read-only.** No send, stop or message button. The mod writes nothing: it runs `bin/agent-top --json` and draws the
   result. Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`.
-- **Older Claude Code ignores the module**, and the `agent-top` skill keeps working there, in Codex and in VS Code chat.
-  Where no pane can be drawn (`claude -p`), `/agent-top` prints the text picture, like `agent-top --once --width 100`.
-  If `bin/agent-top` is missing the mod goes quiet instead of failing.
+- **Where mods do not draw there is no `/agent-top`:** Codex, VS Code chat, `claude -p`, Remote Control and
+  `claude --bg` views, Claude Code older than 2.1.287. Use the console in a shell: `agent-top` (live), `agent-top --once`
+  (text picture), `agent-top --json` (scripts). If `bin/agent-top` is missing the mod goes quiet instead of failing.
 
 ## Install
 
@@ -210,7 +208,7 @@ codex plugin add agent-hub@agent-hub-codex
 ```
 
 Review and trust its hooks before starting an interactive Codex hub. The explicit Codex manifest selects
-`hooks/codex-hooks.json` and packages the same five skills. Full access and hook trust are separate settings;
+`hooks/codex-hooks.json` and packages the same four skills. Full access and hook trust are separate settings;
 [Codex support](docs/codex.md) explains detached defaults and restricted reviewers.
 
 The order: install, then your first message `/agent-hub:hub …` in the repository (see [Quickstart](#quickstart)), then
@@ -247,9 +245,8 @@ use the separately configured hook-trust policy; hooks stay enabled. See [Codex 
   plugin cache, the marketplace folder) is not reported. To keep a personal shim that dispatches into the plugin (say
   `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# agent-hub: dispatcher`
   among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
-- **Five skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`), `delegation` and `agent-top`
-  (`/agent-hub:agent-top`, or `/agent-top` when no other skill has that name; in Claude Code the mod answers it
-  with a live pane before the skill runs); four pinned-effort Claude worker subagents.
+- **Four skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`) and `delegation`; four pinned-effort
+  Claude worker subagents. `/agent-top` is not a skill: in Claude Code the mod answers it (see above).
   Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
 - **Hooks**, each with its own reach (the [agent-discipline](#agent-discipline) hooks — context budget, polling guard,
   delegation dial and subagent rules — are described in their own section):
@@ -833,8 +830,6 @@ The Claude-specific facilities below apply when the selected host/engine is Clau
 - Autopilot needs the standalone `claude` CLI logged in and the project directory trusted by it (see
   [Autopilot](#autopilot-the-hub-hands-over-by-itself)); otherwise its successor is a headless hub, which you reach
   through `ask` and `agent send` rather than from your phone.
-- `sendPrompt` buttons do not work in the Claude Code desktop tab, so the `/agent-top` widget has no buttons; it names
-  the commands to type instead.
 
 ## Roadmap
 

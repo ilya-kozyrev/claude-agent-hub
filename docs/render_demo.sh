@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerates the README screens from synthetic data: docs/agent-top-once.txt and docs/agent-top-widget.html.
+# Regenerates the README screens from synthetic data: docs/agent-top-once.txt.
 set -eu
 D="$(cd "$(dirname "$0")" && pwd)"; B="$D/../bin"
 export AGENT_HUB_HOME="$(mktemp -d)" HOME="$(mktemp -d)" AGENT_HUB_TZ=UTC
@@ -8,8 +8,4 @@ python3 -c 'import time; time.sleep(120)' $S1 $S2 & SLEEPER=$!
 trap 'kill $SLEEPER 2>/dev/null' EXIT
 python3 "$D/demo/make_demo_home.py" "$AGENT_HUB_HOME" $SLEEPER $S1 $S2 > /dev/null
 NO_COLOR=1 "$B/agent-top" --once --width 120 > "$D/agent-top-once.txt"
-"$B/agent-top" --widget > "$D/agent-top-widget.html"
-"$B/agent-top" --json > "$D/demo/snapshot.json"
-python3 "$D/demo/widget_svg.py" "$D/demo/snapshot.json" > "$D/agent-top-widget.svg"
-rm "$D/demo/snapshot.json"
-echo "written: docs/agent-top-once.txt docs/agent-top-widget.html docs/agent-top-widget.svg"
+echo "written: docs/agent-top-once.txt"

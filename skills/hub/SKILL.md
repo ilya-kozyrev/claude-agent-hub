@@ -352,5 +352,6 @@ These are the defaults of the plugin's author, each paid for by an incident or a
 ## Watching agents
 
 `agent-top` is a live console (curses) of every agent: state, current action, last words, unread inbox, locks, owner
-questions and plan limits; `agent-top --once` prints the same picture as text. In chat, the `agent-top` skill shows it
-as a widget.
+questions and plan limits; `agent-top --once` prints the same picture as text; `agent-top --json` is for scripts. In Claude Code (2.1.287 or
+later) the person types `/agent-top` for a live read-only side pane. Where mods do not draw (Codex, VS Code chat,
+`claude -p`, Remote Control views) there is no `/agent-top`: use the console in a shell.

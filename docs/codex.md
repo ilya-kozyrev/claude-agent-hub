@@ -132,9 +132,9 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
 - Run one `jwait` through Codex's shell execution session and continuation tools. Keep individual blocking waits
   bounded so the coordinator can still respond; use its returned exit status. Claude's `run_in_background` and
   completion notifications are specific to Claude.
-- `agent-top --once`, `--json` and `--widget` work with both event streams. Codex values absent from its stream are
-  shown as unavailable rather than inferred. A host that can preview local HTML may open the widget file;
-  otherwise the skill returns the text snapshot. No Claude live artifact is required.
+- `agent-top`, `agent-top --once` and `--json` work with both event streams. Codex values absent from its stream are
+  shown as unavailable rather than inferred. Codex has no `/agent-top`: run `agent-top` in a shell. The live pane is a
+  Claude Code mod and does not draw in Codex.
 - Codex autopilot (`hub succeed --engine codex`) starts a detached Codex successor. It inherits the actual
   rollout model, reasoning effort and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
   workspace policy fields include network access, writable roots and temporary-directory exclusions; unknown
