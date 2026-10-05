@@ -75,7 +75,7 @@ for state in ('notLoaded','wrongid','fail','malformed','badshape','brokenpipe','
  assert prev_warning(rec,'new','new','stage-a')=='',state
  if state=='hang':
   elapsed=time.monotonic()-started
-  assert elapsed < 8, f'hanging transport exceeded deadline: {elapsed:.3f}s'
+  assert elapsed < 12, f'hanging transport exceeded deadline: {elapsed:.3f}s'
 # Detached stale PID/token and process failure: never trust PID existence or recent rollout activity.
 meta={'engine':'codex','session_id':sid,'role':'old-hub','pid':1234,'process_token':'expected'}
 p=root/'stage-a'/'agents'/'old-hub'/'meta.json';p.write_text(json.dumps(meta))

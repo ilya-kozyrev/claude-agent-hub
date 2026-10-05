@@ -5,6 +5,8 @@ new_home
 export PYTHONDONTWRITEBYTECODE=1 CODEX_HOME="$AGENT_HUB_HOME/codex" CLAUDE_CONFIG_DIR="$AGENT_HUB_HOME/claude"
 python3 - "$B" "$AGENT_HUB_HOME" <<'PY'
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
@@ -27,8 +29,17 @@ print('PASS both hosts discover the short model-invoked status skill, without ag
 
 folder = home / 'stage-a/agents/status-fixture'
 folder.mkdir(parents=True)
-(folder / 'meta.json').write_text(json.dumps({'role': 'status-fixture', 'pid': 99999999, 'engine': 'codex'}))
-(folder / 'log.jsonl').write_text(json.dumps({'type': 'turn.completed', 'usage': {}}) + '\n')
+(folder / 'meta.json').write_text(json.dumps({
+    'role': 'status-fixture', 'pid': os.getpid(), 'process_token': str(binpath), 'engine': 'codex',
+    'started_at': datetime.now(timezone.utc).isoformat(),
+}))
+# The test process stays alive while the collector reads its fixture; no extra worker is launched.
+events = [
+    {'type': 'turn.started'},
+    {'type': 'item.completed', 'item': {'id': 'message', 'type': 'agent_message', 'text': 'Fixture work'}},
+    {'type': 'item.started', 'item': {'id': 'command', 'type': 'command_execution', 'command': 'fixture work'}},
+]
+(folder / 'log.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
 cmd = [str(binpath / 'agent-top'), '--json']
 # Extract every long option named by the skill, so new examples cannot evade this control.
 flags = set(re.findall(r'--[a-z][a-z-]*', text))
@@ -39,13 +50,17 @@ for args in ([], ['--stage', 'stage-a'], ['--stage', 'stage-a', '--stage', 'empt
              ['--all', '--stage', 'stage-a', '--agent', 'status-fixture', '--feed', '10']):
     result = subprocess.run(cmd + args, capture_output=True, text=True, timeout=30, check=True)
     snapshot = json.loads(result.stdout)
-    assert any(a['role'] == 'status-fixture' for a in snapshot['agents'])
+    agent = next(a for a in snapshot['agents'] if a['role'] == 'status-fixture')
+    assert {'started_at', 'age_s', 'last_text', 'unread'} <= agent.keys(), agent
+    assert agent['state'] == 'live' and agent['started_at'] and agent['last_text'] == 'Fixture work'
+    assert isinstance(agent['action'], dict) and 'elapsed_s' in agent['action'], agent['action']
     assert 'locks' in snapshot and 'questions_ok' in snapshot
     if '--agent' in args:
         assert snapshot['feed']['agent'] == 'status-fixture'
 invalid = subprocess.run(cmd + ['--not-a-real-status-flag'], capture_output=True, text=True)
 assert invalid.returncode == 2
 print('PASS status commands execute with JSON, stage, all, agent and feed; invalid option rejected')
+print('PASS JSON fixture includes every status field, including nested action.elapsed_s')
 PY
 rc=$?
 [ "$rc" = 0 ] || exit "$rc"
