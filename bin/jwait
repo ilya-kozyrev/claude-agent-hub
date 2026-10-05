@@ -13,10 +13,12 @@ Sources: --journal (today's journal of the stage, follows midnight rollover) and
 (any log; may not exist yet). Several allowed.
 Filters (a line is delivered when ANY positive filter matches; no positive filter = every new line):
   --match REGEX   Python regex searched in the line (repeatable)
-  --tag T         line written with tag T or a sub-tag T/…, or addressed "@T" (repeatable)
+  --tag T         line written with tag T or a sub-tag T/…, or addressed "@T" or "@<this stage>-T"
+                  (the stage-qualified signature of another stage's hub, jlog's `core-c-hub-30`) (repeatable)
 Exclusions (always win):
   --exclude-tag T drops lines written with tag T and its sub-tags T/… (repeatable). The caller's
-                  own tag ($HUB_TAG or the registry) is excluded by default; --include-own keeps it.
+                  own tag ($HUB_TAG or the registry) is excluded by default, in both forms: T and
+                  <own stage>-T, as jlog signs in another stage's journal; --include-own keeps it.
 State: what each caller has already seen per source lives in <root>/.jwait-state/<caller>.json,
 keyed by a hash of the line and its occurrence number, so a rewritten or replayed file does not
 re-deliver old lines, and lines that arrived while you were busy are delivered on the next run.
@@ -171,7 +173,8 @@ def save_state(caller: str, updates: dict) -> None:
 
 
 class Filter:
-    def __init__(self, args, own_tag):
+    def __init__(self, args, own_tag, stage=None):
+        self.stage = stage
         try:
             self.patterns = [re.compile(p) for p in args.match]
         except re.error as e:
@@ -180,6 +183,9 @@ class Filter:
         self.exclude = [t.strip() for t in args.exclude_tag]
         if own_tag and not args.include_own:
             self.exclude.append(own_tag)
+            own = hc.own_stage(own_tag)  # the signature in another stage's journal is `<own stage>-<tag>` (jlog)
+            if own:
+                self.exclude.append(f"{own}-{own_tag}")
 
     def accepts(self, text: str) -> bool:
         parsed = hc.parse_journal_line(text)
@@ -190,7 +196,7 @@ class Filter:
             return True
         if any(p.search(text) for p in self.patterns):
             return True
-        return any(hc.tag_is(tag, t) or hc.mentions(text, t) for t in self.tags)
+        return any(hc.tag_is(tag, t) or hc.mentions(text, t, self.stage) for t in self.tags)
 
 
 def since_cutoff(raw: str, base: dt.datetime) -> dt.datetime:
@@ -212,7 +218,7 @@ def main(argv: list) -> int:
     p.add_argument("--stage", default=None)
     p.add_argument("--file", action="append", default=[], help="wait for lines of this file (repeatable)")
     p.add_argument("--match", action="append", default=[], help="regular expression (repeatable)")
-    p.add_argument("--tag", action="append", default=[], help="lines tagged T or T/…, or addressed @T")
+    p.add_argument("--tag", action="append", default=[], help="lines tagged T or T/…, or addressed @T or @<this stage>-T")
     p.add_argument("--exclude-tag", action="append", default=[], help="do not wake on lines tagged T or T/…")
     p.add_argument("--include-own", action="store_true", help="do not exclude the caller's own tag")
     p.add_argument("--caller", default=None, help="whose seen-state to use (default: own tag or session id)")
@@ -227,7 +233,7 @@ def main(argv: list) -> int:
     stage = hc.check_stage(args.stage or hc.default_stage())
     own_tag = hc.caller_tag(stage)
     caller = args.caller or own_tag or os.environ.get("CLAUDE_CODE_SESSION_ID") or "anon"
-    flt = Filter(args, own_tag)
+    flt = Filter(args, own_tag, stage)
     start = hc.now()
     if args.until:
         deadline = hc.parse_deadline(args.until, start)

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Hub-to-hub addressing no longer loses requests.** `jwait --tag hub-30` on stage `core-c` also wakes on the
+  stage-qualified address `@core-c-hub-30` (and `--tag hub` on `@core-c-hub`); `@hub-300`, `@xcore-c-hub-30` and another
+  stage's `@dolya-hub-30` still do not match. `jlog` writing into another stage's journal signs a derived tag
+  (`$HUB_TAG` or the registry) with the caller's own stage — `[core-c-hub-30]` in the Dolya journal — so the answer
+  `@core-c-hub-30` is heard; an explicit `--tag` is written as given, and an own stage that cannot be told leaves the tag as before.
+- **`hub takeover` warns about a replaced hub that still runs.** When the hub registered before the takeover is still
+  a live session (`claude agents --json`; a `done` background session that keeps its pid counts), one `ATTENTION:` line
+  in the output and the digest says other hubs can still message it by name and gives `claude stop <id>` /
+  `claude rm <id>` (a Desktop session: archive it in Desktop). Nothing is stopped; a failing CLI call is silent.
+- **`hub start`, `hub takeover` and `agent spawn --cwd` warn about a missing project folder.** An `ATTENTION:` line
+  (never a refusal) when the working directory is not inside a git repository (a Desktop session started under "No
+  folder" runs in `~` or a temp dir), or when the checkout has no `.agent-hub/` while the remote default branch
+  (`origin/HEAD`, else `origin/main`) has it — the project's rules, locks and brief footer would silently not apply.
+- The hub skill says how to reach another stage's hub: `@hub` or `@<stage>-hub-<N>` in its journal, or the session
+  from `roles --stage <X> get hub`, never a session picked by name in `ListAgents`.
+
 - **Pixel-art illustrations explain worker coordination and hub handoff.** The README shows distinct worker tasks
   feeding a shared journal; the handoff scene shows OLD HUB → FRESH HUB, with all continuing workers under the fresh hub.
   Original generation and owner-directed edit prompts, including the historical reference, are recorded beside the PNGs; the precise SVG remains in the reference.

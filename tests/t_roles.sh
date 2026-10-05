@@ -19,6 +19,25 @@ $B/roles set term2 not-a-uuid --kind cli >/dev/null 2>&1; check $? 2 "negative: 
 $B/roles get nobody >/dev/null 2>&1; check $? 1 "negative: get unknown role"
 # jlog picks the tag from the registry by CLAUDE_CODE_SESSION_ID
 out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog "tag check"); echo "$out" | grep -q '\[hub-17\] tag check'; check $? 0 "jlog tag from registry"
+# jlog into another stage signs with the caller's stage: [stage-a-hub-17] in stage-b's journal
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b "from afar"); echo "$out" | grep -q '\[stage-a-hub-17\] from afar'; check $? 0 "jlog to another stage: $HUB_STAGE-qualified registry tag"
+out=$(env -u HUB_STAGE CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b "no HUB_STAGE"); echo "$out" | grep -q '\[stage-a-hub-17\] no HUB_STAGE'; check $? 0 "…own stage found from the registry when HUB_STAGE is unset"
+out=$(HUB_TAG=hub-3-qa $B/jlog --stage stage-b "env tag"); echo "$out" | grep -q '\[stage-a-hub-3-qa\] env tag'; check $? 0 "…\$HUB_TAG is qualified with \$HUB_STAGE too"
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b --tag mine "explicit"); echo "$out" | grep -q '\[mine\] explicit'; check $? 0 "negative: an explicit --tag is written as given"
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-a "same stage"); echo "$out" | grep -q '\[hub-17\] same stage'; check $? 0 "negative: same stage, the tag is unchanged"
+out=$(HUB_TAG=hub-3-qa $B/jlog --stage stage-a "same stage env"); echo "$out" | grep -q '\[hub-3-qa\] same stage env'; check $? 0 "negative: same stage with \$HUB_TAG, unchanged"
+out=$(env -u HUB_STAGE HUB_TAG=hub-3-qa $B/jlog --stage stage-b "unknown own stage"); echo "$out" | grep -q '\[hub-3-qa\] unknown own stage'; check $? 0 "negative: own stage unknown, as before"
+# review 1: an explicit $HUB_STAGE decides the own stage, whatever other roles the session holds
+$B/roles --stage stage-d set qa local_$H --tag qa >/dev/null
+out=$(HUB_TAG=hub-17 CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-d "also a role there"); echo "$out" | grep -q '\[stage-a-hub-17\] also a role there'; check $? 0 "HUB_STAGE + HUB_TAG + a role in the target stage: still [stage-a-hub-17]"
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-d "registry tag"); echo "$out" | grep -q '\[qa\] registry tag'; check $? 0 "control: no HUB_TAG, registered in the target stage → that registry's tag"
+# …and without HUB_STAGE the stage is the registration that carries the tag, not the first one sorted
+$B/roles --stage aaa-old set qa local_$P --tag qa >/dev/null; $B/roles --stage core-x set hub-30 local_$P --tag hub-30 >/dev/null
+out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage stage-b "which stage"); echo "$out" | grep -q '\[core-x-hub-30\] which stage'; check $? 0 "aaa-old/qa + core-x/hub-30, HUB_TAG=hub-30 → [core-x-hub-30]"
+out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage aaa-old "other role here"); echo "$out" | grep -q '\[core-x-hub-30\] other role here'; check $? 0 "a role (qa) in the target stage under another tag does not keep HUB_TAG bare: [core-x-hub-30]"
+out=$(env -u HUB_STAGE HUB_TAG=qa CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage aaa-old "same tag here"); echo "$out" | grep -q '\[qa\] same tag here'; check $? 0 "control: registered in the target stage under that very tag → bare"
+$B/roles --stage zzz-twin set hub-30 local_$P --tag hub-30 >/dev/null
+out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage stage-b "ambiguous"); echo "$out" | grep -q '\[hub-30\] ambiguous'; check $? 0 "negative: two registrations with that tag → the tag is left unchanged"
 # budget: 10 per sender; broadcast records and writes one journal line
 check "$($B/roles budget hub p3)" "10 (sent to this recipient: 0)" "budget starts at 10"
 for i in 1 2 3 4 5 6 7 8; do $B/roles sent hub p3 >/dev/null; done

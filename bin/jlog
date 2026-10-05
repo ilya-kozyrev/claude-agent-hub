@@ -5,8 +5,10 @@
 
 Writes "- HH:MM [tag] text" (hub time zone) to
 <hub home>/<stage>/coordinator/work/journal-YYYY-MM-DD.md and prints the line.
-Tag: --tag, else $HUB_TAG, else this session's tag in the role registry
-(`roles`, matched by $CLAUDE_CODE_SESSION_ID), else an error.
+Tag: --tag (written as given), else $HUB_TAG, else this session's tag in the role registry
+(`roles`, matched by $CLAUDE_CODE_SESSION_ID), else an error. Written to another stage than the caller's own
+($HUB_STAGE, else the registry that lists this session), a derived tag is signed with the caller's stage:
+`[core-c-hub-30]` in the Dolya journal, so an `@core-c-hub-30` answer is heard by `jwait --tag hub-30` there.
 Stage: --stage, else $HUB_STAGE, else "default". Hub home: `hub home` shows which and why.
 Exit: 0 written, 1 write failed, 2 usage (no tag, empty text).
 """
@@ -27,7 +29,7 @@ def main(argv: list) -> int:
     p.add_argument("text", nargs="+", help="line text (newlines are collapsed)")
     args = p.parse_args(argv)
     stage = hc.check_stage(args.stage or hc.default_stage())
-    tag = args.tag or hc.caller_tag(stage)
+    tag = args.tag or hc.signing_tag(stage)
     if not tag:
         raise hc.UsageError("no tag: pass --tag, set $HUB_TAG or register this session (the first hub of a stage: "
                             "`hub start --stage S --session $CLAUDE_CODE_SESSION_ID`; anyone else: "

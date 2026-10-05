@@ -282,6 +282,52 @@ def project_dir(start=None) -> Optional[Path]:
     return None
 
 
+def _git(cwd, *argv, locale: bool = False):
+    """CompletedProcess of a bounded git call in `cwd`, None when git cannot run at all (missing, timed out)."""
+    env = git_env()
+    if locale:
+        env["LC_ALL"] = "C"  # the "not a git repository" test below reads git's message
+    try:
+        return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True, timeout=5, env=env,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def project_warnings(cwd=None) -> list:
+    """Why a hub or agent working in `cwd` runs without the project's rules, locks and brief footer, one line each:
+    (a) the directory is not in a git repository (a Desktop session started under "No folder" runs in ~ or a temp
+    dir); (b) the checkout has no .agent-hub/ while the remote default branch (origin/HEAD, else origin/main) has it.
+    A warning, never a refusal; bounded and silent when git fails or there is no remote."""
+    where = Path(cwd or os.getcwd()).expanduser()
+    if project_dir(where) is not None:
+        return []
+    res = _git(where, "rev-parse", "--show-toplevel", locale=True)
+    if res is None:
+        return []
+    if res.returncode != 0:
+        if "not a git repository" not in res.stderr:
+            return []
+        return [f"no project folder: {where} is not inside a git repository, so the project's {CONFIG_DIRNAME}/ rules, "
+                "locks and brief footer are not applied; a Desktop session started under 'No folder' runs in ~ or a "
+                "temp dir: open it from the project's folder group"]
+    top = res.stdout.strip()
+    ref = _git(top, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    remote = ref.stdout.strip() if ref is not None and ref.returncode == 0 else ""
+    if not remote:
+        fallback = _git(top, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+        remote = "origin/main" if fallback is not None and fallback.returncode == 0 else ""
+    if not remote:
+        return []
+    tree = _git(top, "ls-tree", "--name-only", remote, "--", CONFIG_DIRNAME)
+    if tree is None or tree.returncode != 0 or not tree.stdout.strip():
+        return []
+    br = _git(top, "branch", "--show-current")
+    branch = (br.stdout.strip() if br is not None and br.returncode == 0 else "") or "(detached HEAD)"
+    return [f"the checkout {top} on branch {branch} has no {CONFIG_DIRNAME}/ but {remote} has it: project rules, locks "
+            f"and the brief footer are not applied; run from a worktree of {remote}"]
+
+
 def main_checkout(worktree: Path) -> Optional[Path]:
     """The main working tree of a linked worktree (its `.git` file names a gitdir with a `commondir`); None for
     anything else, a submodule included."""
@@ -1008,8 +1054,12 @@ def tag_is(tag: str, base: str) -> bool:
     return any(c == base or c.startswith(base + "/") for c in cands)
 
 
-def mentions(text: str, tag: str) -> bool:
-    return re.search(r"(?<![\w@])@" + re.escape(tag) + r"(?![\w-])", text) is not None
+def mentions(text: str, tag: str, stage: Optional[str] = None) -> bool:
+    """text addresses @tag; with a stage, also its stage-qualified form @<stage>-<tag> (how another stage's hub signs
+    and answers: `@core-c-hub-30`). The leading and trailing guards keep @hub-30 apart from @hub-300 and
+    @xcore-c-hub-30."""
+    names = [tag] + ([f"{stage}-{tag}"] if stage else [])
+    return any(re.search(r"(?<![\w@])@" + re.escape(n) + r"(?![\w-])", text) for n in names)
 
 
 def last_line_by_tag(stage: str, tag: str, days: int = 2) -> Optional[dt.datetime]:
@@ -1115,6 +1165,61 @@ def caller_tag(stage: str) -> Optional[str]:
     if hit:
         return hit[1].get("tag") or hit[0]
     return None
+
+
+def registered_tag(stage: str) -> Optional[str]:
+    """The tag this session ($CLAUDE_CODE_SESSION_ID) has in the registry of `stage`, else None."""
+    try:
+        hit = role_for_session(stage, session_id())
+    except (Failure, UsageError):
+        return None
+    return (hit[1].get("tag") or hit[0]) if hit else None
+
+
+def other_stage_tag(target: str, tag: Optional[str] = None) -> Optional[tuple]:
+    """(stage, tag) of this session in the registry of a stage other than `target`; with `tag`, only a registration
+    carrying that tag. None when there is none or more than one (ambiguous: the caller must not guess a stage)."""
+    if not session_id():
+        return None
+    try:
+        names = sorted(d.name for d in root().iterdir() if d.name != target and (d / "roles.json").is_file())
+    except OSError:
+        return None
+    hits = [(n, t) for n in names for t in [registered_tag(n)] if t and (tag is None or t == tag)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def own_stage(tag: Optional[str]) -> Optional[str]:
+    """The caller's own stage: $HUB_STAGE, else the only registry that lists this session under `tag`; None when it
+    cannot be told."""
+    own = os.environ.get("HUB_STAGE", "").strip()
+    if own:
+        return own if STAGE_RE.fullmatch(own) else None
+    found = other_stage_tag("", tag)
+    return found[0] if found else None
+
+
+def signing_tag(stage: str) -> Optional[str]:
+    """The tag a line written to `stage` is signed with. Another stage's hub or agent signs `<its stage>-<tag>`
+    (`core-c-hub-30` in the Dolya journal), so the reader's @-answer names the writer's stage and the writer's jwait
+    hears it. The caller's own stage is $HUB_STAGE when set (a role in a third stage does not override it), else the
+    one registry that lists this session under the tag ($HUB_TAG) or, without a tag, the only one that lists it. Same
+    stage, or an own stage that cannot be told (none, or several candidates): caller_tag(stage) as it is."""
+    tag = caller_tag(stage)
+    env_tag = bool(os.environ.get("HUB_TAG"))
+    own = os.environ.get("HUB_STAGE", "").strip()
+    if own == stage or (tag and not env_tag):  # same stage; or this stage's own registry named the caller
+        return tag
+    if own:
+        tag = tag or registered_tag(own)
+    else:
+        if tag and registered_tag(stage) == tag:  # registered here under that very tag: a line of this stage
+            return tag
+        found = other_stage_tag(stage, tag)
+        if found is None:
+            return tag
+        own, tag = found[0], tag or found[1]
+    return f"{own}-{tag}" if tag and STAGE_RE.fullmatch(own) else tag
 
 
 def run_main(fn, argv) -> int:
