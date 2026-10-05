@@ -215,12 +215,13 @@ If you do not answer by the due time, the default action is taken and the questi
 /agent-top
 ```
 
-- **Tool:** the `agent-top` skill builds a snapshot of every agent: live or done, task, current action, unread
-  messages, locks, open owner questions, plan limits. Read-only.
-- **You see:** a widget in chat, or the same as text if the widget tool is missing. In the desktop Code tab the widget
-  has no buttons; it names the commands to type.
-- **Zoom in:** `/agent-top api` shows one agent's task, last thought and result.
-- In a terminal, `agent-top` is a live console, and `agent-top --once` prints a text snapshot.
+- **Tool:** in Claude Code (2.1.287 or later, terminal or desktop Code tab) the plugin's mod answers `/agent-top` with
+  a live side pane: every agent, live or done, with task, current action, unread messages, locks, open owner questions
+  and plan limits. Read-only. The footer button `agents ● 4 ✓ 9 ✗ 0` opens it too; a second `/agent-top` or a second
+  press closes it.
+- **Zoom in:** `/agent-top api` opens the pane on one agent's task, last thought and result.
+- **Elsewhere there is no `/agent-top`:** in Codex, VS Code chat, `claude -p` and Remote Control views, run `agent-top`
+  in a shell (a live console), `agent-top --once` (a text snapshot) or `agent-top --json` (for scripts).
 
 ### 8. Agents open pull requests
 
@@ -306,7 +307,7 @@ You:  Skip it.
 You:  /agent-top
 ```
 
-And what `/agent-top` shows later that afternoon, as text (`agent-top --once`):
+And what `/agent-top` shows later that afternoon, as the same picture in text (`agent-top --once`):
 
 ```text
  agent-top ● 1 ✓ 2 csv-export · locks 0 · questions 1 (overdue 0) · limit 5h 27% 7d 41%                       15:20:11
@@ -391,8 +392,8 @@ writes its handoff and waits for you; anything you type to the hub resets that c
 - **Long waits in the foreground.** A hub that sits in `sleep` or a polling loop fills its context and blocks the chat.
   The waiting tool is `jwait`, run in the background. Agents are the same in reverse: they end when their turn ends, so
   a long command is run in the foreground with a raised timeout, not left in the background.
-- **Expecting buttons in the widget.** In the Claude Code desktop tab the `/agent-top` widget cannot send prompts. Type
-  the command it names, such as `agent send api "…"`.
+- **Expecting buttons in the `/agent-top` pane.** It is read-only. Message or stop an agent with `agent send api "…"`
+  and `agent stop api`, or with `m` / `x` in the `agent-top` console.
 - **Two agents in one checkout.** They overwrite each other. Start every agent that writes code with `--worktree`.
 - **Letting the hub run until it forgets.** Write the handoff while context is left, not after the chat has slowed
   down. Agents keep running meanwhile, and the next hub picks up from the file.

@@ -1,13 +1,15 @@
 // agent-top as a Claude Code mod: the headless agents of the agent-hub plugin, live in a pane.
 //
-//   /agent-top [role] [--stage S] [--all]   opens the pane (a role opens that agent's card)
+//   /agent-top [role] [--stage S] [--all]   opens the pane (a role opens that agent's card); a bare one closes it again
 //   pane views: Agents (a) · agent card (header + live feed) · Journal (j) · Summary (s: plan limits, owner questions, locks)
 //   the drawing: hooks/agent-top-view.tsx; the list's cursor follows the pane's focus ring (ui.focus)
-//   status line: `agents ● 2 ✓ 5 ✗ 1`; toasts when an agent finishes, fails or dies and when a new owner question opens
+//   footer: a Button `agents ● 2 ✓ 5 ✗ 1` beside the engine's mode labels (SessionMode) opens and closes the pane; where a
+//   surface without that footer looks on (a phone, VS Code) the same counts are the status line instead
+//   toasts when an agent finishes, fails or dies and when a new owner question opens
 //
 // Read-only. Data comes only from the plugin's own CLI, `bin/agent-top --json`; nothing is written anywhere. The module is
 // plugin-name-agnostic (no $.state, no hard-coded plugin name): state lives in this closure, and a hot reload starts it over.
-// Needs Claude Code with mods (2.1.287+). Older CLIs ignore the module; the skill `agent-top` keeps working there.
+// Needs Claude Code with mods (2.1.287+). Older CLIs ignore the module; there, and in Codex, the console `agent-top` stays.
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import {
@@ -17,7 +19,9 @@ import {
   clip,
   countsOf,
   findByRole,
+  footerHolds,
   inStages,
+  isBare,
   isOwnCommand,
   notices,
   oneLine,
@@ -59,6 +63,8 @@ let isForced = false
 let error: string | null = null
 let lastWatchAt = -Infinity
 let lastStatus: string | undefined
+let hasFooter = false // every surface looking on draws the prompt footer: the counts are its Button, not the status line
+let lastButton: string | undefined // the Button's label at the last change, to redraw the footer only when it changes
 let memory: Memory | null = null // null until the first snapshot of the session: that one never toasts
 let timer: Timer | null = null
 let cursorKey: string | null = null // agentKey of the list row the cursor is on, kept while the ring is elsewhere
@@ -88,24 +94,45 @@ const stopPolling = (): void => {
   timer = null
 }
 
+/** The counts where they belong: the footer Button where every surface draws it, else the status line; never both. */
+function showCounts($: Api): void {
+  const text = isMissing ? undefined : statusText(snap)
+  const status = hasFooter ? undefined : text
+  if (status !== lastStatus) {
+    lastStatus = status
+    $.ui.status(status)
+  }
+  const button = hasFooter ? text : undefined
+  if (button !== lastButton) {
+    lastButton = button
+    $.ui.invalidate('ui.render')
+  }
+}
+
+/** Which surfaces look on decides Button or status line; a phone attaching or leaving changes it. */
+async function syncSurfaces($: Api): Promise<boolean> {
+  let surfaces: readonly string[]
+  try {
+    surfaces = await $.session.surfaces()
+  } catch {
+    return true // cannot tell: assume somebody looks, and keep the counts where they are
+  }
+  hasFooter = footerHolds(surfaces)
+  showCounts($)
+  return surfaces.length > 0
+}
+
 function giveUp($: Api, message: string): void {
   isMissing = true
   error = message
   stopPolling()
-  if (lastStatus !== undefined) {
-    lastStatus = undefined
-    $.ui.status(undefined)
-  }
+  showCounts($)
 }
 
 function applyWatch($: Api, s: Snapshot): void {
   snap = s
   lastWatchAt = s.fetchedAt
-  const text = statusText(s)
-  if (text !== lastStatus) {
-    lastStatus = text
-    $.ui.status(text)
-  }
+  showCounts($)
   if (memory !== null) for (const t of capToasts(notices(memory, s))) $.ui.toast(t)
   memory = remember(s, memory ?? undefined)
 }
@@ -205,7 +232,7 @@ async function syncPane($: Api): Promise<void> {
 
 async function tick($: Api): Promise<void> {
   if (running !== null || isMissing) return
-  if (!(await hasSurface($))) return
+  if (!(await syncSurfaces($))) return
   await syncPane($)
   await refresh($, false)
 }
@@ -259,6 +286,52 @@ async function onceText($: Api, a: CommandArgs): Promise<string> {
   return c.ok ? c.stdout.trimEnd() : c.error
 }
 
+async function openPane($: Api, args: CommandArgs): Promise<string> {
+  stages = args.stages
+  isAll = args.isAll
+  isMissing = false
+  error = null
+  view = 'list'
+  target = null
+  card = null
+  allSnap = null
+  startPolling($)
+
+  isAutoFocus = true
+  ringKey = null
+  lastControls = ''
+  const opened = await $.ui.open({ id: PANE, title: 'Agents', focus: true, closeOnEscape: true, rows: INLINE_ROWS, columns: DOCK_COLUMNS })
+  if (!opened.isPlaced) return onceText($, args)
+  isOpen = true
+  $.ui.invalidate('ui.render')
+  await refresh($, true)
+
+  let notFound = ''
+  if (args.role !== null) {
+    const found = findByRole((isAll && allSnap ? allSnap : snap)?.agents ?? [], args.role, stages)
+    if (found) {
+      await openCard($, found)
+    } else if (snap || allSnap) notFound = `no agent "${args.role}"${stages.length ? ` in ${stages.join(', ')}` : ''}; `
+  }
+  const tail = error ? `${notFound}${error}` : `${notFound}${countsLine(snap)}`
+
+  return `agent-top pane opened: ${tail}`
+}
+
+async function closePane($: Api): Promise<string> {
+  await $.ui.close({ id: PANE })
+  isOpen = false
+  $.ui.invalidate('ui.render')
+
+  return 'agent-top pane closed'
+}
+
+/** The footer Button's press: opens the pane on the default view when closed, closes it when open. */
+async function toggle($: Api): Promise<void> {
+  await syncPane($)
+  if (isOpen) await closePane($)
+  else await openPane($, parseArgs(''))
+}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -273,50 +346,38 @@ export const register: Register = on => {
       $.ui.log(`agent-top: could not register /agent-top: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
     }
     await syncPane($)
+    await syncSurfaces($)
     startPolling($)
 
     return next(e)
   })
 
-  // Bare `agent-top` is the command this module registers. A plugin that ships a skill of that name (agent-hub does) gets
-  // the registration refused, and `/agent-top` then runs as the skill's `<plugin>:agent-top`: that run is answered here,
-  // before the skill's prompt is expanded, so the skill stays what it is for hosts without mods. Only this plugin's own
-  // `<name>:agent-top` counts, and the dev copy (plugin `agent-top-dev`) also answers `agent-hub:agent-top`, the installed skill
-  // it is tested beside; another plugin's command of that name goes on to the engine.
+  // a phone or another client attaching or leaving: Button or status line again
+  on('session.attach', async ($, e, next) => {
+    const done = await next(e)
+    await syncSurfaces($)
+
+    return done
+  })
+  on('session.detach', async ($, e, next) => {
+    const done = await next(e)
+    await syncSurfaces($)
+
+    return done
+  })
+
+  // Bare `agent-top` is the command this module registers; `<this plugin>:agent-top`, the plugin-qualified name, is answered too;
+  // the dev copy (plugin `agent-top-dev`) also answers `agent-hub:agent-top`, the installed plugin's name it is tested
+  // beside. Another plugin's command of that name goes on to the engine.
   on('command.run', async ($, e, next) => {
     if (!isOwnCommand(e.command, $.plugin.name)) return next(e)
     const args = parseArgs(e.args)
     if (!(await hasSurface($))) return { text: await onceText($, args) }
+    await syncPane($)
+    // the same toggle as the footer Button; with a role, a stage or --all it (re)opens on that view instead
+    if (isOpen && isBare(args)) return { text: await closePane($) }
 
-    stages = args.stages
-    isAll = args.isAll
-    isMissing = false
-    error = null
-    view = 'list'
-    target = null
-    card = null
-    allSnap = null
-    startPolling($)
-
-    isAutoFocus = true
-    ringKey = null
-    lastControls = ''
-    const opened = await $.ui.open({ id: PANE, title: 'Agents', focus: true, closeOnEscape: true, rows: INLINE_ROWS, columns: DOCK_COLUMNS })
-    if (!opened.isPlaced) return { text: await onceText($, args) }
-    isOpen = true
-    $.ui.invalidate('ui.render')
-    await refresh($, true)
-
-    let notFound = ''
-    if (args.role !== null) {
-      const found = findByRole((isAll && allSnap ? allSnap : snap)?.agents ?? [], args.role, stages)
-      if (found) {
-        await openCard($, found)
-      } else if (snap || allSnap) notFound = `no agent "${args.role}"${stages.length ? ` in ${stages.join(', ')}` : ''}; `
-    }
-    const tail = error ? `${notFound}${error}` : `${notFound}${countsLine(snap)}`
-
-    return { text: `agent-top pane opened: ${tail}` }
+    return { text: await openPane($, args) }
   })
 
   on('ui.close', async ($, e, next) => {
@@ -324,6 +385,23 @@ export const register: Register = on => {
     if (e.id === PANE) isOpen = false
 
     return done
+  })
+
+  // ---------------------------------------------------------------- the footer Button
+
+  // The engine's mode labels stay, joined as it joins them; the Button sits at the footer's end, where the counts were.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const label = hasFooter && !isMissing ? statusText(snap) : undefined
+    if (label === undefined) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const modes = e.props.modes
+
+    return (
+      <Box key="agent-top-footer" flexDirection="row">
+        {modes.length > 0 ? <Text dimColor>{`${modes.join(' & ')} · `}</Text> : []}
+        <Button key="agent-top-toggle" label={label} dimColor onPress={() => void toggle($)} />
+      </Box>
+    )
   })
 
   // ---------------------------------------------------------------- the pane

@@ -21,13 +21,14 @@ def validate(m):
         assert (root / m[key]).exists(), f'missing {key} resource'
     hooks = json.loads((root / m['hooks']).read_text())['hooks']
     assert 'SessionStart' in hooks and 'PreToolUse' in hooks
-    for skill in ('hub', 'handoff', 'setup', 'delegation', 'agent-top'):
+    assert not (root / m['skills'] / 'agent-top').exists(), 'agent-top is a Claude Code mod and console, not a skill'
+    for skill in ('hub', 'handoff', 'setup', 'delegation'):
         text = (root / m['skills'] / skill / 'SKILL.md').read_text()
         assert text.startswith('---\n') and re.search(r'^name: ' + skill + r'$', text, re.M)
         assert 'PLUGIN_ROOT' in text, f'{skill} must support native Codex root'
 
 validate(manifest)
-print('PASS native manifest identity, resources and five skills')
+print('PASS native manifest identity, resources and four skills')
 for label, change in (
     ('implicit Claude hooks', lambda m: m.pop('hooks')),
     ('wrong engine hooks', lambda m: m.update(hooks='./hooks/hooks.json')),

@@ -55,7 +55,7 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](../README.md#mi
 
 7. **Look at everything at once.**
    ```bash
-   agent-top            # or /agent-top in chat for the widget
+   agent-top            # in Claude Code, /agent-top opens the same as a side pane
    ```
 
 8. **The owner answers in chat** ("yes, on by default"):

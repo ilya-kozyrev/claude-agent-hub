@@ -2,6 +2,15 @@
 
 ## 0.8.2 — unreleased
 
+- **The agent-top pane has a button in the prompt footer.** The counts `agents ● 4 ✓ 9 ✗ 0` are now a Button beside the
+  engine's mode labels (Claude Code terminal and Desktop): a press opens the pane, the next closes it. A bare `/agent-top`
+  toggles the same way; with a role, `--stage` or `--all` it opens on that view. Where a surface without that footer looks
+  on (a phone, VS Code) the counts stay the status line instead, never both.
+- **The `agent-top` skill is removed.** The mod registers `/agent-top` itself and still answers `/agent-hub:agent-top`.
+  Where mods do not draw (Codex, VS Code chat, `claude -p`, Remote Control and `claude --bg` views, Claude Code before
+  2.1.287) there is no `/agent-top` any more: the console `agent-top` / `agent-top --once` in a shell shows the same.
+  The chat-widget demo files are gone; `agent-top --widget` stays for scripts.
+- **The agent card fits a pane 23–25 columns wide:** its Feed rows took a column more than the body at 24.
 - **`tests/run_all.sh` prints what failed:** for each failing script its `FAIL` lines with the detail under them and the last 20
   log lines, so a CI run shows the failed checks without downloading the logs. The pty scenarios of `t_agent_top` wait until
   the screen stops changing instead of fixed pauses, which flaked on a loaded machine.
