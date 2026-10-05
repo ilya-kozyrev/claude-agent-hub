@@ -89,6 +89,12 @@ The very first hub of a stage has no predecessor: `hub start --stage S --session
 `hub-1`, writes the start line and prints the first `jwait`. `--n` on `takeover` and `handoff` overrides the derived
 number; a re-run of a takeover finds itself registered and keeps its number.
 
+Both commands first check where the hub runs: in a linked worktree of its project that has `.agent-hub/`. The main clone
+or a directory outside git gets a fresh worktree `<repo>/.claude/worktrees/<stage>-hub-<n>` from origin's default branch and
+exit 4 with `MOVE <path>`; nothing is registered until the re-run from there (`<hub home>/S/stage.json` remembers the
+project; [Reference](reference.md#file-layout)). A previous hub that is a background session and not busy is stopped by
+the takeover (`claude stop`, history kept); a busy one or a Desktop session is only named.
+
 ## Lock rules and the hook
 
 A lock is on a named **resource**. `bin/lockrules.py` is the one module that knows what resources a project has; the
@@ -124,7 +130,8 @@ environment, never a repository's). A session in an unrelated project hears noth
 
 `agent spawn --worktree [BRANCH]` (default `agent/<role>`) resolves the agent's working directory in this order: an
 existing worktree of that branch, wherever it is, is reused (a re-spawn continues the work); else
-`<main repository>/.worktrees/<branch>` is created from the commit checked out in `--cwd`, and `/.worktrees/` is added
+`<main repository>/.worktrees/<branch>` is created from origin's default branch (`--base REF` chooses another start;
+`--base HEAD` is the commit checked out in `--cwd`), and `/.worktrees/` is added
 to `.git/info/exclude`, so the main checkout shows nothing untracked. Spawning from inside a worktree still lands in the
 main repository's `.worktrees/`. A branch checked out in the main checkout, a bad branch name and a foreign directory at
 the path are refused. `meta.json` records the worktree; `agent status` and `agent stop` name it. Nothing removes it: the

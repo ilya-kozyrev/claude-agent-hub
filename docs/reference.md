@@ -54,8 +54,8 @@ flowchart LR
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
-| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. |
-| `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub. |
+| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). |
+| `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub; `--replace` swaps the successor that already took over. |
 | `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
 | `agent-top` | Live console of all agents (curses), `--once` text, `--json`. |
 
@@ -100,9 +100,27 @@ agent stop builder
 ```
 
 `--worktree [BRANCH]` (default branch `agent/<role>`) runs the agent in an existing worktree of that branch, or in
-`<repo>/.worktrees/<branch>` of the main repository, which `agent spawn` adds to `.git/info/exclude`. Two agents writing
+`<repo>/.worktrees/<branch>` of the main repository, which `agent spawn` adds to `.git/info/exclude`. A branch that does
+not exist yet starts from origin's default branch (after a bounded `git fetch`; the local ref, with a note, when the
+fetch fails; the local main/master without an origin), not from the commit `--cwd` has checked out — `--base REF`
+chooses another start (`--base HEAD`: the old behaviour). Two agents writing
 in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
 branch is merged, `git worktree remove <path>`.
+
+**Where a hub runs.** `hub start` and `hub takeover` check their location before they register, journal or lock
+anything. A hub works in a linked worktree of its project that has the project's `.agent-hub/` — not in the project's
+main clone (it has whatever branch somebody checked out there, and no `.agent-hub/` at all on a feature branch that
+predates it), and not outside git (a Claude Desktop session started under "No folder" runs in `~` or a temp dir). The
+project is the repository of `--repo PATH`, else of the working directory, else the one recorded for the stage
+(`<stage>/stage.json`, written by every successful start and takeover in a repository). A good place is refreshed: a
+clean worktree with no commits of its own is fast-forwarded to origin's default branch. Any other place gets a worktree
+`<repo>/.claude/worktrees/<stage>-hub-<n>` on a new branch from origin's default branch, and the command exits 4 with
+`MOVE <path>`, how to move the session there (Claude Code: `EnterWorktree` with `path=<path>`, else
+`mcp__ccd_directory__change_directory`; Codex: run later commands with that workdir) and the command line to re-run.
+With nothing that names a project it exits 4 with `NO PROJECT:`: re-run with `--repo <the project's main clone>`, or with
+`--no-project` for a stage that has no repository (it starts in place and is recorded as such). The environment variable
+`AGENT_HUB_NO_PROJECT=1` does the same silently, for scripted environments and the test suite (environment only: a cloned
+repository cannot switch the rule off).
 
 The brief template is short: why, decisions already made, steps with a check for "done", verification, where to stop and
 a turn limit. `agent spawn` appends a footer that tells the agent how to talk back: `jlog "DONE <report path>"` when
@@ -220,6 +238,7 @@ hub home, in repositories with `.agent-hub/` and for hub agents.
 ├── .jwait-state/<caller>.json        what each jwait caller has already seen
 ├── .state/                           context-budget warnings, delegation levels (agent discipline)
 └── <stage>/                          one directory per stream of work
+    ├── stage.json                    the stage's project (main clone) for the next hub, written by start/takeover
     ├── roles.json                    role → full session id, kind, tag; send counts
     ├── questions.md                  owner-question register (ask)
     ├── auto-handoff.json             autopilot: automatic handoffs in a row, the successor last started
@@ -240,6 +259,7 @@ hub home, in repositories with `.agent-hub/` and for hub agents.
 
 <repo>/.agent-hub/                    committed: the team's conventions, same file names as above (Configuration layers)
 <repo>/.worktrees/<branch>/           agent worktrees from `agent spawn --worktree`, excluded in .git/info/exclude
+<repo>/.claude/worktrees/<stage>-hub-<n>/  a hub's worktree from `hub start` / `hub takeover` (exit 4, MOVE), excluded too
 ```
 
 ## Where the hub's files live
@@ -451,13 +471,16 @@ hub:
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
    `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, its Remote Control link and
    `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
-   The successor starts the way a Claude Desktop session does: from the repository's main checkout, in a new worktree
-   of its own (`--worktree <stage>-hub-<n+1>` → `<main checkout>/.claude/worktrees/<stage>-hub-<n+1>` on branch
-   `worktree-<stage>-hub-<n+1>`, from the main checkout's HEAD; a taken name gets `-2`, `-3`…), never in the hub's
+   The successor is a background Remote Control session, not a Claude Desktop session (see
+   [where the owner finds it](#where-the-owner-finds-the-successor) below). It starts from the repository's main
+   checkout, in a new worktree of its own (`--worktree <stage>-hub-<n+1>` → `<main checkout>/.claude/worktrees/<stage>-hub-<n+1>` on branch
+   `worktree-<stage>-hub-<n+1>`, from `origin`'s default branch (Claude Code's `worktree.baseRef`, default `fresh`); a taken name gets `-2`, `-3`…), never in the hub's
    own directory — that may be a Desktop session's worktree, removed when the session is archived. Outside git it
    starts in the hub's directory. Nothing removes the worktree: `claude rm <id>` does once the session is done.
-3. When the line arrives the old hub tells you the successor's name and link in one line and stops. It releases
-   nothing: the successor's `hub takeover` moves the locks.
+3. When the line arrives the old hub tells you in one line the successor's name and link and where it is: a
+   background Remote Control session named `<stage>-hub-<n+1>`; in Claude Desktop it is listed under the repository's
+   address group (for a repository not hosted on github.com a separate group from your folder group), on the phone in the
+   Remote Control list. It then stops. It releases nothing: the successor's `hub takeover` moves the locks.
 4. Fallbacks, each journaled with its reason: bypass mode without the accepted disclaimer → `auto` (`acceptEdits` for
    Haiku); the CLI not logged in, or the main checkout not trusted by it →
    a headless hub (`agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>`, in its permission mode: `bypassPermissions` unless `AGENT_HUB_PERMISSION_MODE` says
@@ -466,6 +489,17 @@ hub:
 5. At most `AGENT_HUB_AUTO_HANDOFF_CHAIN` automatic handoffs in a row (default 10). At the limit the hub writes its
    handoff, starts no successor and waits for you. Your own prompt in the hub's session, or a takeover you start by
    hand (without the `--auto-handoff` the successor's command carries), resets the count.
+
+#### Where the owner finds the successor
+
+Known limitation. The successor is a background Remote Control session, not a session Claude Desktop started, so Desktop
+files it by the address of the repository, and it derives a repository owner for `github.com` remotes only. For a
+repository hosted elsewhere (GitLab, a private host) the successor therefore appears in a separate group named after the
+repository's address, not in the folder group where the hub's other sessions are; on the phone it is in the Remote
+Control list. The "+" in that separate group opens a session without a folder. A hub started there moves itself into the
+project: `hub start` and `hub takeover` exit 4 with `NO PROJECT:` or `MOVE <path>` (see *Where a hub runs* above), and the
+project of the stage, which every successful start and takeover records in `<stage>/stage.json`, is found without
+`--repo`. There is no workaround, and the plugin does not try to place a session in a group.
 
 The numbers: the hub's own is its roles tag's (`hub-N`, a legacy `хаб-N`, any tag ending in `-N`), else the outgoing
 number of the handoff given to `hub succeed`; the successor's comes from the function `hub takeover` numbers by, and the
@@ -477,7 +511,12 @@ Past the block threshold the hub's Bash passes only when every command of the li
 `HANDOFF-*.md` file. Only the registered hub can run `hub succeed`, only with autopilot on (`--force` for you at a
 terminal), and only one successor per shift starts; a refused call prints when to retry and the `jwait` to wait with.
 A successor that never took over stops blocking the shift: `hub succeed --again` drops its record once it is not
-running, and your own prompt in the hub's session drops it once the takeover timeout has passed. A sub-agent of the hub
+running, and your own prompt in the hub's session drops it once the takeover timeout has passed. `hub succeed --replace`
+is for a successor that already took over (or runs) and has to be swapped: it stops it (`claude stop`, history kept; not
+while it is busy, unless `--force`) and starts a new one from the same handoff with the same number, model, mode and chain
+position; only the hub that handed over, or you at a terminal, may run it. A takeover of the shift the successor already
+took over (that new successor's, or one you start by hand with the same number) keeps the chain and says "re-took shift
+#N (replaces <id8>), handoff by #M" in the journal. A sub-agent of the hub
 shares the hub's session id and could run `hub succeed` too — the hub runs it itself, never delegates it.
 
 A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,

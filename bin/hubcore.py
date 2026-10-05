@@ -282,13 +282,13 @@ def project_dir(start=None) -> Optional[Path]:
     return None
 
 
-def _git(cwd, *argv, locale: bool = False):
+def _git(cwd, *argv, locale: bool = False, timeout: int = 5, env: Optional[dict] = None):
     """CompletedProcess of a bounded git call in `cwd`, None when git cannot run at all (missing, timed out)."""
-    env = git_env()
+    env = dict(env if env is not None else git_env())
     if locale:
         env["LC_ALL"] = "C"  # the "not a git repository" test below reads git's message
     try:
-        return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True, timeout=5, env=env,
+        return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True, timeout=timeout, env=env,
                               stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -326,6 +326,253 @@ def project_warnings(cwd=None) -> list:
     branch = (br.stdout.strip() if br is not None and br.returncode == 0 else "") or "(detached HEAD)"
     return [f"the checkout {top} on branch {branch} has no {CONFIG_DIRNAME}/ but {remote} has it: project rules, locks "
             f"and the brief footer are not applied; run from a worktree of {remote}"]
+
+
+# ---------------------------------------------------------------- where a hub may run
+#
+# A hub runs in a linked worktree of its project that has the project's .agent-hub/ (a session in the main clone works
+# on whatever branch the clone has checked out; one under "No folder" works in ~ or a temp dir, and has no project at
+# all). `hub start` and `hub takeover` call check_location() before they register, journal or lock anything: a good
+# place is refreshed, a bad one gets a fresh worktree of origin's default branch and the order to move there (exit 4).
+
+NO_PROJECT_ENV = "AGENT_HUB_NO_PROJECT"  # environment only (a cloned repository must not switch the rule off)
+STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}
+LOCATION_EXIT = 4
+FETCH_TIMEOUT_S = 30
+HUB_WORKTREES = ".claude/worktrees"  # <repo>/…/<stage>-hub-<n>, where Claude Code puts its own worktrees
+
+
+class Located(NamedTuple):
+    code: Optional[int]  # None: go on; LOCATION_EXIT: the session must move first (nothing was registered or locked)
+    repo: Optional[Path]  # the project's main working tree; None without a project
+    note: str  # for the start line, "" when there is nothing to say
+
+
+def _same(a, b) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _git_line(cwd, *argv, timeout: int = 5) -> str:
+    """First line of a git call's stdout; "" when it fails or prints nothing."""
+    res = _git(cwd, *argv, timeout=timeout)
+    return res.stdout.strip().splitlines()[0] if res is not None and res.returncode == 0 and res.stdout.strip() else ""
+
+
+def git_toplevel(path) -> Optional[Path]:
+    """The working tree root of the repository `path` is in (a linked worktree's own root); None outside git."""
+    top = _git_line(path, "rev-parse", "--show-toplevel")
+    return Path(top) if top else None
+
+
+def main_tree(path) -> Optional[Path]:
+    """The main working tree of the repository `path` is in (itself for the main checkout); None outside git."""
+    top = git_toplevel(path)
+    return None if top is None else (main_checkout(top) or top)
+
+
+def default_ref(repo) -> tuple:
+    """(remote ref, branch) of the repository's default branch: origin/HEAD, else origin/main, else origin/master — the
+    first that names a commit; (None, local default branch or None) when there is no such remote branch."""
+    candidates = []
+    head = _git_line(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    if head.startswith("origin/"):
+        candidates.append(head)
+    candidates += ["origin/main", "origin/master"]
+    for ref in candidates:
+        if _git_line(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/{ref}^{{commit}}"):
+            return ref, ref[len("origin/"):]
+    for branch in ("main", "master"):
+        if _git_line(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"):
+            return None, branch
+    return None, None
+
+
+def fetch_default(repo, branch: str) -> str:
+    """`git fetch origin <branch>`, bounded; "" when it worked, else why not."""
+    env = git_env()
+    env["GIT_TERMINAL_PROMPT"] = "0"  # a credential prompt would hold the command for good
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    res = _git(repo, "fetch", "--quiet", "origin", branch, timeout=FETCH_TIMEOUT_S, env=env)
+    if res is None:
+        return f"did not finish in {FETCH_TIMEOUT_S} s"
+    return "" if res.returncode == 0 else (res.stderr.strip().splitlines() or [f"exit {res.returncode}"])[-1][:200]
+
+
+def tree_has(repo, ref: str, name: str) -> bool:
+    res = _git(repo, "ls-tree", "--name-only", ref, "--", name)
+    return res is not None and res.returncode == 0 and bool(res.stdout.strip())
+
+
+def stage_record(stage: str) -> dict:
+    try:
+        data = json.loads((root() / stage / STAGE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_stage_project(stage: str, repo: Optional[Path]) -> None:
+    """Remember the stage's project (`repo`; None: the stage has none) for the next hub, which may start outside git."""
+    data = stage_record(stage)
+    if repo is not None:
+        want = dict(data, repo=str(repo))
+        want.pop("no_project", None)
+    else:  # the latest choice wins: a recorded repo would overrule it at the next folderless start
+        want = dict(data, no_project=True)
+        want.pop("repo", None)
+    if want != data:
+        atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
+
+
+def refresh_worktree(top, ref: str) -> str:
+    """Fast-forward the clean worktree `top` to `ref` when its HEAD is an ancestor (no commits of its own); the line
+    to print ("refreshed to origin/main abc1234"), else "" — also when it is there already."""
+    head = _git_line(top, "rev-parse", "HEAD")
+    target = _git_line(top, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    if not head or not target or head == target:
+        return ""
+    status = _git(top, "status", "--porcelain")
+    ancestor = _git(top, "merge-base", "--is-ancestor", head, target)
+    if status is None or status.returncode != 0 or status.stdout.strip() or ancestor is None or ancestor.returncode != 0:
+        return ""
+    res = _git(top, "merge", "--ff-only", "--quiet", ref, timeout=30)
+    return f"refreshed to {ref} {target[:7]}" if res is not None and res.returncode == 0 else ""
+
+
+def _exclude_hub_worktrees(repo) -> None:
+    """/.claude/worktrees/ in the repository's info/exclude (like .worktrees/): no untracked noise in the main clone."""
+    common = _git_line(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return
+    exclude = Path(common) / "info" / "exclude"
+    line = f"/{HUB_WORKTREES}/"
+    try:
+        lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        if line not in lines:
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            with open(exclude, "a", encoding="utf-8") as fh:
+                fh.write(("" if not lines or lines[-1] == "" else "\n") + line + "\n")
+    except OSError as e:
+        _warn(f"could not add {line} to {exclude}: {e}")
+
+
+def hub_worktree(repo, name: str, base: str, dry_run: bool) -> tuple:
+    """(path, created, base commit) of the hub's worktree <repo>/.claude/worktrees/<name> on a new branch
+    worktree-<name> from `base`. A path that is already a clean worktree of the repository at `base` is reused; any
+    other taken name (a directory, a branch) moves on to <name>-2, <name>-3…. A dry run creates nothing."""
+    sha = _git_line(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+    if not sha and base == "HEAD":
+        raise Failure(f"the repository {repo} has no commits yet — make a first commit (`git commit --allow-empty -m "
+                      "\"first commit\"`), then run the command again: a hub works in a worktree, which needs a commit to start from")
+    if not sha:
+        raise Failure(f"cannot make the hub's worktree: {base} does not name a commit in {repo}")
+    res = _git(repo, "worktree", "list", "--porcelain")
+    listed = [Path(ln[len("worktree "):]) for ln in (res.stdout.splitlines() if res is not None else [])
+              if ln.startswith("worktree ")]
+    for i in range(1, 100):
+        label = name if i == 1 else f"{name}-{i}"
+        path, branch = Path(repo) / HUB_WORKTREES / label, f"worktree-{label}"
+        if path.exists():
+            status = _git(path, "status", "--porcelain")
+            if (any(_same(path, w) for w in listed) and status is not None and status.returncode == 0
+                    and not status.stdout.strip() and _git_line(path, "rev-parse", "HEAD") == sha):
+                return path, False, sha
+            continue
+        if _git_line(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"):
+            continue
+        if dry_run:
+            return path, True, sha
+        _exclude_hub_worktrees(repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        add = _git(repo, "worktree", "add", "--quiet", "--no-track", "-b", branch, str(path), base, timeout=60)
+        if add is None or add.returncode != 0:
+            raise Failure("git worktree add: " + ((add.stderr.strip() or add.stdout.strip()) if add is not None else "timed out"))
+        return path, True, sha
+    raise Failure(f"no free worktree name {name} … {name}-99 under {Path(repo) / HUB_WORKTREES}")
+
+
+def check_location(stage: str, n: int, rerun: str, repo_arg: Optional[str] = None, no_project: bool = False,
+                   dry_run: bool = False, cwd=None) -> Located:
+    """The location rule of `hub start` and `hub takeover` (the module comment above). The project's repository R: the
+    main working tree of --repo, else of the working directory's repository, else the stage's recorded project
+    (stage.json); with none of them the command needs --repo or, for a stage that has no repository, --no-project.
+    The place is good when the working directory is in a linked worktree of R that has .agent-hub/ whenever R's default
+    branch has it. A good place is fast-forwarded to origin's default branch when it has no commits of its own and is
+    clean. Otherwise: a worktree of origin's default branch, the order to move there, exit 4. `rerun` is the command
+    line to repeat after the move. Prints what it does; the caller adds `note` to its start line."""
+    try:
+        where = Path(cwd or os.getcwd()).expanduser()
+    except OSError:  # the working directory was deleted (a Desktop scratch directory): outside git, as far as we can tell
+        where = Path.home()
+    if no_project and repo_arg:
+        raise UsageError("--repo and --no-project exclude each other")
+    if truthy(os.environ.get(NO_PROJECT_ENV)):
+        return Located(None, None, "")
+    if no_project:
+        return Located(None, None, f"no project (--no-project): started in place, {where}")
+    R, stale = None, ""
+    if repo_arg:
+        R = main_tree(Path(repo_arg).expanduser())
+        if R is None:
+            raise UsageError(f"--repo {repo_arg}: not inside a git repository")
+    else:
+        R = main_tree(where)
+        if R is None:
+            rec = stage_record(stage)
+            if rec.get("repo"):
+                R = main_tree(Path(str(rec["repo"])).expanduser())
+                if R is None:
+                    stale = f"the project recorded for stage {stage} ({rec['repo']}) is not a git repository any more"
+            elif rec.get("no_project"):
+                return Located(None, None, f"no project (recorded for stage {stage}): started in place, {where}")
+    if R is None:
+        print(f"NO PROJECT: {where} is not inside a git repository and "
+              + (stale or f"stage {stage} has no recorded project") + ".\n"
+              "A hub works in a fresh worktree of the project its task is about. Find that project (its main clone, "
+              "under ~/repos/ or where the brief points) and re-run with --repo <main clone>; a stage that has no "
+              "repository at all starts with --no-project.\n"
+              f"re-run: {rerun} --repo <main clone of the project>")
+        return Located(LOCATION_EXIT, None, "")
+    ref, branch = default_ref(R)
+    if ref and not dry_run:
+        failed = fetch_default(R, branch)
+        if failed:
+            print(f"ATTENTION: fetch of origin {branch} failed ({failed}): using the local {ref}")
+    top = git_toplevel(where)
+    linked = top is not None and (m := main_checkout(top)) is not None and _same(m, R)
+    needs_config = bool(ref) and tree_has(R, ref, CONFIG_DIRNAME)
+    if linked and (not needs_config or (top / CONFIG_DIRNAME).is_dir()):
+        line = refresh_worktree(top, ref) if ref and not dry_run else ""
+        if line:
+            print(line)
+        return Located(None, R, line)
+    if linked:
+        reason = f"{top} is a worktree of {R} without {CONFIG_DIRNAME}/, which {ref} has"
+    elif top is None:
+        reason = f"{where} is not inside a git repository"
+    elif _same(top, R):
+        on = _git_line(R, "branch", "--show-current") or "a detached HEAD"
+        reason = f"{R} is the main clone, which has {on} checked out, not the default branch"
+    else:
+        reason = f"{where} is in another repository ({top}), not in a worktree of {R}"
+    base = ref or branch or "HEAD"
+    path, created, sha = hub_worktree(R, f"{stage}-hub-{n}", base, dry_run)
+    print(f"MOVE {path}")
+    print(f"A hub works in a fresh worktree of its project, and {reason}.")
+    if not created:
+        print(f"Reused the clean worktree {path} at {base} {sha[:7]}.")
+    else:
+        print(f"{'[plan] would create' if dry_run else 'Created'} the worktree {path} on a new branch from {base} {sha[:7]}.")
+    print("Move this session there before anything else:\n"
+          f"  Claude Code: EnterWorktree with path={path}; if it refuses (the session was launched outside the "
+          "repository, e.g. a Desktop session under \"No folder\"), mcp__ccd_directory__change_directory with that "
+          "path (it takes effect when the turn ends: use absolute paths until then).\n"
+          f"  Codex: run every later command with the workdir {path}.\n"
+          f"Then re-run: {rerun}")
+    return Located(LOCATION_EXIT, R, "")
 
 
 def main_checkout(worktree: Path) -> Optional[Path]:

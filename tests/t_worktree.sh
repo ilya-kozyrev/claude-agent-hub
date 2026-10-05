@@ -64,4 +64,44 @@ $B/agent spawn --role nowt --cwd $REPO --model haiku --brief $P/b.md > /dev/null
 wait_dead nowt
 check "$(meta nowt 'm["cwd"]')" "$(cd $REPO && pwd -P)" "…the agent runs in --cwd itself"
 $B/agent status nowt | grep -q 'worktree'; check $? 1 "…and status names no worktree"
+# ---- a new branch starts from origin's default branch, not from the commit --cwd has checked out
+git init -q --bare $P/rem.git; git clone -q $P/rem.git $P/seed 2>/dev/null
+G(){ git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c commit.gpgsign=false "$@"; }
+( cd $P/seed && G checkout -q -b main 2>/dev/null; echo 1 > f && G add f && G commit -qm one && G push -q origin main 2>/dev/null )
+git -C $P/rem.git symbolic-ref HEAD refs/heads/main
+git clone -q $P/rem.git $P/clone 2>/dev/null
+( cd $P/clone && G checkout -qb feat/foreign && echo f > foreign && G add foreign && G commit -qm foreign )   # the owner's clone
+MAIN1=$(git -C $P/seed rev-parse HEAD); FOREIGN=$(git -C $P/clone rev-parse HEAD)
+sp(){ local role=$1; shift; $B/agent spawn --role $role --cwd $P/clone --model haiku --brief $P/b.md "$@" > $P/$role.out 2>&1; local rc=$?; [ $rc = 0 ] && wait_dead $role; return $rc; }
+sp fb --worktree; check $? 0 "spawn --worktree from a clone on a foreign feature branch"
+check "$(git -C $P/clone/.worktrees/agent/fb rev-parse HEAD)" "$MAIN1" "…the new branch starts from origin/main, not from the clone's feature branch"
+grep -q "worktree .*agent/fb on agent/fb (created from origin/main ${MAIN1:0:7})" $P/fb.out; check $? 0 "…the 'created' line names the base"
+[ -z "$(git -C $P/clone/.worktrees/agent/fb config branch.agent/fb.remote)" ]; check $? 0 "…the branch tracks nothing"
+( cd $P/seed && echo 2 >> f && G commit -qam two && G push -q origin main 2>/dev/null ); MAIN2=$(git -C $P/seed rev-parse HEAD)
+sp fb2 --worktree fb2; check $? 0 "origin moved on: the next spawn fetches first"
+check "$(git -C $P/clone/.worktrees/fb2 rev-parse HEAD)" "$MAIN2" "…the new branch is on the fetched origin/main"
+sp fb3 --worktree fb3 --base HEAD; check $? 0 "--base HEAD"
+check "$(git -C $P/clone/.worktrees/fb3 rev-parse HEAD)" "$FOREIGN" "…keeps the old behaviour: the checked-out commit of --cwd"
+grep -q "(created from HEAD ${FOREIGN:0:7})" $P/fb3.out; check $? 0 "…and the line names it"
+sp fb4 --worktree fb4 --base origin/main~1; check $? 0 "--base <any ref>"
+check "$(git -C $P/clone/.worktrees/fb4 rev-parse HEAD)" "$MAIN1" "…starts from that ref"
+sp fb5 --worktree fb5 --base nonsense; check $? 2 "negative: --base that is not a commit → usage error"
+sp fb6 --base HEAD; check $? 2 "negative: --base without --worktree → usage error"
+git -C $P/clone branch -q have origin/main~1
+sp fb7 --worktree have --base HEAD; check $? 0 "an existing branch with --base"
+check "$(git -C $P/clone/.worktrees/have rev-parse HEAD)" "$MAIN1" "…is used as it is, --base ignored"
+grep -q "note: --base HEAD ignored: branch have exists" $P/fb7.out; check $? 0 "…with a note"
+sp fb8 --worktree fb2; check $? 0 "an existing worktree with --base unchanged: re-spawn"
+grep -q "(reused)" $P/fb8.out; check $? 0 "…is reused as before"
+# fetch failing: the local origin/main is used, with a note
+git clone -q $P/rem.git $P/offline 2>/dev/null; git -C $P/offline remote set-url origin $P/nonexistent.git
+$B/agent spawn --role off --cwd $P/offline --model haiku --brief $P/b.md --worktree > $P/off.out 2>&1; check $? 0 "origin unreachable: spawn still works"; wait_dead off
+grep -q "note: fetch of origin main failed" $P/off.out && grep -q "branching from the local origin/main" $P/off.out; check $? 0 "…with a note"
+check "$(git -C $P/offline/.worktrees/agent/off rev-parse HEAD)" "$MAIN2" "…from the local origin/main (the last fetched)"
+# no origin at all: the local default branch (the repository of the first part), and the line says so
+G -C $REPO checkout -q -b somefeature; G -C $REPO commit -q --allow-empty -m "feature commit"
+MAINSHA=$(git -C $REPO rev-parse main)
+$B/agent spawn --role nr --cwd $REPO --model haiku --brief $P/b.md --worktree > $P/nr.out 2>&1; check $? 0 "no origin: spawn works"; wait_dead nr
+check "$(git -C $REPO/.worktrees/agent/nr rev-parse HEAD)" "$MAINSHA" "…the new branch starts from the local main, not from the checked-out feature branch"
+grep -q "note: .*has no origin/main: branching from the local main" $P/nr.out && grep -q "(created from main ${MAINSHA:0:7})" $P/nr.out; check $? 0 "…with a note, and the line names the base"
 exit $fail
