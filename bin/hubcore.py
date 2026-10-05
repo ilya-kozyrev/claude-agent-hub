@@ -1176,39 +1176,49 @@ def registered_tag(stage: str) -> Optional[str]:
     return (hit[1].get("tag") or hit[0]) if hit else None
 
 
-def other_stage_tag(target: str) -> Optional[tuple]:
-    """(stage, tag) of this session in the registry of a stage other than `target`, the first (sorted) that lists it."""
+def other_stage_tag(target: str, tag: Optional[str] = None) -> Optional[tuple]:
+    """(stage, tag) of this session in the registry of a stage other than `target`; with `tag`, only a registration
+    carrying that tag. None when there is none or more than one (ambiguous: the caller must not guess a stage)."""
     if not session_id():
         return None
     try:
         names = sorted(d.name for d in root().iterdir() if d.name != target and (d / "roles.json").is_file())
     except OSError:
         return None
-    for name in names:
-        tag = registered_tag(name)
-        if tag:
-            return name, tag
-    return None
+    hits = [(n, t) for n in names for t in [registered_tag(n)] if t and (tag is None or t == tag)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def own_stage(tag: Optional[str]) -> Optional[str]:
+    """The caller's own stage: $HUB_STAGE, else the only registry that lists this session under `tag`; None when it
+    cannot be told."""
+    own = os.environ.get("HUB_STAGE", "").strip()
+    if own:
+        return own if STAGE_RE.fullmatch(own) else None
+    found = other_stage_tag("", tag)
+    return found[0] if found else None
 
 
 def signing_tag(stage: str) -> Optional[str]:
     """The tag a line written to `stage` is signed with. Another stage's hub or agent signs `<its stage>-<tag>`
     (`core-c-hub-30` in the Dolya journal), so the reader's @-answer names the writer's stage and the writer's jwait
-    hears it. The caller's own stage is $HUB_STAGE, else the registry that lists its session. Same stage, or an own
-    stage that cannot be told: caller_tag(stage) as it is."""
+    hears it. The caller's own stage is $HUB_STAGE when set (a role in a third stage does not override it), else the
+    one registry that lists this session under the tag ($HUB_TAG) or, without a tag, the only one that lists it. Same
+    stage, or an own stage that cannot be told (none, or several candidates): caller_tag(stage) as it is."""
     tag = caller_tag(stage)
+    env_tag = bool(os.environ.get("HUB_TAG"))
     own = os.environ.get("HUB_STAGE", "").strip()
-    if own == stage or (tag and not os.environ.get("HUB_TAG")):  # the registry of this very stage named the caller
+    if own == stage or (tag and not env_tag):  # same stage; or this stage's own registry named the caller
         return tag
-    if tag and registered_tag(stage):
-        return tag
-    if not own:
-        found = other_stage_tag(stage)
+    if own:
+        tag = tag or registered_tag(own)
+    else:
+        if tag and registered_tag(stage):  # registered here as well as $HUB_TAG says: a line of this stage
+            return tag
+        found = other_stage_tag(stage, tag)
         if found is None:
             return tag
         own, tag = found[0], tag or found[1]
-    elif not tag:
-        tag = registered_tag(own) if STAGE_RE.fullmatch(own) else None
     return f"{own}-{tag}" if tag and STAGE_RE.fullmatch(own) else tag
 
 

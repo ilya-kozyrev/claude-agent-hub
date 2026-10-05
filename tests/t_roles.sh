@@ -27,6 +27,15 @@ out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b --tag mine "explicit");
 out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-a "same stage"); echo "$out" | grep -q '\[hub-17\] same stage'; check $? 0 "negative: same stage, the tag is unchanged"
 out=$(HUB_TAG=hub-3-qa $B/jlog --stage stage-a "same stage env"); echo "$out" | grep -q '\[hub-3-qa\] same stage env'; check $? 0 "negative: same stage with \$HUB_TAG, unchanged"
 out=$(env -u HUB_STAGE HUB_TAG=hub-3-qa $B/jlog --stage stage-b "unknown own stage"); echo "$out" | grep -q '\[hub-3-qa\] unknown own stage'; check $? 0 "negative: own stage unknown, as before"
+# review 1: an explicit $HUB_STAGE decides the own stage, whatever other roles the session holds
+$B/roles --stage stage-d set qa local_$H --tag qa >/dev/null
+out=$(HUB_TAG=hub-17 CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-d "also a role there"); echo "$out" | grep -q '\[stage-a-hub-17\] also a role there'; check $? 0 "HUB_STAGE + HUB_TAG + a role in the target stage: still [stage-a-hub-17]"
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-d "registry tag"); echo "$out" | grep -q '\[qa\] registry tag'; check $? 0 "control: no HUB_TAG, registered in the target stage → that registry's tag"
+# …and without HUB_STAGE the stage is the registration that carries the tag, not the first one sorted
+$B/roles --stage aaa-old set qa local_$P --tag qa >/dev/null; $B/roles --stage core-x set hub-30 local_$P --tag hub-30 >/dev/null
+out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage stage-b "which stage"); echo "$out" | grep -q '\[core-x-hub-30\] which stage'; check $? 0 "aaa-old/qa + core-x/hub-30, HUB_TAG=hub-30 → [core-x-hub-30]"
+$B/roles --stage zzz-twin set hub-30 local_$P --tag hub-30 >/dev/null
+out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage stage-b "ambiguous"); echo "$out" | grep -q '\[hub-30\] ambiguous'; check $? 0 "negative: two registrations with that tag → the tag is left unchanged"
 # budget: 10 per sender; broadcast records and writes one journal line
 check "$($B/roles budget hub p3)" "10 (sent to this recipient: 0)" "budget starts at 10"
 for i in 1 2 3 4 5 6 7 8; do $B/roles sent hub p3 >/dev/null; done

@@ -17,7 +17,8 @@ Filters (a line is delivered when ANY positive filter matches; no positive filte
                   (the stage-qualified signature of another stage's hub, jlog's `core-c-hub-30`) (repeatable)
 Exclusions (always win):
   --exclude-tag T drops lines written with tag T and its sub-tags T/… (repeatable). The caller's
-                  own tag ($HUB_TAG or the registry) is excluded by default; --include-own keeps it.
+                  own tag ($HUB_TAG or the registry) is excluded by default, in both forms: T and
+                  <own stage>-T, as jlog signs in another stage's journal; --include-own keeps it.
 State: what each caller has already seen per source lives in <root>/.jwait-state/<caller>.json,
 keyed by a hash of the line and its occurrence number, so a rewritten or replayed file does not
 re-deliver old lines, and lines that arrived while you were busy are delivered on the next run.
@@ -182,6 +183,9 @@ class Filter:
         self.exclude = [t.strip() for t in args.exclude_tag]
         if own_tag and not args.include_own:
             self.exclude.append(own_tag)
+            own = hc.own_stage(own_tag)  # the signature in another stage's journal is `<own stage>-<tag>` (jlog)
+            if own:
+                self.exclude.append(f"{own}-{own_tag}")
 
     def accepts(self, text: str) -> bool:
         parsed = hc.parse_journal_line(text)

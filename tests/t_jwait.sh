@@ -116,7 +116,7 @@ $B/jwait --file $F --match 'AWAITING ANSWER' --caller p1 --settle 1 --for 4s >/d
 # 12. the default deadline is 2 h: a background Bash task is not guaranteed to live longer
 # 15. stage-qualified address: on stage core-c, --tag hub-30 also hears @core-c-hub-30 (how another stage's hub signs
 # and answers), and nothing that merely looks like it
-mkdir -p $AGENT_HUB_HOME/core-c   # a stage of its own here, whatever exists in the real hub home
+mkdir -p $AGENT_HUB_HOME/core-c $AGENT_HUB_HOME/dolyaq   # a stage of its own here, whatever exists in the real hub home
 $B/jlog --stage core-c --tag old "baseline line" >/dev/null
 ( armed $AGENT_HUB_HOME/q1.out; $B/jlog --stage core-c --tag dolya-hub-4 "@dolya-hub-30 not ours" >/dev/null; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub-300 not ours" >/dev/null
   $B/jlog --stage core-c --tag dolya-hub-4 "@xcore-c-hub-30 not ours" >/dev/null; $B/jlog --stage core-c --tag dolya-hub-4 "@hub-300 not ours" >/dev/null ) &
@@ -132,6 +132,17 @@ check $rc 0 "positive: --tag hub wakes on @core-c-hub"
 ( armed $AGENT_HUB_HOME/q4.out; $B/jlog --stage core-c --tag dolya-hub-4 "@hub-30 plain address" >/dev/null ) &
 HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 30s --caller q1 > $AGENT_HUB_HOME/q4.out 2>&1; rc=$?
 check $rc 0 "control: the plain @hub-30 still wakes"
+# 16. the caller's own signature in a foreign journal does not wake it: [core-c-hub-30] (jlog's form) is excluded like [hub-30]
+$B/jlog --stage dolyaq --tag old "baseline line" >/dev/null
+( armed $AGENT_HUB_HOME/r1.out; $B/jlog --stage dolyaq --tag core-c-hub-30 "@hub QUESTION own line" >/dev/null; $B/jlog --stage dolyaq --tag core-c-hub-30/r2 "@hub QUESTION own sub-tag" >/dev/null; $B/jlog --stage dolyaq --tag hub-30 "@hub QUESTION own short tag" >/dev/null ) &
+HUB_STAGE=core-c HUB_TAG=hub-30 $B/jwait --journal --stage dolyaq --match QUESTION --settle 1 --for 6s --caller r1 > $AGENT_HUB_HOME/r1.out 2>&1; rc=$?
+check $rc 3 "negative: own [core-c-hub-30], [core-c-hub-30/r2] and [hub-30] lines do not wake the caller"
+( armed $AGENT_HUB_HOME/r2.out; $B/jlog --stage dolyaq --tag dolya-hub-4 "@hub QUESTION from someone else" >/dev/null ) &
+HUB_STAGE=core-c HUB_TAG=hub-30 $B/jwait --journal --stage dolyaq --match QUESTION --settle 1 --for 30s --caller r1 > $AGENT_HUB_HOME/r2.out 2>&1; rc=$?
+check $rc 0 "control: another stage's QUESTION line wakes it"
+( armed $AGENT_HUB_HOME/r3.out; $B/jlog --stage dolyaq --tag core-c-hub-30 "@hub QUESTION own again" >/dev/null ) &
+HUB_STAGE=core-c HUB_TAG=hub-30 $B/jwait --journal --stage dolyaq --match QUESTION --include-own --settle 1 --for 30s --caller r1 > $AGENT_HUB_HOME/r3.out 2>&1; rc=$?
+check $rc 0 "--include-own keeps the own signature"
 secs=$(python3 - "$B" <<'PY'
 import importlib.machinery, importlib.util, sys
 sys.path.insert(0, sys.argv[1])
