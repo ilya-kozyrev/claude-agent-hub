@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Coordinate detached Claude Code and Codex agents through shared briefs, inboxes, journals, owner questions, locks and handoffs.",
   "author": {
     "name": "Ilya Kozyrev",

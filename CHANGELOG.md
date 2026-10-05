@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.2 — unreleased
+## 0.8.2 — 2026-10-05
 
 - **The agent-top pane has a button in the prompt footer.** The counts `agents ● 4 ✓ 9 ✗ 0` are now a Button beside the
   engine's mode labels (Claude Code terminal and Desktop): a press opens the pane, the next closes it. A bare `/agent-top`
