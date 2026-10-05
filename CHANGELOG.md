@@ -11,6 +11,10 @@
   a live session (`claude agents --json`; a `done` background session that keeps its pid counts), one `ATTENTION:` line
   in the output and the digest says other hubs can still message it by name and gives `claude stop <id>` /
   `claude rm <id>` (a Desktop session: archive it in Desktop). Nothing is stopped; a failing CLI call is silent.
+- **`hub start`, `hub takeover` and `agent spawn --cwd` warn about a missing project folder.** An `ATTENTION:` line
+  (never a refusal) when the working directory is not inside a git repository (a Desktop session started under "No
+  folder" runs in `~` or a temp dir), or when the checkout has no `.agent-hub/` while the remote default branch
+  (`origin/HEAD`, else `origin/main`) has it — the project's rules, locks and brief footer would silently not apply.
 - The hub skill says how to reach another stage's hub: `@hub` or `@<stage>-hub-<N>` in its journal, or the session
   from `roles --stage <X> get hub`, never a session picked by name in `ListAgents`.
 

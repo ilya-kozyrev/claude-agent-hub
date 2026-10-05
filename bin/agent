@@ -444,6 +444,8 @@ def cmd_spawn(a) -> int:
     no_plan = plan_warning(stage)
     if no_plan:
         hc.warn(no_plan)
+    for w in hc.project_warnings(cwd):
+        print(f"ATTENTION: {w}")
     own = hc.caller_tag(stage)
     if own and hc.tag_is(a.tag or a.role, own):
         # jwait drops the caller's own tag and its sub-tags: the agent's DONE would never wake the hub

@@ -282,6 +282,52 @@ def project_dir(start=None) -> Optional[Path]:
     return None
 
 
+def _git(cwd, *argv, locale: bool = False):
+    """CompletedProcess of a bounded git call in `cwd`, None when git cannot run at all (missing, timed out)."""
+    env = git_env()
+    if locale:
+        env["LC_ALL"] = "C"  # the "not a git repository" test below reads git's message
+    try:
+        return subprocess.run(["git", "-C", str(cwd), *argv], capture_output=True, text=True, timeout=5, env=env,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def project_warnings(cwd=None) -> list:
+    """Why a hub or agent working in `cwd` runs without the project's rules, locks and brief footer, one line each:
+    (a) the directory is not in a git repository (a Desktop session started under "No folder" runs in ~ or a temp
+    dir); (b) the checkout has no .agent-hub/ while the remote default branch (origin/HEAD, else origin/main) has it.
+    A warning, never a refusal; bounded and silent when git fails or there is no remote."""
+    where = Path(cwd or os.getcwd()).expanduser()
+    if project_dir(where) is not None:
+        return []
+    res = _git(where, "rev-parse", "--show-toplevel", locale=True)
+    if res is None:
+        return []
+    if res.returncode != 0:
+        if "not a git repository" not in res.stderr:
+            return []
+        return [f"no project folder: {where} is not inside a git repository, so the project's {CONFIG_DIRNAME}/ rules, "
+                "locks and brief footer are not applied; a Desktop session started under 'No folder' runs in ~ or a "
+                "temp dir: open it from the project's folder group"]
+    top = res.stdout.strip()
+    ref = _git(top, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    remote = ref.stdout.strip() if ref is not None and ref.returncode == 0 else ""
+    if not remote:
+        fallback = _git(top, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+        remote = "origin/main" if fallback is not None and fallback.returncode == 0 else ""
+    if not remote:
+        return []
+    tree = _git(top, "ls-tree", "--name-only", remote, "--", CONFIG_DIRNAME)
+    if tree is None or tree.returncode != 0 or not tree.stdout.strip():
+        return []
+    br = _git(top, "branch", "--show-current")
+    branch = (br.stdout.strip() if br is not None and br.returncode == 0 else "") or "(detached HEAD)"
+    return [f"the checkout {top} on branch {branch} has no {CONFIG_DIRNAME}/ but {remote} has it: project rules, locks "
+            f"and the brief footer are not applied; run from a worktree of {remote}"]
+
+
 def main_checkout(worktree: Path) -> Optional[Path]:
     """The main working tree of a linked worktree (its `.git` file names a gitdir with a `commondir`); None for
     anything else, a submodule included."""

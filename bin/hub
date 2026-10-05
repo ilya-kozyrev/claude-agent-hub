@@ -50,6 +50,9 @@ target state is already there is skipped as "already done", so a re-run finishes
      a `done` background session that keeps its pid counts), one ATTENTION line, also in the digest, says that other hubs
      can still message it by name and how to stop it (`claude stop <id>`, `claude rm <id>`; a Desktop session: archive
      it). Nothing is stopped.
+  Start and takeover also warn (ATTENTION, never a refusal) when the working directory is not inside a git
+  repository ("no project folder": a Desktop session started under "No folder" runs in ~ or a temp dir), or when the
+  checkout has no .agent-hub/ while the remote default branch (origin/HEAD, else origin/main) has it.
   5. jlog "[hub-<n>] start: …".
   Then prints a digest ≤ 3 KB: handoff § 0, the ask register (first line "awaiting execution: N (ids)" —
   owner answers without `ask done`; then open questions, recent owner answers and agent decisions — check
@@ -417,7 +420,7 @@ def hub_notes_line(stage: str) -> str:
     return "\n".join(out)
 
 
-def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), live: str = "") -> str:
+def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = ()) -> str:
     tag = f"hub-{n}"
     # the first jwait replays everything since the predecessor wrote the handoff
     since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
@@ -425,7 +428,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
-        (f"ATTENTION: {live}" if live else "", 600, ""),
+        ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
         ("First jwait (Bash, run_in_background: true; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
@@ -710,11 +713,14 @@ def cmd_takeover(a) -> int:
     if kept:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 
+    warns = hc.project_warnings()
     plan = Plan(a.dry_run)
     print(f"{name}: {session} (sid {cli[:8]}, {kind}) " + (f"starts stage {stage}" if first else
           f"takes over from \"{prev_label}\"; handoff {handoff or '—'}"))
     for note in notes:
         print(f"ATTENTION: {note}")
+    for w in warns:
+        print(f"ATTENTION: {w}")
     for r in mine:
         print(f"[already done] lock {r['kind']} ({repo_of(r)}) is yours until {r['until'][:16]}")
 
@@ -796,8 +802,9 @@ def cmd_takeover(a) -> int:
     live = live_previous_warning(prev_rec, session, cli)
     if live:
         print(f"ATTENTION: {live}")
+        warns.append(live)
     print()
-    print(digest(stage, n, name, handoff, plan.done, notes, live))
+    print(digest(stage, n, name, handoff, plan.done, notes, warns))
     return 0
 
 
