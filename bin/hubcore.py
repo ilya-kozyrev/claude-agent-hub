@@ -1213,7 +1213,7 @@ def signing_tag(stage: str) -> Optional[str]:
     if own:
         tag = tag or registered_tag(own)
     else:
-        if tag and registered_tag(stage):  # registered here as well as $HUB_TAG says: a line of this stage
+        if tag and registered_tag(stage) == tag:  # registered here under that very tag: a line of this stage
             return tag
         found = other_stage_tag(stage, tag)
         if found is None:

@@ -34,6 +34,8 @@ out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-d "registry tag"); echo "
 # …and without HUB_STAGE the stage is the registration that carries the tag, not the first one sorted
 $B/roles --stage aaa-old set qa local_$P --tag qa >/dev/null; $B/roles --stage core-x set hub-30 local_$P --tag hub-30 >/dev/null
 out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage stage-b "which stage"); echo "$out" | grep -q '\[core-x-hub-30\] which stage'; check $? 0 "aaa-old/qa + core-x/hub-30, HUB_TAG=hub-30 → [core-x-hub-30]"
+out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage aaa-old "other role here"); echo "$out" | grep -q '\[core-x-hub-30\] other role here'; check $? 0 "a role (qa) in the target stage under another tag does not keep HUB_TAG bare: [core-x-hub-30]"
+out=$(env -u HUB_STAGE HUB_TAG=qa CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage aaa-old "same tag here"); echo "$out" | grep -q '\[qa\] same tag here'; check $? 0 "control: registered in the target stage under that very tag → bare"
 $B/roles --stage zzz-twin set hub-30 local_$P --tag hub-30 >/dev/null
 out=$(env -u HUB_STAGE HUB_TAG=hub-30 CLAUDE_CODE_SESSION_ID=$PC $B/jlog --stage stage-b "ambiguous"); echo "$out" | grep -q '\[hub-30\] ambiguous'; check $? 0 "negative: two registrations with that tag → the tag is left unchanged"
 # budget: 10 per sender; broadcast records and writes one journal line
