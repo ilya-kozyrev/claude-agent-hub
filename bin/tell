@@ -99,7 +99,7 @@ def main(argv: list) -> int:
     p.add_argument("--question", action="store_true", help="prefix the text with QUESTION (a jwait wake word)")
     p.add_argument("--role", default="hub", help="role to address (default: hub)")
     p.add_argument("--address", action="store_true", help="print only the direct address, write nothing")
-    args = p.parse_args(argv)
+    args = p.parse_intermixed_args(argv)  # options between the stage and a nargs="*" text: plain parse_args drops the text on older Pythons
     stage = hc.check_stage(args.stage)
     text = " ".join(args.text).strip()
     if not args.address and not text:
