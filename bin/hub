@@ -468,11 +468,14 @@ def running_session(cli_id: str):
     return None
 
 
-def live_previous_warning(prev: dict, new_session: str, new_cli: str) -> str:
+def live_previous_warning(prev: dict, new_session: str, new_cli: str, stage: str) -> str:
     """One ATTENTION text when the hub registered before the takeover (`prev`, its roles record) still runs, else "".
     Other hubs find it by name (ListAgents) and message it instead of the registered hub; nothing is stopped here."""
     if not prev or {prev.get("session"), prev.get("cli_session_id")} & {new_session, new_cli}:
         return ""
+    import codex_sessions
+    if prev.get("engine") == "codex" or codex_sessions.detached(stage, prev):
+        return codex_sessions.previous_warning(stage, prev)
     desktop = str(prev.get("session") or "").startswith("local_")
     cli_id = prev.get("cli_session_id") or ("" if desktop else str(prev.get("session") or ""))
     row = running_session(cli_id)
@@ -799,7 +802,7 @@ def cmd_takeover(a) -> int:
             data["roles"]["hub"]["engine"] = engines.selected()
             hc.roles_save(stage, data)
         autopilot.on_takeover(stage, n, a.auto_handoff)  # the automatic successor keeps the chain; anyone else resets it
-    live = live_previous_warning(prev_rec, session, cli)
+    live = live_previous_warning(prev_rec, session, cli, stage)
     if live:
         print(f"ATTENTION: {live}")
         warns.append(live)
