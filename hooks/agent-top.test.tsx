@@ -656,7 +656,7 @@ function cells(node: unknown): number {
   return kids.reduce((sum: number, k) => sum + cells(k), 0)
 }
 
-test('no row is wider than the body: every view at 24, 30, 40, 44, 60 and 76 columns, inline and docked', async ($, on) => {
+test('no row is wider than the body: every view at 23, 24, 25, 30, 40, 44, 60 and 76 columns, inline and docked', async ($, on) => {
   mock.clock(on)
   const rows = [
     agent({ role: 'a-rather-long-role-name', dir_name: 'a', title: 'A task title long enough to need clipping everywhere (w-1)', ctx_window: 200000 }),
@@ -675,7 +675,7 @@ test('no row is wider than the body: every view at 24, 30, 40, 44, 60 and 76 col
   await run($)
   const wide: string[] = []
   for (const placement of ['inline', 'dock'] as const) {
-    for (const cols of [24, 30, 40, 44, 60, 76]) {
+    for (const cols of [23, 24, 25, 30, 40, 44, 60, 76]) {
       const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 40 }), surface: 'terminal' })
       const framed = placement === 'dock' && cols >= 44
       const w = cols - (framed ? 4 : 0)
@@ -855,4 +855,37 @@ test('windowAround, barCells, levelColor, tagColor, journalColor, ctxPercent', a
   expect(a && ctxPercent(a)).toBe(26)
   expect(b?.ctx_window).toBeNull()
   expect(b && ctxPercent(b)).toBeNull()
+})
+
+test('the card fits a pane 23, 24 and 25 columns wide: the Feed rows too (time, kind, text)', async ($, on) => {
+  mock.clock(on)
+  const feed = [
+    { at: '12:00:01', kind: 'tool', sub: false, tool: 'MultiEditorTool', text: 'abcdefgh ijklmnopq rstuvwxyz', detail: null },
+    { at: '12:00:02', kind: 'text', sub: false, tool: null, text: 'abcdefghij klmnopqrst', detail: null },
+    { at: '12:00:03', kind: 'result', sub: false, tool: 'Bash', text: 'abcdefghijklmnop', detail: null },
+    { at: null, kind: 'end', sub: true, tool: null, text: 'end of run: abcdefghijkl', detail: null },
+  ]
+  stubPane(on, () => snapshot([agent()]), undefined, [], feed)
+  await run($)
+  const wide: string[] = []
+  for (const placement of ['inline', 'dock'] as const) {
+    for (const cols of [23, 24, 25]) {
+      const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 40 }), surface: 'terminal' })
+      await ui.press({ key: 'open:stage-a/worker' })
+      expect(await ui.find({ key: 'feed:0' })).toBeDefined()
+      for (const b of await ui.findAll({ type: 'Box' })) {
+        const k = b.key ?? ''
+        if (k === 'frame' || k === 'card') continue
+        const used = cells(b)
+        if (used > cols) wide.push(`${placement} ${cols}: ${k || 'a row'} takes ${used}`)
+      }
+      for (const key of ['feed:0', 'feed:1', 'feed:2', 'feed:3']) {
+        const used = cells(await ui.find({ key }))
+        if (used > cols) wide.push(`${placement} ${cols}: ${key} takes ${used}`)
+      }
+      await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  }
+  expect(wide).toEqual([])
 })

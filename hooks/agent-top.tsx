@@ -353,7 +353,7 @@ export const register: Register = on => {
     const agents = shown ? inStages(shown.agents, stages) : []
     const model: PaneModel = {
       view,
-      cols: Math.max(24, e.props.bodyColumns),
+      cols: Math.max(20, e.props.bodyColumns), // the drawing's own floor: below 20 columns rows are cut by the surface
       rows: Math.max(8, e.props.scroll.bodyRows),
       placement: e.props.placement,
       shown,

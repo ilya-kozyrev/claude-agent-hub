@@ -498,7 +498,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     // every row: its time (`--:--:--` where the log has none: a run's start and end), the kind with its glyph, the text
     const timeW = 8
     const toolW = isCompact ? 7 : 10
-    const textW = Math.max(8, w - timeW - 1 - toolW - 1)
+    const textW = Math.max(1, w - timeW - 1 - toolW - 1) // never wider than the body: at 24 columns 7 cells
     items.forEach((it, i) => {
       const f = feedLine(it)
       const isTool = it.kind === 'tool'

@@ -368,7 +368,7 @@ export const padEnd = (s: string, w: number): string => {
 
 /** Word wrap to `width`, at most `maxLines` lines (the last one clipped with an ellipsis). */
 export function wrapLines(text: string, width: number, maxLines = 2): string[] {
-  const w = Math.max(8, width)
+  const w = Math.max(1, width) // the caller's width holds: a floor above it overflows a narrow body
   const words = oneLine(text).split(' ').filter(Boolean)
   const lines: string[] = []
   let cur = ''
