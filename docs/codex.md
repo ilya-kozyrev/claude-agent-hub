@@ -20,7 +20,14 @@ or `--engine codex`; sending, status and stopping use the engine recorded at spa
 Codex support requires Python 3.11+ on PATH, including for native hook execution: native agent definitions and
 configuration use the standard-library TOML parser. The Claude engine continues to support Python 3.10+.
 
-Use the repository marketplace from a local checkout:
+Clone the repository if you do not have a local checkout yet:
+
+```sh
+git clone https://github.com/ilya-kozyrev/claude-agent-hub.git
+cd claude-agent-hub
+```
+
+Use that checkout's absolute path in the marketplace command:
 
 ```sh
 codex plugin marketplace add /absolute/path/to/claude-agent-hub
@@ -36,7 +43,7 @@ See [official plugin packaging](https://developers.openai.com/plugins/build/plug
 [hook trust](https://learn.chatgpt.com/docs/hooks).
 
 Codex's SessionStart hook selects the Codex engine for that session. In a plain terminal, or when hooks are
-untrusted, pass `--engine codex` or set `AGENT_HUB_ENGINE=codex`. The general default remains `claude`.
+untrusted, pass `--engine codex` or set `AGENT_HUB_ENGINE=codex`. In a plain terminal with no configured engine or detected Codex host, the default is `claude`.
 Use the installed plugin's `bin/` directory explicitly if a command is absent or shadowed on PATH.
 
 ### Terminal monitor and older installations

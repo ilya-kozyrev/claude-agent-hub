@@ -8,8 +8,9 @@ the **hub** does on its own, and what the **agents** do. It is not a command ref
 The running example, used in every step: *"add CSV export to the reports page of my web app"*, with three agents
 named `api`, `ui` and `tests`. Everything below is synthetic.
 
-Three words used throughout. The **hub** is your interactive Claude Code session: it plans and coordinates but does not
-do the long work. **Agents** are headless `claude -p` sessions that do it, one per task. A **stage** is one stream of work
+Three words used throughout. This walkthrough uses the Claude engine; for Codex, follow [Codex setup](codex.md) and the
+[agent task router](agents/README.md#install-or-operate). The **hub** is your interactive Claude Code or Codex session: it plans and coordinates but does not
+do the long work. **Agents** are detached Claude Code or Codex sessions that do it, one per task. A **stage** is one stream of work
 (here, this feature) with its own directory of files under the hub home (`~/agent-hub/<stage>/`).
 
 ## The flow in one picture
@@ -52,7 +53,7 @@ Read it top to bottom. Colour says who acts: **blue — you**, **yellow — the 
 
 ## Install and set up, once
 
-Platform: macOS or Linux (Windows is not supported; see the [README](../README.md#install)).
+Platform: macOS or Linux (Windows is not supported; see the [installation guide](install.md)).
 
 ```text
 /plugin marketplace add ilya-kozyrev/claude-agent-hub
@@ -60,7 +61,7 @@ Platform: macOS or Linux (Windows is not supported; see the [README](../README.m
 ```
 
 Requirements (Claude Code 2.1.287 or later; older versions are unsupported) and the permissions note are in the
-[README](../README.md#install). Read the permissions note before your
+[installation guide](install.md). Read the permissions note before your
 first agent: headless agents run with `bypassPermissions` by default.
 
 Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill
@@ -86,8 +87,8 @@ prompt too, so grant the hub home once: `/add-dir ~/agent-hub` in the session, o
 its autopilot successor, get the grant from the tools. To keep the files inside the repository instead, put
 `{"AGENT_HUB_HOME": "project"}` in `.agent-hub/config.json` (`agent-hub:setup` asks; `git clean -fdx` deletes that
 folder). An installation made with 0.6 or earlier keeps its files in the legacy `~/.claude/agent-hub` until you run
-`hub home migrate` (a dry run; then `--apply`). The full story is in the README:
-[Where the hub's files live](../README.md#where-the-hubs-files-live).
+`hub home migrate` (a dry run; then `--apply`). The full story is in the reference:
+[Where the hub's files live](reference.md#where-the-hubs-files-live).
 
 ### Start small
 
@@ -121,7 +122,7 @@ anything before I approve the plan.
 ```
 
 - **Hub:** loads the `hub` skill (the workflow and the tool list) and starts the stage:
-  `hub start --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`. That creates the stage directory, registers this
+  `hub start --stage csv-export --session self`. That creates the stage directory, registers this
   session as `hub-1`, writes the start line to the journal and prints the first `jwait` command. (If you skipped the setup
   above and the repository has no `.agent-hub/`, the hub offers the `agent-hub:setup` skill first.)
 - **You see:** the stage start line (hub tag `hub-1`, "started stage csv-export") and a first round of questions
@@ -134,7 +135,7 @@ anything before I approve the plan.
 
 The hub first looks for decisions you already made (`ask search csv export`; the register is empty on day one), then
 **grills** you on the rest with the `grilling` skill (install it once — see
-[Recommended companion](../README.md#recommended-companion-grilling)): rounds of numbered questions, each with its
+[Recommended companion](install.md#recommended-companion-grilling)): rounds of numbered questions, each with its
 recommended answer, so most answers are "yes" or one sentence. Facts it can find in the code it looks up itself.
 
 ```text
@@ -172,7 +173,7 @@ Go.
 ### 4. The hub starts the agents
 
 - **Hub:** runs one `agent spawn` per brief, for example
-  `agent spawn --role api --tag hub-1-api --cwd <repo> --worktree --model sonnet --brief <brief file>`. Each agent is a
+  `agent spawn --engine claude --role api --tag hub-1-api --cwd <repo> --worktree --model sonnet --brief <brief file>`. Each agent is a
   detached `claude -p` session with its own process and session id. `--worktree` gives it its own git worktree (branch
   `agent/api`, directory `<repo>/.worktrees/agent/api`, kept out of git status), so two agents never edit the same
   files. Nothing removes a worktree afterwards; once the branch is merged, `git worktree remove <path>`.
@@ -383,12 +384,12 @@ writes its handoff and waits for you; anything you type to the hub resets that c
   brief needs a "done" you can check, a stop condition ("open a PR and stop"), a turn limit and a list of what not to
   touch. The template exists for this. The limit matters for cost too: every turn re-reads the agent's whole context, so
   a long agent costs more than its turn count suggests and draws on the same plan limits as your own chat
-  ([cost and turn limits](../README.md#cost-and-turn-limits)).
+  ([cost and turn limits](reference.md#cost-and-turn-limits)).
 - **Ignoring the permissions mode.** `bypassPermissions` is the default because any other mode silently stalls on the
   first blocked tool. Run agents in their own worktree, say what they must not touch, or set
   `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused. The hub needs
   bypass too: in `default` and `acceptEdits` it waits for your click on every tool call, and in `auto` the classifier
-  refuses merges and pushes, so an unattended hub stops (README § Install, "Run the hub in bypass mode").
+  refuses merges and pushes, so an unattended hub stops ([installation permissions](install.md), "Run the hub in bypass mode").
 - **Long waits in the foreground.** A hub that sits in `sleep` or a polling loop fills its context and blocks the chat.
   The waiting tool is `jwait`, run in the background. Agents are the same in reverse: they end when their turn ends, so
   a long command is run in the foreground with a raised timeout, not left in the background.
@@ -402,5 +403,5 @@ writes its handoff and waits for you; anything you type to the hub resets that c
 
 - [a-day-with-agent-hub.md](a-day-with-agent-hub.md): the same flow at command level, with a night queue.
 - [architecture.md](architecture.md): roles, who writes which file, and the file formats.
-- [README](../README.md): how the hub compares with Claude Code's own sub-agents and background sessions, team use,
+- [Comparison](comparison.md): built-in subagents and background sessions; [reference](reference.md): team use,
   configuration variables and limitations.

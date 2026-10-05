@@ -11,7 +11,7 @@ CLI, a cloud service with its own quota — plugs it in as a *reviewer skill* an
 
 The setting `AGENT_HUB_REVIEWERS` is an ordered JSON list; the first entry that is available wins. Like every setting
 it comes from the environment, a repository's `.agent-hub/config.json` or the hub home's `config.json`, in that order
-(README, *Configuration*):
+([Configuration](reference.md#configuration)):
 
 ```json
 {"AGENT_HUB_REVIEWERS": [

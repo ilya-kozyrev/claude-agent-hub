@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds a synthetic hub home for the README screenshots (docs/render_demo.sh). Nothing here is real data.
+"""Builds a synthetic hub home for the docs/monitoring.md screenshots (docs/render_demo.sh). Nothing here is real data.
 
   make_demo_home.py ROOT LIVE_PID SID_BUILDER SID_REVIEWER
 

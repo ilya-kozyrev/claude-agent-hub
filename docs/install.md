@@ -1,0 +1,98 @@
+# Installation and setup
+
+**Platform.** macOS and Linux, Python 3.10+ for Claude or 3.11+ for Codex (standard library only), the selected `claude` or `codex` CLI on `PATH`. Claude Code 2.1.287 or later: older versions are unsupported. Windows is not
+supported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself does run natively on Windows
+([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
+
+**Claude Code:**
+
+```text
+/plugin marketplace add ilya-kozyrev/claude-agent-hub
+/plugin install agent-hub@claude-agent-hub
+```
+
+**Codex:** follow [Install in Codex](codex.md#install-in-codex), including hook trust.
+That page owns the Codex commands and prerequisites.
+
+Review and trust its hooks before starting an interactive Codex hub. The explicit Codex manifest selects
+`hooks/codex-hooks.json` and packages the same four skills. Full access and hook trust are separate settings;
+[Codex support](codex.md) explains detached defaults and restricted reviewers.
+
+After Claude installation, follow the activation instruction in the install summary and confirm
+`/agent-hub:hub` appears. See [official installation instructions](https://code.claude.com/docs/en/discover-plugins)
+(checked 2026-10-05).
+
+The order: install, then your first message `/agent-hub:hub …` in the repository (see [Quickstart](reference.md#quickstart)), then
+[`agent-hub:setup`](#after-install-run-agent-hubsetup-in-each-repository) once per repository.
+
+> **Permissions.** Headless agents run with `--permission-mode bypassPermissions` by default: a `claude -p` run has
+> nobody to approve a prompt, and any other mode silently stalls on the first blocked tool. Treat every agent as a
+> process with your user's rights — say in its brief what it must not touch, run it in a worktree or sandbox, or set
+> `AGENT_HUB_PERMISSION_MODE` (for example `acceptEdits`) and accept that some tools will be refused.
+>
+> **Run the hub in bypass mode too** (start it with `claude --dangerously-skip-permissions`). The plugin
+> is built for a hub that works while nobody watches it, and only `bypassPermissions` lets it: in `default` and
+> `acceptEdits` every `agent`, `jlog` or `gh` call waits for your click; in `auto` the classifier refuses actions that
+> leave the machine or touch shared branches — a hub in `auto` had its `gh pr merge` refused and stopped until the
+> owner restarted it in bypass. Other modes work only with you at the keyboard approving each step. The autopilot
+> successor inherits the mode (`AGENT_HUB_SUCCESSOR_PERMISSION_MODE`); bypass needs its disclaimer accepted once in a
+> terminal (`claude --dangerously-skip-permissions`), otherwise the successor falls back to `auto`.
+
+For Codex, `bypassPermissions` maps to `--dangerously-bypass-approvals-and-sandbox` (full access and no approval
+prompts). `--sandbox read-only` or `workspace-write` chooses a restricted worker instead. Detached Codex runs also
+use the separately configured hook-trust policy; hooks stay enabled. See [Codex permissions](codex.md#full-access-and-hook-trust).
+
+### What installing changes
+
+- **Tools on `PATH`.** While the plugin is enabled its `bin/` is on the Bash tool's `PATH`, so Claude can call `agent`,
+  `jlog`, `jwait` and the rest directly. To use them in your own terminal too, add `bin/` to your `PATH` or symlink the
+  tools. A Claude Code session's id is in `$CLAUDE_CODE_SESSION_ID` (`echo` it in the session). When it is empty, for
+  example in a plain shell outside Claude Code, `lock take` refuses unless you pass `--force`: the lock would have no
+  owner the hook could recognise. The plugin's `bin/` comes after your own `PATH` entries, so an older command of the
+  same name wins — in practice the GitHub CLI `hub` from Homebrew, or an old copy of `jlog` in `~/.local/bin`. `hub start`
+  and a SessionStart hook warn once when any command of the plugin (every executable in its `bin/`: `hub`, `jlog`,
+  `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
+  first on `PATH` or remove the old tool. A command that resolves into an installed plugin's `bin/` (the Claude or Codex
+  plugin cache, the marketplace folder) is not reported. To keep a personal shim that dispatches into the plugin (say
+  `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# agent-hub: dispatcher`
+  among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
+- **Four skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`) and `delegation`; four pinned-effort
+  Claude worker subagents. `/agent-top` is not a skill: in Claude Code the mod answers it (see [Monitoring agents](monitoring.md#agent-top-inside-claude-code-a-live-pane)).
+  Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
+- **Hooks**, each with its own reach (the [agent-discipline](reference.md#agent-discipline) hooks — context budget, polling guard,
+  delegation dial and subagent rules — are described in their own section):
+  - `board_locks` (before every Bash call) runs in every Claude Code session on the machine, but acts only on merges
+    and pushes to protected branches and on commands your `lock-rules.json` names. Any error of its own lets the
+    command through.
+  - `handoff_size` (Write or Edit of `HANDOFF-*.md`) and `questions` (the owner-questions line at session start) act
+    only in the hub home, in repositories that have `.agent-hub/`, under the directories of the hub-wide setting
+    `AGENT_HUB_SCOPE_DIRS`, and, for `questions`, in agents started by `agent spawn`. A session in an unrelated
+    project hears nothing from them.
+  - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
+    `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
+    time in the same places as `questions`, and once per distinct set of paths elsewhere.
+- Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`. The hub's own
+  files go to `~/agent-hub` (created by `hub start`; see [Where the hub's files live](reference.md#where-the-hubs-files-live)).
+
+### After install: run `agent-hub:setup` in each repository
+
+Ask your coordinator to use the `agent-hub:setup` skill in the repository's checkout. A new, empty project may skip it for now:
+the hub offers it when it is needed. It looks at the repository, then asks one round of numbered questions with a
+recommended answer for each: which branches are protected, which environments two sessions must not change at once,
+which commands touch each. It writes `.agent-hub/lock-rules.json` and `.agent-hub/config.json` and proves the rules
+with positive and negative checks (`lock rules check`). A project with no deployment ends with `main-merge` only, and
+that is a complete setup. Commit `.agent-hub/`: it is the team's shared convention (see [Team use](reference.md#team-use)).
+
+### Recommended companion: grilling
+
+The hub settles open decisions with you before it writes any brief. It does that best with the `grilling` skill from
+[mattpocock/skills](https://github.com/mattpocock/skills) (MIT): rounds of numbered questions, each with a recommended
+answer, until nothing is left assumed. agent-hub does not bundle it; install it next to this plugin:
+
+```text
+/plugin marketplace add mattpocock/skills
+/plugin install mattpocock-skills@mattpocock
+```
+
+Without it the `hub` skill grills by hand in the same format; the answers go to the question register either way.
+
