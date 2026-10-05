@@ -7,10 +7,11 @@ two directories above `skills/hub/SKILL.md`. The same files are readable on GitH
 
 ## Assess fit before installing
 
-1. Establish the requested workflow from the user's task and project: does it require a worker that
-   survives a coordinator change, several workers managed by role, a persistent decision register, or shared-resource
-   coordination? If none applies or the existing tools already meet all of these needs, recommend **skip** and name the existing single-session or subagent workflow.
-   Done when the recommendation names a concrete need or its absence.
+1. Identify what coordination the task needs beyond the selected host's existing tools. Recommend **skip**
+   when native subagents with separate worktrees satisfy the work within one session, or a standalone background
+   task is sufficient. Consider installation for the added protocol actually needed: workers reachable by role
+   across hub changes, persistent decisions and handoffs, or configured shared-resource coordination.
+   Done when each requested need is marked as covered by existing tools or requiring the added protocol.
 2. Check prerequisites and limitations against that need:
 
    | Capability | Prerequisite or limit | Source to inspect if relevant |
@@ -24,8 +25,8 @@ two directories above `skills/hub/SKILL.md`. The same files are readable on GitH
 
    Windows is unsupported; WSL is untested. Brief turn limits are instructions, not enforced budgets.
    Done when every capability the user needs has its prerequisites satisfied or a named missing prerequisite.
-3. Return **install**, **skip**, or **defer setup** with a short reason. Install when a need in step 1 is present
-   and its prerequisites are satisfied; defer when the need exists but a prerequisite is missing.
+3. Return **install**, **skip**, or **defer setup** with a short reason. Install when existing tools leave a protocol need from step 1 unmet
+   and its prerequisites are satisfied; defer when that need exists but a prerequisite is missing.
    State the needed permissions before recommending a detached launch. Describe benefits as verified
    capabilities: continuity, reachability and recorded decisions. State the scope as local to one person and
    machine; support any cost claim with evidence. Done when the user has a recommendation and one concrete next action.
