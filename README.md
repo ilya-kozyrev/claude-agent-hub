@@ -53,7 +53,7 @@ It runs locally for **one person on one machine**.
    ```
 
 Answer open decisions and approve the plan. Check progress with `/agent-top` in Claude Code,
-or ask the hub to run `agent-top --once`. [Use your own terminal →](docs/install.md#what-installing-changes)
+or ask the session what is running: the `status` skill answers from `agent-top` data. [Use your own terminal →](docs/install.md#what-installing-changes)
 The hub tells you when results need your attention.
 
 ## Read more when you need it

@@ -36,6 +36,7 @@ codex plugin list --marketplace agent-hub-codex
 ```
 
 Restart the Codex chat so it loads the installed skills, then ask for `agent-hub:setup` in the project.
+Ask the session what is running; the `status` skill answers in words from fresh `agent-top` data.
 `.codex-plugin/plugin.json` packages `./skills/` and explicitly selects `./hooks/codex-hooks.json`;
 it does not load the Claude hook configuration. Installation and enabling do not grant hook trust: review
 and trust the installed hooks in Codex before using them interactively. Untrusted hooks are skipped.

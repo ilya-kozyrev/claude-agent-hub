@@ -9,6 +9,9 @@
   prints `codex queue --thread <UUID> --message "…"` for native targets on CLIs with queue support, without Claude
   name discovery. Codex instructions require `tell` first and direct messages only to the registry address.
 
+- **Ask what is running in Claude Code or Codex.** The shared `status` skill answers agent, task, stage,
+  owner-question and lock questions in plain text from a fresh read-only snapshot. The Claude Code live pane
+  remains `/agent-top`; the removed chat-widget skill stays removed.
 - **`tell <stage> "text"` writes to another stage's hub.** It reads the holder of the role (default `hub`, `--role`) from
   that stage's registry, appends `@hub text` (`@hub QUESTION text` with `--question`) to its journal signed with the
   caller's stage-qualified tag, and prints the registered direct address: session id, kind, title, the name for a
