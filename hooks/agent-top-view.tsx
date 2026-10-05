@@ -19,6 +19,7 @@ import {
   colorOf,
   ctxPercent,
   feedLine,
+  feedNote,
   fmtAge,
   fmtCost,
   fmtK,
@@ -55,6 +56,8 @@ export type PaneModel = {
   isAll: boolean
   error: string | null
   card: Card | null
+  /** Why the last card call failed (cleared by the next good one); the feed area says so instead of "loading". */
+  cardError: string | null
   target: Target | null
   /** agentKey of the list row the cursor is on (the focus ring's, or the last one it was on). */
   cursorKey: string | null
@@ -369,6 +372,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
       </Box>
     )
     if (!tg || !a) {
+      if (tg && m.cardError !== null) return [...noteRows(feedNote(null, m.cardError)), backButton]
       return [t(m.error ? '' : tg ? `loading ${tg.role}…` : 'no agent selected (Back, then pick one)', { dim: true }), backButton]
     }
     const b = badgeOf(a)
@@ -521,13 +525,15 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
         )
       })
     })
-    const feedTail = feedRows.slice(-feedRoom)
-    return [
-      cardNode,
-      rule('Feed', w, items.length ? `last ${items.length}` : ''),
-      ...(feedTail.length ? feedTail : [t(m.card ? '(the log is empty)' : 'loading the feed…', { dim: true })]),
-      backButton,
-    ]
+    // no rows: still loading, the call failed, or an empty log; rows and a failed refresh: the rows, the failure under them
+    const note = feedRows.length === 0 || m.cardError !== null ? noteRows(feedNote(m.card, m.cardError)) : []
+    const feedTail = feedRows.slice(-Math.max(1, feedRoom - note.length))
+    return [cardNode, rule('Feed', w, items.length ? `last ${items.length}` : ''), ...feedTail, ...note, backButton]
+  }
+
+  /** The feed's note (feedNote), wrapped to the body: a warning in yellow, else dim. */
+  function noteRows(note: { text: string; isError: boolean }): RenderChildren[] {
+    return wrapLines(note.text, w, 2).map((l, i) => row(i === 0 ? 'feed-note' : undefined, [t(l, note.isError ? { color: 'yellow' } : { dim: true })]))
   }
 
   // ---------------------------------------------------------------- Journal: time, tag pill, the line coloured by its first word

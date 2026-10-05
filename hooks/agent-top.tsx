@@ -7,7 +7,9 @@
 //   surface without that footer looks on (a phone, VS Code) the same counts are the status line instead
 //   toasts when an agent finishes, fails or dies and when a new owner question opens
 //
-// Read-only. Data comes only from the plugin's own CLI, `bin/agent-top --json`; nothing is written anywhere. The module is
+// Read-only. Data comes only from the plugin's own CLI, `bin/agent-top --json` (it keeps its read offsets in its own cache,
+// <hub home>/.state/agent-top/); the module itself writes nothing. Calls never overlap, each answer is drawn as it comes,
+// and a failed card call says why in the feed area instead of "loading". The module is
 // plugin-name-agnostic (no $.state, no hard-coded plugin name): state lives in this closure, and a hot reload starts it over.
 // Needs Claude Code with mods (2.1.287+). Older CLIs ignore the module; there, and in Codex, the console `agent-top` stays.
 import type { EngineInterface, Register, Timer } from 'claude-code'
@@ -31,6 +33,7 @@ import {
   parseSnapshot,
   planRun,
   remember,
+  sameTarget,
   statusText,
 } from './agent-top-model'
 import type { Agent, Card, CommandArgs, Memory, Snapshot, Target, View } from './agent-top-model'
@@ -42,7 +45,10 @@ type Api = EngineInterface
 const PANE = 'agent-top'
 const INLINE_ROWS = 24 // body rows asked for above the prompt (a request: the person's own size wins)
 const DOCK_COLUMNS = 76 // body columns asked for beside a fullscreen transcript
-const CALL_TIMEOUT_MS = 25000
+// A first call after an update reads every log once (later ones resume from the CLI's cache): give it time, and keep
+// the polls apart, never in parallel
+const CALL_TIMEOUT_MS = 60000
+const OPEN_WAIT_MS = 4000 // how long /agent-top waits for data before it answers; the pane fills when the data comes
 const SKILL_HINT = 'agent-top: the mod needs bin/agent-top of the agent-hub plugin'
 
 type Called = { ok: true; stdout: string } | { ok: false; error: string; isMissing: boolean }
@@ -51,7 +57,8 @@ const firstLine = (s: string): string => clip(oneLine(s.split('\n').find(l => l.
 
 let snap: Snapshot | null = null // the default view, every stage: feeds the status line and the toasts
 let allSnap: Snapshot | null = null // the same with --all, only while the pane shows it
-let card: Card | null = null
+let card: Card | null = null // the card of `target` (an answer for another agent is dropped)
+let cardError: string | null = null // why the last card call failed; cleared by the next good one
 let view: View = 'list'
 let target: Target | null = null
 let stages: string[] = []
@@ -85,7 +92,10 @@ async function callCli($: Api, args: string[]): Promise<Called> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     const isGone = /ENOENT|no such file|not found|cannot start|spawn/i.test(msg)
-    return { ok: false, error: isGone ? `${SKILL_HINT} (${bin} is missing)` : `agent-top: ${clip(oneLine(msg), 100)}`, isMissing: isGone }
+    if (isGone) return { ok: false, error: `${SKILL_HINT} (${bin} is missing)`, isMissing: true }
+    // the engine's own words name the whole path; the pane has one line for it
+    if (/still running|timed? ?out/i.test(msg)) return { ok: false, error: `agent-top gave no answer in ${CALL_TIMEOUT_MS / 1000} s`, isMissing: false }
+    return { ok: false, error: `agent-top: ${clip(oneLine(msg), 100)}`, isMissing: false }
   }
 }
 
@@ -147,16 +157,23 @@ async function runOnce($: Api, isForce: boolean): Promise<void> {
     errors.push(c.error)
     if (c.isMissing) isGone = true
   }
+  // each answer is drawn as it comes, not after the calls that follow it
   if (plan.extra === 'card' && target) {
     const t = target
     const c = await callCli($, ['--json', ...(isAll ? ['--all'] : []), '--agent', t.dirName, '--stage', t.stage, '--feed', '30'])
-    if (c.ok) {
-      try {
-        card = parseCard(c.stdout, t.dirName, now)
-      } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err))
-      }
-    } else note(c)
+    if (c.ok === false && c.isMissing) note(c)
+    else if (sameTarget(target, t)) {
+      // the card's own failure shows in its feed area (feedNote), not as the pane's error line
+      if (c.ok) {
+        try {
+          card = parseCard(c.stdout, t.dirName, now)
+          cardError = null
+        } catch (err) {
+          cardError = err instanceof Error ? err.message : String(err)
+        }
+      } else cardError = c.error
+    }
+    $.ui.invalidate('ui.render')
   } else if (plan.extra === 'all' && !isGone) {
     const c = await callCli($, ['--json', '--all'])
     if (c.ok) {
@@ -166,6 +183,7 @@ async function runOnce($: Api, isForce: boolean): Promise<void> {
         errors.push(err instanceof Error ? err.message : String(err))
       }
     } else note(c)
+    $.ui.invalidate('ui.render')
   }
   if (plan.watch && !isGone) {
     const c = await callCli($, ['--json'])
@@ -252,9 +270,13 @@ function focusOn($: Api, key: string): void {
 }
 
 function openCard($: Api, a: Pick<Agent, 'stage' | 'dir_name' | 'role'>): Promise<void> {
-  target = { stage: a.stage, dirName: a.dir_name, role: a.role }
+  const next = { stage: a.stage, dirName: a.dir_name, role: a.role }
+  if (!sameTarget(target, next) || view !== 'card') {
+    card = null // another agent's feed is not drawn under this one's title
+    cardError = null
+  }
+  target = next
   cursorKey = agentKey(a)
-  card = null
   view = 'card'
   $.ui.invalidate('ui.render')
   focusOn($, 'back')
@@ -294,6 +316,7 @@ async function openPane($: Api, args: CommandArgs): Promise<string> {
   view = 'list'
   target = null
   card = null
+  cardError = null
   allSnap = null
   startPolling($)
 
@@ -304,7 +327,9 @@ async function openPane($: Api, args: CommandArgs): Promise<string> {
   if (!opened.isPlaced) return onceText($, args)
   isOpen = true
   $.ui.invalidate('ui.render')
-  await refresh($, true)
+  // the answer waits for the data a little (its counts); a role waits for it all, it is looked up there
+  const loading = refresh($, true)
+  await (args.role !== null ? loading : Promise.race([loading, $.clock.sleep(OPEN_WAIT_MS)]))
 
   let notFound = ''
   if (args.role !== null) {
@@ -443,6 +468,7 @@ export const register: Register = on => {
       isAll,
       error,
       card,
+      cardError,
       target,
       cursorKey: cursorKey !== null && agents.some(a => agentKey(a) === cursorKey) ? cursorKey : agents[0] ? agentKey(agents[0]) : null,
       isAutoFocus,

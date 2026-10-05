@@ -18,10 +18,15 @@ trap 'kill $SLEEPER 2>/dev/null' EXIT
 python3 $T/agent_top_fixture.py $R $SLEEPER $SID_A $SID_Q > $R/fixture.out; check $? 0 "fixture built"
 python3 $B/ask add --stage stage-a --blocks "test" --default "nothing" --due 2020-01-01T00:00 --by test --source test "Test question?" > $R/ask.out 2>&1
 check $? 0 "fixture: overdue question registered"
+# agent-top's own read cache (<hub home>/.state/agent-top/, bin/topcache.py) is the one place it writes: left out here,
+# its existence checked after the runs
 fingerprint(){ python3 - "$R" <<'PY'
 import hashlib, os, sys
 out = []
+cache = os.path.join(sys.argv[1], ".state", "agent-top")
 for d, _, files in os.walk(sys.argv[1]):
+    if d == cache or d.startswith(cache + os.sep):
+        continue
     for f in files:
         p = os.path.join(d, f)
         if f.endswith(".lock") or f in ("fixture.out", "ask.out") or f.startswith(("fp-", "st-", "stub-")):
@@ -196,7 +201,7 @@ def chk(name, cond):
     fails += 0 if cond else 1
 chk(f"big log ({size // 1000} KB): all 5000 turns counted, state done, cost", b["turns"] == 5000 and not b["turns_approx"] and b["state"] == "done" and b["cost_usd"] == 2.0)
 chk(f"big log: whole snapshot in {secs:.2f} s (< 4 s)", secs < 4)
-d, secs = run({"AGENT_TOP_SCAN_MAX": "1000000"})
+d, secs = run({"AGENT_TOP_SCAN_MAX": "1000000"})   # another cap is another cache generation: not resumed from the full read above
 b = [a for a in d["agents"] if a["role"] == "big1"][0]
 chk("big log with a 1 MB scan cap: scanned from the tail, marked approximate, result still found", b["turns_approx"] and 0 < b["turns"] < 5000 and b["state"] == "done" and b["cost_usd"] == 2.0)
 sys.exit(fails)
@@ -234,7 +239,8 @@ fi
 
 # ---- nothing written by the non-interactive runs
 fingerprint > $R/fp-after.txt
-diff -q $R/fp-before.txt $R/fp-after.txt > /dev/null; check $? 0 "agent-top --once/--json wrote nothing (sha1+mtime of every file under the hub home)"
+diff -q $R/fp-before.txt $R/fp-after.txt > /dev/null; check $? 0 "agent-top --once/--json wrote nothing but its cache (sha1+mtime of every other file under the hub home)"
+[ -s $R/.state/agent-top/cache.sqlite ]; check $? 0 "positive control: the cache left out of that check is there (.state/agent-top/cache.sqlite)"
 
 # ---- curses UI in a pty with a stub `agent` (no real send/stop)
 cat > $R/stub-agent.sh <<'SH'

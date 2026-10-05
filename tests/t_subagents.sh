@@ -17,7 +17,10 @@ $B/roles set exec $EXE --kind headless --tag hub-7-exec --pid $SLEEPER > /dev/nu
 fp(){ python3 - "$R" <<'PY'
 import hashlib, os, sys
 out = []
+cache = os.path.join(sys.argv[1], ".state", "agent-top")   # agent-top's own read cache (bin/topcache.py): its one write
 for d, _, files in os.walk(sys.argv[1]):
+    if d == cache or d.startswith(cache + os.sep):
+        continue
     for f in files:
         p = os.path.join(d, f)
         if f.endswith(".lock") or f.startswith(("fp-", "st-")):

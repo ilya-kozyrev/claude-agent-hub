@@ -68,9 +68,23 @@ export type FeedItem = { at: string | null; kind: string; sub: boolean; tool: st
 
 export type Card = { agent: Agent | null; feed: FeedItem[]; fetchedAt: number }
 
+/**
+ * The line the card draws where its feed has no rows: the CLI's answer still pending, why the last call failed (the
+ * mod asks again every tick), or an empty log. `isError` draws it as a warning.
+ */
+export function feedNote(card: Card | null, cardError: string | null): { text: string; isError: boolean } {
+  if (cardError !== null) return { text: `feed unavailable: ${oneLine(cardError)} · retrying`, isError: true }
+  if (card !== null) return { text: '(the log is empty)', isError: false }
+  return { text: 'loading the feed…', isError: false }
+}
+
 export type View = 'list' | 'card' | 'journal' | 'summary'
 
 export type Target = { stage: string; dirName: string; role: string }
+
+/** Whether two card targets name the same agent (a card answer for another one is dropped). */
+export const sameTarget = (a: Target | null, b: Target | null): boolean =>
+  a !== null && b !== null && a.stage === b.stage && a.dirName === b.dirName
 
 // ---------------------------------------------------------------- parsing
 

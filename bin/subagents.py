@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import codex_rollouts
+import topcache
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TOOL_ID_RE = re.compile(rb'"tool_use_id"\s*:\s*"([^"]+)"')
@@ -89,14 +90,32 @@ def tail_last_user_ts(path: Path):
 
 def process_table():
     """{pid: command line} of every process, or None when `ps` is unusable."""
+    return process_table_finish(process_table_start())
+
+
+def process_table_start():
+    """Starts `ps` and returns at once, so a caller can read files while it runs (process_table_finish)."""
     try:
-        r = subprocess.run(["ps", "-ww", "-axo", "pid=,command="], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.Popen(["ps", "-ww", "-axo", "pid=,command="], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+    except OSError:
         return None
-    if r.returncode != 0:
+
+
+def process_table_finish(proc):
+    """The table of a `ps` started by process_table_start, or None when it failed or took over 10 s."""
+    if proc is None:
+        return None
+    try:
+        out, _ = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return None
+    if proc.returncode != 0:
         return None
     table = {}
-    for ln in r.stdout.splitlines():
+    for ln in out.splitlines():
         parts = ln.strip().split(None, 1)
         if len(parts) == 2 and parts[0].isdigit():
             table[int(parts[0])] = parts[1]
@@ -259,15 +278,31 @@ class Sub:
 
 
 class Finder:
-    """Finds the sub-agents of sessions and decides their state; caches the folder globs, the metas and the parents'
+    """Finds the sub-agents of sessions and decides their state; caches the session folders, the metas and the parents'
     notices between calls. `last_user_ts(log path)` answers "was the transcript written to by a user line after the
     sub-agent ended" (a resumed sub-agent): agent-top passes its incremental log reader, the default reads the
-    transcript's tail."""
+    transcript's tail. `store` (agent-top's disk cache, bin/topcache.py) keeps the parents' notices and the Codex
+    rollout readers between processes, so a new process reads only what those files gained."""
 
-    def __init__(self, last_user_ts=None):
+    def __init__(self, last_user_ts=None, store=None):
         self.last_user_ts = last_user_ts or tail_last_user_ts
+        self.store = store or topcache.Null()
         self.notices, self.sub_dirs, self.metas = {}, {}, {}
         self.codex_states = {}
+        self.session_dirs, self.session_dirs_at = {}, None
+
+    def _reader(self, cache: dict, kind: str, path: Path, cls, nested=None):
+        """The reader of `path` from this process's cache, else restored from the disk store, else a new one; then
+        brought up to date, and stored again when it read anything."""
+        obj = cache.get(path)
+        if obj is None:
+            obj = cache[path] = cls(path)
+            topcache.load_into(obj, self.store.get(kind, str(path)), nested)
+        before = (obj.ino, obj.offset)
+        obj.update()
+        if (obj.ino, obj.offset) != before:
+            self.store.put(kind, str(path), obj)
+        return obj
 
     def codex_session(self, sid, parent_is_alive, now, show_all=False):
         rec = codex_rollouts.INDEX.session(sid)
@@ -279,7 +314,8 @@ class Finder:
         old = now - mtime > SUB_RECENT_S
         if not show_all and old and parent_is_alive is not True:
             return None
-        reader = self.codex_states.setdefault(log, codex_rollouts.State(log)).update()
+        reader = self._reader(self.codex_states, "rollout-state", log, codex_rollouts.State,
+                              {"normalizer": codex_rollouts.Normalizer})
         status = reader.status
         if status is not None:
             state = SUB_STATE.get(status, "dead")
@@ -294,15 +330,33 @@ class Finder:
         return Sub(aid, log, info, mtime, status, state, True)
 
     def dirs(self, sid: str) -> list:
+        """<claude config>/projects/*/<sid>/subagents folders of a session. One listing of every project folder
+        answers all sessions (a glob per session stats every project folder again: seconds for a hundred sessions)."""
         hit = self.sub_dirs.get(sid)
         if hit and time.monotonic() - hit[0] < SUB_DIRS_TTL:
             return hit[1]
-        try:
-            dirs = sorted(projects_root().glob(f"*/{sid}/subagents"))
-        except OSError:
-            dirs = []
+        if self.session_dirs_at is None or time.monotonic() - self.session_dirs_at >= SUB_DIRS_TTL:
+            self.session_dirs, self.session_dirs_at = self._scan_projects(), time.monotonic()
+        dirs = sorted(d / "subagents" for d in self.session_dirs.get(sid, ()) if (d / "subagents").is_dir())
         self.sub_dirs[sid] = (time.monotonic(), dirs)
         return dirs
+
+    @staticmethod
+    def _scan_projects() -> dict:
+        """{session id: [<project>/<session id> folders]} of every project folder (what `*/<sid>` would match)."""
+        out = {}
+        try:
+            projects = [e for e in os.scandir(projects_root()) if not e.name.startswith(".") and e.is_dir()]
+        except OSError:
+            return out
+        for proj in projects:
+            try:
+                for e in os.scandir(proj.path):
+                    if UUID_RE.fullmatch(e.name) and e.is_dir():
+                        out.setdefault(e.name, []).append(Path(e.path))
+            except OSError:
+                continue
+        return out
 
     def meta(self, path: Path) -> dict:
         try:
@@ -325,20 +379,30 @@ class Finder:
                 out.append(sub)
         for sdir in self.dirs(sid):
             path = sdir.parent.parent / f"{sid}.jsonl"
-            notes = self.notices.setdefault(path, Notices(path)).update()
+            notes = []                          # the parent's notices, read once the first sub-agent needs them
+
+            def get_notes(path=path, notes=notes):
+                if not notes:
+                    notes.append(self._reader(self.notices, "notices", path, Notices))
+                return notes[0]
+
             for mp in sorted(sdir.glob("agent-*.meta.json")):
-                sub = self._sub(mp, notes, parent_is_alive, now, show_all)
+                sub = self._sub(mp, get_notes, parent_is_alive, now, show_all)
                 if sub:
                     out.append(sub)
         return out
 
-    def _sub(self, meta_path: Path, notes: Notices, parent_is_alive, now: float, show_all: bool):
+    def _sub(self, meta_path: Path, get_notes, parent_is_alive, now: float, show_all: bool):
         aid = meta_path.name[len("agent-"):-len(".meta.json")]
         log = meta_path.with_name(f"agent-{aid}.jsonl")
         try:
             mtime = log.stat().st_mtime
         except OSError:
             mtime = None
+        old = mtime is None or now - mtime > SUB_RECENT_S
+        if not show_all and old and parent_is_alive is not True:
+            return None                       # finished or orphaned long ago: neither it nor its parent's notices are read
+        notes = get_notes()
         meta = self.meta(meta_path)
         status, at = notes.by_id.get(aid, (None, None))
         # a foreground call ends with its tool result; with no known shape only a notice counts (a background
@@ -346,9 +410,8 @@ class Finder:
         if status is None and meta.get("requestShape") == "foreground" and meta.get("toolUseId") in notes.results:
             err, at = notes.results[meta["toolUseId"]]
             status = "failed" if err else "completed"
-        old = mtime is None or now - mtime > SUB_RECENT_S
-        if not show_all and old and (status is not None or parent_is_alive is not True):
-            return None                       # finished (or orphaned) long ago: not even its transcript is read
+        if not show_all and old and status is not None:
+            return None                       # finished long ago: not even its transcript is read
         # resumed (SendMessage) after it ended: its transcript got a new user line after the end; compared on the
         # CLI's own timestamps, not on file times
         last_user = self.last_user_ts(log) if status is not None and at is not None else None
