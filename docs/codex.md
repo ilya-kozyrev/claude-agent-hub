@@ -92,6 +92,15 @@ Codex launches with `codex exec --json`; its `thread.started` event supplies the
 is appended to its inbox, which the brief tells it to read after each major step. No Claude cross-session API is
 needed. See [non-interactive Codex](https://learn.chatgpt.com/docs/non-interactive-mode).
 
+To another stage's hub, use `tell <stage> "…"` first. For a direct message, use only the registry address from
+`tell <stage> --address`; never select a session by its display name. Detached Codex hubs use `agent send` to the
+matched worker role, including after `hub takeover` registers it as `hub`. Native Codex sessions on a CLI with
+`queue` support use `codex queue --thread <registered UUID> --message "…"`. Resume is for a stopped worker.
+
+`hub takeover` checks detached PID/process-token identity or the existing shared daemon's read-only `thread/read`
+runtime status through `codex app-server proxy`. A missing/older CLI, unavailable daemon or unknown state is silent;
+rollout recency alone is not liveness evidence. The warning never stops a session.
+
 ## Full access and hook trust
 
 `--permission-mode bypassPermissions` is the detached default for both engines. Claude receives that mode;
