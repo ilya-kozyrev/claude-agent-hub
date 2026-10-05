@@ -326,11 +326,13 @@ async function closePane($: Api): Promise<string> {
   return 'agent-top pane closed'
 }
 
-/** The footer Button's press: opens the pane on the default view when closed, closes it when open. */
-async function toggle($: Api): Promise<void> {
-  await syncPane($)
-  if (isOpen) await closePane($)
-  else await openPane($, parseArgs(''))
+/**
+ * The footer Button's press: opens the pane on the default view when closed, closes it when open. It calls `ui.open`
+ * before its first await and hands the promise back to the press: an open the press is not seen behind is "unasked",
+ * and below 110 columns such a pane waits unplaced. `isOpen` follows ui.render and ui.close, so no `ui.panes` first.
+ */
+function toggle($: Api): Promise<unknown> {
+  return isOpen ? closePane($) : openPane($, parseArgs(''))
 }
 
 export const register: Register = on => {
@@ -399,7 +401,7 @@ export const register: Register = on => {
     return (
       <Box key="agent-top-footer" flexDirection="row">
         {modes.length > 0 ? <Text dimColor>{`${modes.join(' & ')} · `}</Text> : []}
-        <Button key="agent-top-toggle" label={label} dimColor onPress={() => void toggle($)} />
+        <Button key="agent-top-toggle" label={label} dimColor onPress={() => toggle($)} />
       </Box>
     )
   })
