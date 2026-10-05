@@ -13,8 +13,9 @@ sessions or choose their permission mode):
   AGENT_HUB_AUTO_HANDOFF_CHAIN         automatic handoffs in a row without the owner (default 10; 0 = never)
   AGENT_HUB_SUCCESSOR_ENGINE           inherit the selected engine, or claude | codex
   AGENT_HUB_SUCCESSOR_MODEL            the successor's model (default: the hub's own, from its transcript)
-  AGENT_HUB_SUCCESSOR_EFFORT           the Claude successor's effort: low | medium | high | xhigh | max (default high; the
-                                       hub's own effort is not readable from its session, and a CLI default is too low)
+  AGENT_HUB_SUCCESSOR_EFFORT           the Claude successor's effort: low | medium | high | xhigh | max (default: the hub's
+                                       own, read from its session by bin/session_effort.py — `hub effort` shows it and
+                                       its source; when it cannot be read `hub succeed` refuses, it never guesses)
   AGENT_HUB_SUCCESSOR_PERMISSION_MODE  inherit (default: the hub's own mode) or a `claude --permission-mode` value
   AGENT_HUB_SUCCESSOR_TIMEOUT          seconds to wait for the successor's takeover line (default 600)
 Chain state: <hub home>/<stage>/auto-handoff.json — `chain` (automatic handoffs since the owner last spoke) and
@@ -39,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
+import session_effort  # noqa: E402
 
 MARKER_RE = re.compile(r"\[agent-hub auto-handoff (\d+)/(\d+)\]")
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
@@ -64,7 +66,6 @@ BG_TIMEOUT_S = 60  # one `claude --bg` call
 # this belongs to a run that died.
 START_BUDGET_S = 240
 IN_PROGRESS = ("starting", "falling-back")
-DEFAULT_EFFORT = "high"  # the Claude successor's effort when neither --effort nor AGENT_HUB_SUCCESSOR_EFFORT says
 
 
 # What the outgoing hub tells the owner about a background successor (bin/autopilot.py `instruction` and `report`): where to
@@ -231,11 +232,7 @@ def owner_spoke(prompt) -> bool:
 # ---------------------------------------------------------------- the hub's own model and mode
 
 def find_transcript(sid: str) -> Optional[Path]:
-    if not sid:
-        return None
-    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
-    hits = sorted(base.glob(f"*/{sid}.jsonl"), key=lambda p: p.stat().st_mtime)
-    return hits[-1] if hits else None
+    return session_effort.find_transcript(sid)
 
 
 def transcript_model(path) -> Optional[str]:
@@ -266,6 +263,16 @@ def transcript_model(path) -> Optional[str]:
 def successor_model(given: Optional[str], transcript=None) -> Optional[str]:
     return given or configured_model() or transcript_model(
         transcript or find_transcript(os.environ.get("CLAUDE_CODE_SESSION_ID", "")))
+
+
+def hub_effort(data: dict) -> Optional[str]:
+    """What the hub of a hook input runs at now: the hook input's own `effort.level`, else the other sources
+    (session_effort). None = unknown; the instruction then names no --effort and `hub succeed` reads it itself, or
+    refuses."""
+    try:
+        return session_effort.current_effort(str(data.get("session_id") or "") or None, session_effort.hook_level(data))[0]
+    except hc.Failure:
+        return None
 
 
 def codex_context() -> dict:
@@ -320,11 +327,25 @@ def codex_policy(given: Optional[str], context: dict, cwd: Path) -> tuple:
     return sandbox, "never"
 
 
-def successor_effort(given: Optional[str]) -> str:
-    """--effort, else AGENT_HUB_SUCCESSOR_EFFORT, else high: the `claude --bg` default would start a hub at medium."""
+def successor_effort(given: Optional[str], model: Optional[str] = None, notes: Optional[list] = None,
+                     hook: Optional[str] = None) -> Optional[str]:
+    """--effort, else AGENT_HUB_SUCCESSOR_EFFORT, else the effort this session runs at now (session_effort); when that
+    cannot be read, a refusal (hc.Failure) — a guess would start the hub below its predecessor and nobody would see it.
+    A model without an effort setting (Haiku) gets None. `notes` receives where an inherited effort came from; `hook` is
+    `effort.level` of the hook input this runs for."""
     if given is not None and given not in hc.EFFORTS:
         raise hc.UsageError(f"--effort {given!r}: one of {', '.join(hc.EFFORTS)}")
-    return given or configured_effort() or DEFAULT_EFFORT
+    effort = given or configured_effort()
+    if effort or (model and "haiku" in model.lower()):
+        return effort or None
+    try:
+        found = session_effort.resolve(hook=hook)
+    except hc.Failure as e:
+        raise hc.Failure(f"{e}. No successor is started on a guessed effort: pass --effort <level> (the hub's own) or "
+                         "set AGENT_HUB_SUCCESSOR_EFFORT") from None
+    if notes is not None:
+        notes.append(f"effort {found.effort} inherited from this hub (source: {found.source} — {found.note})")
+    return found.effort
 
 
 def successor_mode(given: Optional[str], hub_mode: Optional[str] = None) -> str:
@@ -364,8 +385,9 @@ def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: 
 
 
 def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], now_block: bool,
-                block_k: str) -> str:
-    """The autopilot paragraph of the context budget's warning and deny reason."""
+                block_k: str, effort: Optional[str] = None) -> str:
+    """The autopilot paragraph of the context budget's warning and deny reason. `effort`: what the hub runs at now (the
+    hook input's); without one the command carries none and `hub succeed` reads it itself, or refuses."""
     when = ("Hand over now" if now_block else
             "Hand your shift to a successor yourself at the next quiet point (no agent waiting for your reply, no "
             "merge or lock operation in flight)")
@@ -383,9 +405,13 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
                 "release no locks and make no more tool calls. On ALARM, check `agent status`; retry with --again "
                 "only when the successor is dead. A chain limit stops automatic launches until the owner responds. "
                 f"At {block_k} only handoff/succeed, jlog/jwait and the HANDOFF file pass.")
+    effort = configured_effort() or effort
+    unread = ("" if effort or (model and "haiku" in model.lower()) else
+              " (your own effort could not be read here: `hub succeed` reads it itself and stops if it cannot — then "
+              "add --effort <your effort>)")
     return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` and fill "
             "its TODOs; "
-            f"(2) `{succeed_command(stage, model, mode, cwd, effort=successor_effort(None))}` (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
+            f"(2) `{succeed_command(stage, model, mode, cwd, effort=effort)}`{unread} (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
             "session, else a headless hub) and prints a `jwait` command; (3) run that `jwait` with Bash "
             "run_in_background: true. When it delivers the successor's start line, tell the owner one line — the "
             "successor's name and link from `hub succeed`, and plainly where it is: a background Remote Control session; "
@@ -427,7 +453,8 @@ class Successor:
         self.stage, self.n, self.handoff, self.model, self.mode = stage, n, handoff, model, mode
         self.cwd = self.root or cwd
         self.k, self.limit = k, limit
-        self.effort = successor_effort(effort)
+        self.cli_model = hc.model_map(cwd).get(model, model)  # `claude --bg` gets the id an AGENT_HUB_MODEL_MAP alias names
+        self.effort = successor_effort(effort, self.cli_model)
         self.succ = succ or n + 1
         self.worktree: Optional[Path] = None  # the successor's worktree once started
         self.tag = f"hub-{n}"
@@ -443,7 +470,6 @@ class Successor:
         old = hc.cli_warning(cli)
         if old:
             self.notes.append(old)
-        self.cli_model = hc.model_map(cwd).get(model, model)  # `claude --bg` gets the id an AGENT_HUB_MODEL_MAP alias names
         self.since_ms = 0  # `claude agents` rows started before this are not ours (an earlier chain's)
 
     @property
@@ -493,7 +519,7 @@ class Successor:
             argv += ["--worktree", self.wt_name]
         argv += hc.add_dir_args(cwd or self.cwd)
         argv += ["--model", self.cli_model]
-        if "haiku" not in self.cli_model.lower():  # Haiku has no effort setting (`agent spawn` skips it too)
+        if self.effort:  # none for Haiku, which has no effort setting (`agent spawn` skips it too)
             argv += ["--effort", self.effort]
         if flag:
             argv += ["--permission-mode", flag]
@@ -619,8 +645,9 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         role = f"hub-{self.succ}"
         brief = self.brief(why)
         argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--stage", self.stage, "--role", role, "--tag", role,
-                "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title,
-                "--effort", self.effort]
+                "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title]
+        if self.effort:
+            argv += ["--effort", self.effort]
         if self.root:
             # agent spawn's own worktree: <root>/.worktrees/<branch>, a new branch from origin's default branch
             branch = free_worktree_name(self.root, self.rc_name)
@@ -1013,7 +1040,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if retry.get("n") != succ or (retry.get("taken_over") and not replace):
         retry = {}  # --replace starts from the record of a successor that took over; --again only from one that did not
     engine = engines.selected(engine or hc.setting("AGENT_HUB_SUCCESSOR_ENGINE") or retry.get("engine"), cwd)
-    approval, sandbox_policy, effort = "never", None, None
+    approval, sandbox_policy, effort, effort_notes = "never", None, None, []
     if engine == "codex":
         context = codex_context()
         if retry.get("engine") == "codex":
@@ -1034,12 +1061,13 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             sandbox_policy = {"type": mode}
         sandbox_policy = engines.sandbox_policy(sandbox_policy)
     else:
-        # --again without a new --effort: the previous attempt's effort, not the default
-        effort = successor_effort(effort_arg or (retry.get("effort") if retry.get("engine") != "codex" else None))
         model = successor_model(model or (retry.get("model") if replace else None))
         if not model:
             raise hc.UsageError("no model for the successor: pass --model (the hub's transcript was not found and "
                                 "AGENT_HUB_SUCCESSOR_MODEL is not set)")
+        # --again without a new --effort: the previous attempt's effort, not the hub's own now
+        effort = successor_effort(effort_arg or (retry.get("effort") if retry.get("engine") != "codex" else None),
+                                  hc.model_map(cwd).get(model, model), effort_notes)
         problem = hc.model_problem(model, cwd)
         mode = successor_mode(mode or (retry.get("mode") if replace else None))
         if mode not in MODES:
@@ -1085,6 +1113,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         s = (CodexSuccessor(stage, n, handoff, model, mode, cwd, k, limit, approval, sandbox_policy, effort, succ) if engine == "codex"
              else Successor(stage, n, handoff, model, mode, cwd, k, limit, succ, effort))
         s.notes.extend(notes)
+        s.notes.extend(effort_notes)
         if replaced:
             s.notes.append(f"replaces the earlier hub-{succ}: {replaced}")
         if engine == "codex" and context.get("approval_policy") not in (None, "never"):
@@ -1103,6 +1132,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
                                                  else [s.claude] + s.bg_argv(mode))))
         if engine == "codex":
             print("\nCodex exec policy preview:\n  " + " ".join(shlex.quote(x) for x in s.dry_argv()))
+        for note in effort_notes:
+            print(f"[plan] {note}")
         return 0
     if engine == "codex":
         why = "the Codex engine uses a detached successor"
@@ -1186,7 +1217,8 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
                   f"`{tool('hub')} succeed --stage {stage} --handoff {shlex.quote(str(pend.get('handoff', '<the handoff>')))}`")
             return 1
         bg = dict(pend, kind="bg") if pend.get("kind") == "falling-back" else pend  # a stale run of --fallback
-        effort = successor_effort(bg.get("effort"))  # a bad setting is refused before the reservation is saved
+        # a bad setting, or an effort that cannot be read, is refused before the reservation is saved
+        effort = successor_effort(bg.get("effort"), hc.model_map(Path(bg.get("cwd") or os.getcwd())).get(bg["model"], bg["model"]))
         data["pending"] = dict(bg, kind="falling-back", at=now, bg_at=bg.get("bg_at") or bg.get("at"))
         save_state(stage, data)
     timeout_s = takeover_timeout()

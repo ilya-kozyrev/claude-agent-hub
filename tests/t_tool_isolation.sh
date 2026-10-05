@@ -105,4 +105,28 @@ HUB_TAG=x hook $P/plain > $P/h7.out; [ -s $P/h7.out ]; check $? 0 "a hub agent (
 (export AGENT_HUB_HOME=$P/nohome; hook $P/plain > $P/h9.out; [ ! -s $P/h9.out ] && [ ! -e $P/nohome ]); check $? 0 "…also outside any scope"
 mkdir $P/nohome; (export AGENT_HUB_HOME=$P/nohome; hook $P/plain > $P/h10.out); [ -s $P/h10.out ]; check $? 0 "positive control: once the hub home exists the hook speaks"
 printf 'not json' | PATH="$P/shadow:$BP:$P/pybin" python3 $HOOKS/path_shadow.py > /dev/null; check $? 0 "fail-open: a broken event does not fail the hook"
+
+# ---- $HUB_BIN: a --bg session gets the daemon's environment, with the HUB_BIN of the plugin version the daemon started under
+rm -rf $P/shadow; export AGENT_HUB_HOME=$P/nohome  # no shadow, an existing hub home: only HUB_BIN is under test
+hubbin(){ # hubbin STALE|CURRENT|UNSET|NOFILE: runs the hook the way Claude Code does for SessionStart, env file in $P/envfile
+  rm -f $P/envfile; : > $P/envfile
+  case $1 in
+    STALE)   env HUB_BIN=$P/old-0.7.1/bin CLAUDE_ENV_FILE=$P/envfile CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null;;
+    CURRENT) env HUB_BIN=$BP CLAUDE_ENV_FILE=$P/envfile CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null;;
+    UNSET)   env -u HUB_BIN CLAUDE_ENV_FILE=$P/envfile CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null;;
+    NOFILE)  env -u CLAUDE_ENV_FILE HUB_BIN=$P/old-0.7.1/bin CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null;;
+  esac
+}
+hubbin STALE > $P/hb1.out; check $? 0 "HUB_BIN: a stale value (the daemon's)"
+check "$(cat $P/envfile)" "export HUB_BIN=$BP" "…the env file now carries this plugin's bin/"
+python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert c.count(chr(10))==0 and "old-0.7.1/bin" in c and sys.argv[2] in c, c' $P/hb1.out "$BP"; check $? 0 "…and one line says what it replaced"
+hubbin CURRENT > $P/hb2.out; check "$(wc -c < $P/envfile | tr -d ' '):$(wc -c < $P/hb2.out | tr -d ' ')" "0:0" "negative: a current HUB_BIN — nothing written, nothing said"
+ln -s $BP $P/link-bin; (rm -f $P/envfile; : > $P/envfile; env HUB_BIN=$P/link-bin CLAUDE_ENV_FILE=$P/envfile CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null > $P/hb3.out)
+check "$(wc -c < $P/envfile | tr -d ' '):$(wc -c < $P/hb3.out | tr -d ' ')" "0:0" "negative: …also when it is a symlink to this bin/"
+hubbin UNSET > $P/hb4.out; check "$(cat $P/envfile):$(wc -c < $P/hb4.out | tr -d ' ')" "export HUB_BIN=$BP:0" "an unset HUB_BIN is set, without a notice (nothing was stale)"
+hubbin NOFILE > $P/hb5.out; check "$?:$(wc -c < $P/hb5.out | tr -d ' ')" "0:0" "no CLAUDE_ENV_FILE (Codex): nothing to write, nothing said, no failure"
+(export AGENT_HUB_HOME=$P/nohome2; hubbin STALE > $P/hb6.out; check "$(wc -c < $P/envfile | tr -d ' '):$(wc -c < $P/hb6.out | tr -d ' ')" "0:0" "negative: on a machine without a hub home the hook still writes nothing")
+mkdir -p $P/shadow; printf '#!/bin/sh\n' > $P/shadow/hub; chmod +x $P/shadow/hub
+env HUB_BIN=$P/old-0.7.1/bin CLAUDE_ENV_FILE=$P/envfile CLAUDE_PLUGIN_ROOT=$(dirname $BP) PATH="$P/shadow:$BP:$P/pybin" python3 $HOOKS/path_shadow.py < /dev/null > $P/hb7.out
+python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert "HUB_BIN" in c and "`hub` is" in c, c' $P/hb7.out; check $? 0 "a stale HUB_BIN and a shadowing command: both lines, one hook output"
 exit $fail

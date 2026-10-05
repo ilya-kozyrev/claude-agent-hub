@@ -4,6 +4,13 @@ hub, jlog, jwait, agent, ask, roles, lock, …) comes before the plugin's bin/ o
 the usual one. The agent-hub commands then run the other program, and an agent's `jlog` writes to a journal the hub never
 reads.
 
+Also keeps $HUB_BIN, which the briefs and tools call as "$HUB_BIN/jlog", pointing at this plugin's bin/: a `claude --bg`
+session gets the environment of the long-running Claude Code daemon, and with it the HUB_BIN of whichever plugin version
+was current when the daemon started, so a background hub would run an old jlog and jwait. When $HUB_BIN is unset or points
+elsewhere the hook appends `export HUB_BIN=<this bin/>` to $CLAUDE_ENV_FILE (Claude Code runs that file before every
+Bash command of the session; without the variable — Codex — nothing is written) and, if it replaced a stale value, says so
+in one line.
+
 Reads PATH as this hook process sees it; nothing is run. Does nothing, and writes nothing, until a hub home exists
 (<hub home>: `hub start` creates it): a machine that never ran a hub is left alone.
 Scope as in questions.py: a session that starts in the hub home, in a repository with `.agent-hub/`, under
@@ -15,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -22,6 +30,22 @@ from pathlib import Path
 def bin_dir() -> Path:
     root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     return Path(root) / "bin"
+
+
+def correct_hub_bin() -> str:
+    """Write HUB_BIN=<this plugin's bin/> into $CLAUDE_ENV_FILE when the session's value is unset or points elsewhere.
+    Returns the one-line notice when it replaced a stale value, else ""."""
+    env_file = os.environ.get("CLAUDE_ENV_FILE")
+    want = bin_dir()
+    have = os.environ.get("HUB_BIN", "").strip()
+    if not env_file or (have and os.path.realpath(have) == os.path.realpath(want)):
+        return ""
+    with open(env_file, "a", encoding="utf-8") as f:
+        f.write(f"export HUB_BIN={shlex.quote(str(want))}\n")
+    if not have:
+        return ""
+    return (f"agent-hub: $HUB_BIN was {have}, another plugin version (a background session inherits the daemon's "
+            f"environment); set to {want} for this session's commands")
 
 
 def main() -> int:
@@ -36,22 +60,34 @@ def main() -> int:
     hc.use_cwd(event.get("cwd"))
     if not hc.root().is_dir():
         return 0
+    lines = []
+    try:
+        notice = correct_hub_bin()
+    except OSError:
+        notice = ""
+    if notice:
+        lines.append(notice + ". Tell the user about it in one line.")
     shadowed = hc.shadowed_tools()
     if not shadowed:
-        return 0
+        return emit(lines)
     seen = None
     if not (os.environ.get("HUB_TAG") or hc.in_scope(event.get("cwd") or os.getcwd())):
         seen = hc.state_dir() / "path-shadow" / "seen"
         signature = "\n".join(sorted(f"{n}={p}" for n, p in shadowed))
         try:
             if seen.read_text(encoding="utf-8") == signature:
-                return 0
+                return emit(lines)
         except OSError:
             pass
         hc.atomic_write(seen, signature)
-    line = "agent-hub: " + hc.shadow_warning(shadowed) + ". Tell the user about it in one line."
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}},
-                     ensure_ascii=False))
+    lines.append("agent-hub: " + hc.shadow_warning(shadowed) + ". Tell the user about it in one line.")
+    return emit(lines)
+
+
+def emit(lines: list) -> int:
+    if lines:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}},
+                         ensure_ascii=False))
     return 0
 
 

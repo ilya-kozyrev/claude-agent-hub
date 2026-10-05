@@ -23,7 +23,7 @@ Events:
 
 Autopilot (AGENT_HUB_AUTO_HANDOFF=on, bin/autopilot.py), in the main thread of a session registered as a stage's hub
 (roles `hub`): the warning becomes the instruction to hand the shift to a successor at the next quiet point — `hub
-handoff`, `hub succeed` with the hub's model and permission mode filled in, `jwait`; at the block threshold the deny
+handoff`, `hub succeed` with the hub's model, effort (the hook input's `effort.level`) and permission mode filled in, `jwait`; at the block threshold the deny
 reason says "hand over now" and Bash, Write, Edit and NotebookEdit are gated too: Bash passes only when every command of
 the line is `hub handoff`, `hub succeed`, `jlog` or `jwait` (no substitution, no subshell), a file tool only on a
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
@@ -329,7 +329,8 @@ def main() -> None:
     def plan(now_block: bool) -> str:
         model = ap.successor_model(None, path)
         mode = ap.configured_mode() or data.get("permission_mode") or None
-        return ap.instruction(hub_stage, model, mode, data.get("cwd") or None, now_block, fmt(block))
+        return ap.instruction(hub_stage, model, mode, data.get("cwd") or None, now_block, fmt(block),
+                              ap.hub_effort(data))
 
     if event == "PreToolUse":
         if tokens < block:
