@@ -52,7 +52,7 @@ the person the hub works for. Everything they share is a file:
 
 | File | Written by | Read by |
 |---|---|---|
-| `<stage>/coordinator/work/journal-YYYY-MM-DD.md` — one line per event, `- HH:MM [tag] text` | `jlog`, `agent`, `hub`, `roles broadcast` | `jwait`, `agent-top`, humans |
+| `<stage>/coordinator/work/journal-YYYY-MM-DD.md` — one line per event, `- HH:MM [tag] text` | `jlog`, `tell`, `agent`, `hub`, `roles broadcast` | `jwait`, `agent-top`, humans |
 | `<stage>/agents/<role>/` — `brief.md`, `inbox.md`, `log.jsonl`, `meta.json` | `agent spawn/send` and the selected CLI run | `agent status`, `agent-top` |
 | `<stage>/roles.json` — who plays which role, by full session id | `roles`, `agent`, `hub start/takeover` | `roles`, `jlog` (tag lookup) |
 | `<stage>/questions.md` — owner questions and agents' own decisions | `ask` | `ask`, SessionStart hook, `hub` digest |
@@ -64,7 +64,7 @@ session start says so, call the tools as `<plugin-root>/bin/<tool>` and tell the
 `--help` with the full syntax. Stage: `--stage`, else `$HUB_STAGE`, else `default`. The hub's tag is `hub-<N>` (N = shift number, derived).
 
 **Minimal mode.** One hub and a few agents need `hub start` once (it gives the hub its journal tag) and then three
-tools: `agent` (spawn, status, send, stop), `jlog` and `jwait`. `roles`, `ask`, `lock`, `hub takeover/handoff` and the
+tools: `agent` (spawn, status, send, stop), `jlog` and `jwait`. `roles`, `ask`, `lock`, `tell` (a line to another stage's hub), `hub takeover/handoff` and the
 handoff skill matter once you have more than one interactive session, more than one shift, or a shared resource;
 leave them until then.
 
@@ -146,9 +146,14 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
   never rewrite or delete a line; correct it with a new line that says what it corrects. When you write into another
   stage's journal, do not sign as `hub`: that stage's `jwait --tag hub` treats `hub` lines as its own and does not wake.
   `jlog` signs a foreign-journal line `<your stage>-<tag>` (`[core-c-hub-30]`); your `jwait --tag hub-30` hears the
-  answer `@core-c-hub-30`. To reach another stage's hub, write `@hub` (or `@<that stage>-hub-<N>`) in that stage's
-  journal, or message the session from `roles --stage <X> get hub`; never pick a session by its name in `ListAgents`:
-  a replaced hub may still run under the same name.
+  answer `@core-c-hub-30`.
+- To another stage's hub write in its journal: `tell <stage> "…"` (`--question` for a question) — it addresses `@hub`
+  and signs you correctly. The answer reaches you only in your own journal: the other hub answers with
+  `tell <your stage> "…"`; its `jwait` does not read your journal. A headless agent reads its inbox, so `tell` hands
+  the text to `agent send` itself.
+- A direct cross-session message only when the journal cannot do (for example the other hub must act before its next
+  wake-up), and only to the address from `tell <stage> --address` / `roles --stage <stage> get hub` — never to a session
+  chosen by its name in a list (`ListAgents`): a replaced hub can still run under the same name.
 - `roles list | get <role> | set <role> <id> | retire` — the stage's role registry with full session ids; `set` infers
   the kind from the id (`local_…` = Claude Desktop, a uuid = terminal). For Claude cross-session messaging, resolve the address with `roles get <role>`.
   For detached workers of either engine, use `agent send`; Codex has no Claude `SendMessage` API. `roles broadcast --to r1,r2|--all "text"` — registered recipients and one journal line `@r1 @r2 text`.

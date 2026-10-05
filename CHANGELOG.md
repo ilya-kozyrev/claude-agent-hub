@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`tell <stage> "text"` writes to another stage's hub.** It reads the holder of the role (default `hub`, `--role`) from
+  that stage's registry, appends `@hub text` (`@hub QUESTION text` with `--question`) to its journal signed with the
+  caller's stage-qualified tag, and prints the registered direct address: session id, kind, title, the name for a
+  cross-session message (from `claude agents --json` by session id; skipped when the CLI does not answer), or
+  `agent send --stage <stage> <role>`, which `tell` runs itself for a headless agent. `--address` prints only the address and writes nothing.
+  A headless holder gets the text through `agent send` (it reads its inbox, not a journal). An answer comes back in the
+  asker's own journal (`tell <asker's stage>`). `--address` takes no text. An unknown stage or no holder exits 1 and lists the stages that have one. The hub skill now says: the journal first,
+  a direct message only to the registry address, never to a session picked by its name in a list.
 - **Hub-to-hub addressing no longer loses requests.** `jwait --tag hub-30` on stage `core-c` also wakes on the
   stage-qualified address `@core-c-hub-30` (and `--tag hub` on `@core-c-hub`); `@hub-300`, `@xcore-c-hub-30` and another
   stage's `@dolya-hub-30` still do not match. `jlog` writing into another stage's journal signs a derived tag
@@ -15,8 +23,6 @@
   (never a refusal) when the working directory is not inside a git repository (a Desktop session started under "No
   folder" runs in `~` or a temp dir), or when the checkout has no `.agent-hub/` while the remote default branch
   (`origin/HEAD`, else `origin/main`) has it — the project's rules, locks and brief footer would silently not apply.
-- The hub skill says how to reach another stage's hub: `@hub` or `@<stage>-hub-<N>` in its journal, or the session
-  from `roles --stage <X> get hub`, never a session picked by name in `ListAgents`.
 
 - **Pixel-art illustrations explain worker coordination and hub handoff.** The README shows distinct worker tasks
   feeding a shared journal; the handoff scene shows OLD HUB → FRESH HUB, with all continuing workers under the fresh hub.
