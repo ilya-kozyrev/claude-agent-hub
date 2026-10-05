@@ -1008,8 +1008,12 @@ def tag_is(tag: str, base: str) -> bool:
     return any(c == base or c.startswith(base + "/") for c in cands)
 
 
-def mentions(text: str, tag: str) -> bool:
-    return re.search(r"(?<![\w@])@" + re.escape(tag) + r"(?![\w-])", text) is not None
+def mentions(text: str, tag: str, stage: Optional[str] = None) -> bool:
+    """text addresses @tag; with a stage, also its stage-qualified form @<stage>-<tag> (how another stage's hub signs
+    and answers: `@core-c-hub-30`). The leading and trailing guards keep @hub-30 apart from @hub-300 and
+    @xcore-c-hub-30."""
+    names = [tag] + ([f"{stage}-{tag}"] if stage else [])
+    return any(re.search(r"(?<![\w@])@" + re.escape(n) + r"(?![\w-])", text) for n in names)
 
 
 def last_line_by_tag(stage: str, tag: str, days: int = 2) -> Optional[dt.datetime]:
@@ -1115,6 +1119,51 @@ def caller_tag(stage: str) -> Optional[str]:
     if hit:
         return hit[1].get("tag") or hit[0]
     return None
+
+
+def registered_tag(stage: str) -> Optional[str]:
+    """The tag this session ($CLAUDE_CODE_SESSION_ID) has in the registry of `stage`, else None."""
+    try:
+        hit = role_for_session(stage, session_id())
+    except (Failure, UsageError):
+        return None
+    return (hit[1].get("tag") or hit[0]) if hit else None
+
+
+def other_stage_tag(target: str) -> Optional[tuple]:
+    """(stage, tag) of this session in the registry of a stage other than `target`, the first (sorted) that lists it."""
+    if not session_id():
+        return None
+    try:
+        names = sorted(d.name for d in root().iterdir() if d.name != target and (d / "roles.json").is_file())
+    except OSError:
+        return None
+    for name in names:
+        tag = registered_tag(name)
+        if tag:
+            return name, tag
+    return None
+
+
+def signing_tag(stage: str) -> Optional[str]:
+    """The tag a line written to `stage` is signed with. Another stage's hub or agent signs `<its stage>-<tag>`
+    (`core-c-hub-30` in the Dolya journal), so the reader's @-answer names the writer's stage and the writer's jwait
+    hears it. The caller's own stage is $HUB_STAGE, else the registry that lists its session. Same stage, or an own
+    stage that cannot be told: caller_tag(stage) as it is."""
+    tag = caller_tag(stage)
+    own = os.environ.get("HUB_STAGE", "").strip()
+    if own == stage or (tag and not os.environ.get("HUB_TAG")):  # the registry of this very stage named the caller
+        return tag
+    if tag and registered_tag(stage):
+        return tag
+    if not own:
+        found = other_stage_tag(stage)
+        if found is None:
+            return tag
+        own, tag = found[0], tag or found[1]
+    elif not tag:
+        tag = registered_tag(own) if STAGE_RE.fullmatch(own) else None
+    return f"{own}-{tag}" if tag and STAGE_RE.fullmatch(own) else tag
 
 
 def run_main(fn, argv) -> int:

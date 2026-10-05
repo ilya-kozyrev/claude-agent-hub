@@ -8,7 +8,7 @@ FAKE_BG=bypass            `--bg --permission-mode bypassPermissions` exits 1 wit
 FAKE_BG=untrusted         `--bg` exits 1 "Workspace not trusted" unless the cwd is $FAKE_TRUSTED
 FAKE_BG=noid              `--bg` prints nothing; `agents --json` lists the session
 FAKE_BG=hang              `--bg` sleeps FAKE_HANG seconds (5) and prints nothing
-FAKE_AGENTS, FAKE_AGENTS_SEQ, FAKE_ON_LOGS: see the `agents` and `logs` branches
+FAKE_AGENTS (late|stale|none|prev|prevgone|fail), FAKE_PREV_SID, FAKE_AGENTS_SEQ, FAKE_ON_LOGS: see the `agents` and `logs` branches
 FAKE_LOGIN=no             `auth status` says loggedIn false
 FAKE_LOGS=link (default)  `logs` prints ANSI screen text with a Remote Control link
 FAKE_LOGS=notloggedin     `logs` prints "Not logged in · Run /login";  FAKE_LOGS=none: no link
@@ -52,7 +52,15 @@ elif cmd == "agents":
     old = {"kind": "background", "id": "bg-older", "sessionId": "o", "name": "stage-a-hub-2", "startedAt": 1}
     new = {"kind": "background", "id": "bg-from-list", "sessionId": "s", "name": "stage-a-hub-2",
            "startedAt": int(time.time() * 1000)}
-    rows = {"late": [new, old], "stale": [old], "none": []}[which]
+    # prev: a `done` background session with a pid, sessionId $FAKE_PREV_SID (the hub a takeover replaced);
+    # prevgone: the same without a pid, state done; fail: no JSON, exit 1
+    if which == "fail":
+        sys.stderr.write("fake claude: agents failed\n")
+        sys.exit(1)
+    prev = {"kind": "background", "id": os.environ.get("FAKE_PREV_SID", "p")[:8], "sessionId": os.environ.get("FAKE_PREV_SID", "p"),
+            "name": "Hub stage-a #16", "pid": 4242, "status": "idle", "state": "done", "startedAt": 1}
+    rows = {"late": [new, old], "stale": [old], "none": [], "prev": [prev],
+            "prevgone": [{k: v for k, v in prev.items() if k != "pid"}]}[which]
     print(json.dumps([{"kind": "interactive", "sessionId": "x", "name": "other"}] + rows))
 elif cmd in ("stop", "rm"):
     print(f"{cmd} {argv[1] if len(argv) > 1 else ''}")

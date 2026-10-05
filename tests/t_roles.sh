@@ -19,6 +19,14 @@ $B/roles set term2 not-a-uuid --kind cli >/dev/null 2>&1; check $? 2 "negative: 
 $B/roles get nobody >/dev/null 2>&1; check $? 1 "negative: get unknown role"
 # jlog picks the tag from the registry by CLAUDE_CODE_SESSION_ID
 out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog "tag check"); echo "$out" | grep -q '\[hub-17\] tag check'; check $? 0 "jlog tag from registry"
+# jlog into another stage signs with the caller's stage: [stage-a-hub-17] in stage-b's journal
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b "from afar"); echo "$out" | grep -q '\[stage-a-hub-17\] from afar'; check $? 0 "jlog to another stage: $HUB_STAGE-qualified registry tag"
+out=$(env -u HUB_STAGE CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b "no HUB_STAGE"); echo "$out" | grep -q '\[stage-a-hub-17\] no HUB_STAGE'; check $? 0 "…own stage found from the registry when HUB_STAGE is unset"
+out=$(HUB_TAG=hub-3-qa $B/jlog --stage stage-b "env tag"); echo "$out" | grep -q '\[stage-a-hub-3-qa\] env tag'; check $? 0 "…\$HUB_TAG is qualified with \$HUB_STAGE too"
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-b --tag mine "explicit"); echo "$out" | grep -q '\[mine\] explicit'; check $? 0 "negative: an explicit --tag is written as given"
+out=$(CLAUDE_CODE_SESSION_ID=$HC $B/jlog --stage stage-a "same stage"); echo "$out" | grep -q '\[hub-17\] same stage'; check $? 0 "negative: same stage, the tag is unchanged"
+out=$(HUB_TAG=hub-3-qa $B/jlog --stage stage-a "same stage env"); echo "$out" | grep -q '\[hub-3-qa\] same stage env'; check $? 0 "negative: same stage with \$HUB_TAG, unchanged"
+out=$(env -u HUB_STAGE HUB_TAG=hub-3-qa $B/jlog --stage stage-b "unknown own stage"); echo "$out" | grep -q '\[hub-3-qa\] unknown own stage'; check $? 0 "negative: own stage unknown, as before"
 # budget: 10 per sender; broadcast records and writes one journal line
 check "$($B/roles budget hub p3)" "10 (sent to this recipient: 0)" "budget starts at 10"
 for i in 1 2 3 4 5 6 7 8; do $B/roles sent hub p3 >/dev/null; done

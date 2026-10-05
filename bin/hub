@@ -46,7 +46,10 @@ target state is already there is skipped as "already done", so a re-run finishes
   3. the project step: an executable takeover.sh from the config layers (<hub home>/<stage>/, the current
      repository's .agent-hub/, the hub home), run as `takeover.sh check` / `takeover.sh apply` with HUB_STAGE,
      HUB_N, HUB_TAG, HUB_NAME, HUB_SESSION, HUB_CLI_SESSION, HUB_PREVIOUS, HUB_TAKEOVER_AT, HUB_HANDOFF set.
-  4. roles set hub <session> --tag hub-<n>.
+  4. roles set hub <session> --tag hub-<n>. When the hub registered before is still running (`claude agents --json`;
+     a `done` background session that keeps its pid counts), one ATTENTION line, also in the digest, says that other hubs
+     can still message it by name and how to stop it (`claude stop <id>`, `claude rm <id>`; a Desktop session: archive
+     it). Nothing is stopped.
   5. jlog "[hub-<n>] start: …".
   Then prints a digest ≤ 3 KB: handoff § 0, the ask register (first line "awaiting execution: N (ids)" —
   owner answers without `ask done`; then open questions, recent owner answers and agent decisions — check
@@ -414,7 +417,7 @@ def hub_notes_line(stage: str) -> str:
     return "\n".join(out)
 
 
-def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = ()) -> str:
+def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), live: str = "") -> str:
     tag = f"hub-{n}"
     # the first jwait replays everything since the predecessor wrote the handoff
     since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
@@ -422,6 +425,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
+        (f"ATTENTION: {live}" if live else "", 600, ""),
         (hub_notes_line(stage), 300, ""),
         ("First jwait (Bash, run_in_background: true; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
@@ -434,6 +438,54 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     ]
     out = "\n\n".join(cut(t, lim, where) for t, lim, where in parts if t)
     return cut(out, DIGEST_BYTES)
+
+
+# ---------------------------------------------------------------- the replaced hub that still runs
+
+def running_session(cli_id: str):
+    """The `claude agents --json` row of a session that still runs (it has a pid, or reports a live status — a `done`
+    background session that keeps its pid still accepts messages), else None. Bounded and silent: any failure of the
+    CLI is None, never an error."""
+    if not cli_id:
+        return None
+    try:
+        cli = hc.find_claude(persist=False)
+        if cli is None:
+            return None
+        res = subprocess.run([cli.path, "agents", "--json"], capture_output=True, text=True, timeout=10,
+                             env=autopilot.child_env(), stdin=subprocess.DEVNULL)
+        rows = json.loads(res.stdout)
+    except (hc.Failure, OSError, subprocess.SubprocessError, ValueError):
+        return None
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict) or cli_id not in (r.get("sessionId"), r.get("id")):
+            continue
+        if r.get("pid") or (r.get("state") != "done" and r.get("status") in ("busy", "idle", "waiting", "running")):
+            return r
+    return None
+
+
+def live_previous_warning(prev: dict, new_session: str, new_cli: str) -> str:
+    """One ATTENTION text when the hub registered before the takeover (`prev`, its roles record) still runs, else "".
+    Other hubs find it by name (ListAgents) and message it instead of the registered hub; nothing is stopped here."""
+    if not prev or {prev.get("session"), prev.get("cli_session_id")} & {new_session, new_cli}:
+        return ""
+    desktop = str(prev.get("session") or "").startswith("local_")
+    cli_id = prev.get("cli_session_id") or ("" if desktop else str(prev.get("session") or ""))
+    row = running_session(cli_id)
+    if row is None:
+        return ""
+    who = f"\"{prev.get('title') or row.get('name') or prev.get('tag') or '?'}\" ({prev.get('tag') or 'hub'}, sid {cli_id[:8]}"
+    who += f", pid {row['pid']})" if row.get("pid") else ")"
+    if desktop:
+        stop = f"archive it in Desktop ({prev['session']})"
+    elif row.get("kind") == "background":
+        rid = row.get("id") or cli_id
+        stop = f"`claude stop {rid}`, then `claude rm {rid}`"
+    else:
+        stop = "close its terminal session"
+    return (f"the previous hub {who} still runs: other hubs can still message it by name and it answers — "
+            f"stop it: {stop}. Nothing was stopped.")
 
 
 # ---------------------------------------------------------------- takeover steps
@@ -716,6 +768,7 @@ def cmd_takeover(a) -> int:
                   lambda: run_step(step, "check", step_env),
                   short="takeover.sh")
 
+    prev_rec = dict(hc.roles_load(stage)["roles"].get("hub") or {})
     roles_cli = load_script("roles")
     plan.step(f"roles: hub → {session} [{tag}]",
               lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
@@ -740,8 +793,11 @@ def cmd_takeover(a) -> int:
             data["roles"]["hub"]["engine"] = engines.selected()
             hc.roles_save(stage, data)
         autopilot.on_takeover(stage, n, a.auto_handoff)  # the automatic successor keeps the chain; anyone else resets it
+    live = live_previous_warning(prev_rec, session, cli)
+    if live:
+        print(f"ATTENTION: {live}")
     print()
-    print(digest(stage, n, name, handoff, plan.done, notes))
+    print(digest(stage, n, name, handoff, plan.done, notes, live))
     return 0
 
 

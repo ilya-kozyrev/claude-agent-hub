@@ -144,8 +144,11 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
 
 - `jlog "text"` — a journal line with your tag (`--tag`, `$HUB_TAG` or the registry). The journal is append-only:
   never rewrite or delete a line; correct it with a new line that says what it corrects. When you write into another
-  stage's journal, use your own tag (`--tag`), not `hub`: that stage's `jwait --tag hub` treats `hub` lines as its own
-  and does not wake.
+  stage's journal, do not sign as `hub`: that stage's `jwait --tag hub` treats `hub` lines as its own and does not wake.
+  `jlog` signs a foreign-journal line `<your stage>-<tag>` (`[core-c-hub-30]`); your `jwait --tag hub-30` hears the
+  answer `@core-c-hub-30`. To reach another stage's hub, write `@hub` (or `@<that stage>-hub-<N>`) in that stage's
+  journal, or message the session from `roles --stage <X> get hub`; never pick a session by its name in `ListAgents`:
+  a replaced hub may still run under the same name.
 - `roles list | get <role> | set <role> <id> | retire` — the stage's role registry with full session ids; `set` infers
   the kind from the id (`local_…` = Claude Desktop, a uuid = terminal). For Claude cross-session messaging, resolve the address with `roles get <role>`.
   For detached workers of either engine, use `agent send`; Codex has no Claude `SendMessage` API. `roles broadcast --to r1,r2|--all "text"` — registered recipients and one journal line `@r1 @r2 text`.

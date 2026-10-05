@@ -9,6 +9,7 @@ PREV=12121212-1212-4121-8121-121212121212; PREV_CLI=34343434-3434-4343-8343-3434
 NEW=77777777-7777-4777-8777-777777777777; NEW_CLI=eeeeeeee-7777-4777-8777-777777777777
 OLD=66666666-6666-4666-8666-666666666666; OLD_CLI=cccccccc-6666-4666-8666-666666666666
 STEWARD=55555555-5555-4555-8555-555555555555
+export CLAUDE_BIN=$T/fake_claude_bg.py FAKE_AGENTS=none FAKE_BG_LOG=$(mktemp -d)/bg.log   # never the real `claude agents`
 mk $PREV $PREV_CLI "Hub stage-a #16"; mk $NEW $NEW_CLI "Hub stage-a #17"; mk $OLD $OLD_CLI "Hub stage-a #14"
 mk 88888888-8888-4888-8888-888888888888 dddddddd-8888-4888-8888-888888888888 "archived" true
 # setup <coordinator value> <extra: none|steward|other-repo>
@@ -128,4 +129,21 @@ TERM_ID=abababab-abab-4bab-8bab-abababababab
 $B/hub takeover --stage stage-a --n 17 --session $TERM_ID > $R/t11.out 2>&1; check $? 0 "takeover by a terminal session uuid"
 check "$(holder stage webapp)" $TERM_ID "locks recorded on the terminal session"
 $B/roles --stage stage-a list | grep -q "^hub .*cli .*$TERM_ID"; check $? 0 "hub role recorded as kind cli"
+# 12. the replaced hub still runs: one ATTENTION line (output and digest), nothing stopped; nothing when it is gone
+BG=abcdef12-3456-4789-8abc-def123456789
+runtake(){ setup local_$PREV none; $B/roles --stage stage-a set hub $1 --tag hub-16 ${2:-} >/dev/null || return 1
+           FAKE_AGENTS=$3 FAKE_PREV_SID=$4 $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12.out 2>&1; }
+runtake local_$PREV "" prev $PREV_CLI; check $? 0 "takeover over a Desktop hub that still runs"
+check "$(grep -c 'ATTENTION: the previous hub' $R/t12.out)" 2 "live previous hub: ATTENTION in the output and in the digest"
+grep -q 'archive it in Desktop (local_'$PREV')' $R/t12.out && grep -q 'message it by name' $R/t12.out; check $? 0 "…a Desktop session: archive it, other hubs can message it by name"
+runtake $BG "--kind cli" prev $BG; check $? 0 "takeover over a background hub that is done but keeps its pid"
+grep -q 'ATTENTION: the previous hub.*pid 4242' $R/t12.out && grep -q 'claude stop abcdef12`, then `claude rm abcdef12`' $R/t12.out; check $? 0 "…a background session: claude stop / claude rm"
+! grep -q '"argv": \["\(stop\|rm\)"' $FAKE_BG_LOG; check $? 0 "…and nothing is stopped by the takeover"
+runtake $BG "--kind cli" none $BG; check $? 0 "takeover over a hub that is gone"
+! grep -q 'previous hub .* still runs' $R/t12.out; check $? 0 "negative: gone (not listed) → no warning"
+runtake $BG "--kind cli" prevgone $BG; ! grep -q 'previous hub .* still runs' $R/t12.out; check $? 0 "negative: listed as done without a pid → no warning"
+runtake $BG "--kind cli" fail $BG; rc=$?; check $rc 0 "the CLI call fails: takeover still succeeds"
+! grep -q 'previous hub .* still runs' $R/t12.out; check $? 0 "negative: CLI failure → silent"
+FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12b.out 2>&1
+! grep -q 'previous hub .* still runs' $R/t12b.out; check $? 0 "negative: a re-run (the registry already names the new hub) → no warning"
 exit $fail
