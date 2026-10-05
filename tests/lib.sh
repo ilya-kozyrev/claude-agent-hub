@@ -11,7 +11,7 @@ unset HUB_TAG HUB_STAGE CLAUDE_CODE_SESSION_ID AGENT_SESSION_ID AGENT_BOARD_FILE
       AGENT_HUB_TAKE_MAIN_MERGE AGENT_HUB_JWAIT_MATCH AGENT_HUB_BG_WAIT_CEILING_MS CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS \
       CLAUDE_CONFIG_DIR CODEX_THREAD_ID AGENT_SESSION_ID AGENT_HUB_ENGINE CODEX_BIN \
       AGENT_HUB_CODEX_MODEL_MAP AGENT_HUB_CODEX_DEFAULT_MODEL AGENT_HUB_CODEX_PERMISSION_MODE AGENT_HUB_CODEX_HOOK_TRUST \
-      AGENT_HUB_SUCCESSOR_ENGINE
+      AGENT_HUB_SUCCESSOR_ENGINE CLAUDE_EFFORT CLAUDE_CODE_HOST_SESSION_ID
 # `hub start` / `hub takeover` refuse to run outside a fresh worktree of a project (exit 4); the scripts run them in
 # throw-away directories with no repository, so they opt out the way a scripted environment does. t_location.sh and
 # t_project_warn.sh unset it.
@@ -61,3 +61,7 @@ for d, _, files in sorted(os.walk(sys.argv[1])):
 print(h.hexdigest())
 PY
 }
+
+# fake_ps TABLE: prints a PATH directory whose ps(1) answers from TABLE ("pid ppid command…" per line; pid `*` = whatever
+# pid is asked for first, the caller's parent), so the effort tests never see the real claude that runs them
+fake_ps(){ local d; d="$(mktemp -d)"; printf '#!/bin/sh\nFAKE_PS_TABLE="%s" exec python3 "%s/fake_ps.py" "$@"\n' "$1" "$T" > "$d/ps"; chmod +x "$d/ps"; echo "$d"; }

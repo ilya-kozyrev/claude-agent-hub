@@ -119,7 +119,8 @@ start the `jwait` it prints using the host wait procedure below. Its start line 
 name and any link returned by the launcher) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a
 headless successor's ALARM: `--again`, if `agent status` says it is not running). A refusal that prints a `jwait` →
 run that `jwait`, then retry. Exit 3 (chain limit), exit 2, or any other exit 1 → tell the owner the handoff path and
-why, and wait for them. A successor that took over but has to be swapped (a wrong launch): `hub succeed --stage <S>
+why, and wait for them ("cannot determine the effort" means your own effort is unreadable here: never pass a guessed
+`--effort`; `hub effort` lists what was tried). A successor that took over but has to be swapped (a wrong launch): `hub succeed --stage <S>
 --replace` — it stops that successor (not while it is busy, unless `--force`) and starts a new one from the same handoff
 with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
 yourself, never from a sub-agent.

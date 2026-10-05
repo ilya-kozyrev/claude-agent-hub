@@ -10,11 +10,12 @@
   hub succeed  --stage stage-a --handoff PATH [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
   hub succeed  --stage stage-a --replace [--force] [--handoff PATH] [--dry-run]
+  hub effort   [--session ID] [--json]
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
 Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff and succeed need a stage, `reviewer`
-puts it into the `agent spawn` line it prints, `home` ignores it.
+puts it into the `agent spawn` line it prints, `home` and `effort` ignore it.
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
@@ -93,8 +94,8 @@ succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
 (`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode, an explicit
-effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else high) and the
-prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
+effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else the effort this hub runs at now — `hub effort`; when that cannot be read,
+succeed exits 1 and starts nothing) and the prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
 When the background session cannot start (CLI not logged in, the main checkout untrusted) it starts a headless hub
 with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
@@ -115,6 +116,12 @@ takeover resets it.
 With --engine codex, succeed starts a detached Codex hub in its own worktree from the main checkout, preserving
 model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
 Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
+effort prints the effort a Claude Code session runs at now and where it was read (bin/session_effort.py): the hook input,
+$CLAUDE_EFFORT of the Bash tool, the last assistant record of the transcript, the `--effort` of a `claude --bg` session's
+state.json, the Desktop session record, the CLI process argv — most current first; the first that answers wins and the
+others that disagree are listed (the argv is fixed at launch, so it lags an in-session /effort). --session: a CLI session
+uuid, a Desktop local_… id or `self` (default). --json prints every source's reading. Exit 0 with an answer, 1 when no
+source answers (every source tried is named).
 reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWERS (environment, a repository's
 .agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
 available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
@@ -150,6 +157,7 @@ import engines
 import hubcore as hc  # noqa: E402
 import hubhome  # noqa: E402
 import reviewers  # noqa: E402
+import session_effort  # noqa: E402
 import subagents  # noqa: E402
 
 DIGEST_BYTES = 3072
@@ -1225,6 +1233,19 @@ def cmd_reviewer(a) -> int:
     return 0
 
 
+def cmd_effort(a) -> int:
+    readings = session_effort.survey(resolve_self(a.session) if a.session else None)
+    found = session_effort.best(readings)
+    if a.json:
+        print(json.dumps({"effort": found.effort if found else None, "source": found.source if found else None,
+                          "readings": [r._asdict() for r in readings]}, ensure_ascii=False, indent=1))
+    elif found:
+        print(session_effort.describe(readings))
+    if found is None:
+        raise hc.Failure(session_effort.describe(readings))
+    return 0
+
+
 def cmd_home(a) -> int:
     if a.home_cmd == "migrate":
         return hubhome.migrate(a.src, a.dst, a.apply)
@@ -1274,7 +1295,8 @@ def main(argv: list) -> int:
     sc.add_argument("--handoff", help="the filled handoff draft")
     sc.add_argument("--model", help="the successor's model (default: AGENT_HUB_SUCCESSOR_MODEL, else the hub's own)")
     sc.add_argument("--effort", choices=tuple(dict.fromkeys(hc.EFFORTS + engines.CODEX_EFFORTS)),
-                    help="the successor's effort (default: AGENT_HUB_SUCCESSOR_EFFORT, else high; Codex: the hub's own)")
+                    help="the successor's effort (default: AGENT_HUB_SUCCESSOR_EFFORT, else this hub's own effort, read "
+                         "from its session — see `hub effort`; refused when that cannot be read)")
     sc.add_argument("--permission-mode", help="the successor's mode (default: AGENT_HUB_SUCCESSOR_PERMISSION_MODE, "
                                               "else default)")
     sc.add_argument("--cwd", help="the successor's working directory (default: here)")
@@ -1292,6 +1314,9 @@ def main(argv: list) -> int:
     sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand); "
                                                           "with --replace: also stop a successor that is busy")
     sc.add_argument("--dry-run", action="store_true")
+    ef = sub.add_parser("effort", parents=[stage_opt], help="the effort a session runs at now, and where it was read")
+    ef.add_argument("--session", help="a CLI session uuid or a Desktop local_… id (default: this session)")
+    ef.add_argument("--json", action="store_true", help="every source's reading as JSON")
     r = sub.add_parser("reviewer", parents=[stage_opt], help="choose the reviewer for a change and print how to start it "
                        "(with a stage, the `agent spawn` line carries --stage)")
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
@@ -1318,7 +1343,7 @@ def main(argv: list) -> int:
             p.error(f"bad stage name {a.stage!r} (lowercase letters, digits, '-' and '_')")
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
-            "reviewer": cmd_reviewer, "home": cmd_home}[a.cmd](a)
+            "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort}[a.cmd](a)
 
 
 if __name__ == "__main__":

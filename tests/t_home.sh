@@ -78,7 +78,8 @@ grep -q -- "--add-dir" $P/sub/argv.log; check $? 0 "…one in a subdirectory bes
 unset HUB_STAGE CLAUDE_BIN
 
 # the autopilot successor: --add-dir, the pinned home, no inherited AGENT_SESSION_ID
-R=$S/aphome; export AGENT_HUB_HOME=$R CLAUDE_BIN=$T/fake_claude_bg.py FAKE_BG_LOG=$S/bg.log AGENT_HUB_AUTO_HANDOFF=on \
+# (CLAUDE_EFFORT: the hub's own effort, which the successor inherits; without one `hub succeed` refuses)
+R=$S/aphome; export CLAUDE_EFFORT=high AGENT_HUB_HOME=$R CLAUDE_BIN=$T/fake_claude_bg.py FAKE_BG_LOG=$S/bg.log AGENT_HUB_AUTO_HANDOFF=on \
   AGENT_HUB_SUCCESSOR_TIMEOUT=2 CLAUDE_SESSIONS_DIR=$(mktemp -d)
 $B/hub start --stage stage-a --session 11111111-1111-4111-8111-111111111111 > /dev/null 2>&1
 H=$R/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md; printf '# Handoff\n\n## 0. First steps\n1. x\n' > $H

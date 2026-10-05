@@ -5,6 +5,9 @@
 . "$(dirname "$0")/lib.sh"
 unset CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on
+# the effort of the hub running `hub succeed` (the Bash tool's $CLAUDE_EFFORT): the successor's, unless something says otherwise
+export CLAUDE_EFFORT=high
+NO_PS=$(fake_ps /dev/null)  # a PATH directory whose ps shows no claude process: with CLAUDE_EFFORT unset nothing answers
 BR_BIN=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$B")  # the plugin bin/ as the tools resolve it
 HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
 HUB3=33333333-3333-4333-8333-333333333333
@@ -210,12 +213,13 @@ $B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check $? 1 "fallback
 J | grep -q "the headless successor hub-2 did not take over either — waiting for the owner"; check $? 0 "…journaled"
 
 # ================================================================== the successor's effort
-# --effort beats AGENT_HUB_SUCCESSOR_EFFORT (env or the hub home's config.json), which beats the default (high, above)
+# --effort beats AGENT_HUB_SUCCESSOR_EFFORT (env or the hub home's config.json), which beats the hub's own effort
+# ($CLAUDE_EFFORT, high above); when that cannot be read there is no default: a refusal
 meta_effort(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("effort"))' $R/stage-a/agents/hub-2/meta.json 2>/dev/null || echo none; }
 setup; AGENT_HUB_SUCCESSOR_EFFORT=low succeed --model opus --effort max > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort max --settings"; check "$? $(pending effort)" "0 max" "effort: --effort beats the environment"
 setup; AGENT_HUB_SUCCESSOR_EFFORT=xhigh succeed --model opus > /dev/null 2>&1
-call --bg argv | grep -q -- "--model opus --effort xhigh --settings"; check "$? $(pending effort)" "0 xhigh" "effort: the environment beats the default"
+call --bg argv | grep -q -- "--model opus --effort xhigh --settings"; check "$? $(pending effort)" "0 xhigh" "effort: the environment beats the hub's own"
 setup; echo '{"AGENT_HUB_SUCCESSOR_EFFORT": "medium"}' > $R/config.json; succeed --model opus > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort medium --settings"; check $? 0 "effort: the hub home's config.json sets it"
 setup; succeed --model haiku > /dev/null 2>&1
@@ -236,7 +240,52 @@ d = json.load(open(sys.argv[1])); d["pending"].pop("effort"); json.dump(d, open(
 PY
 AGENT_HUB_SUCCESSOR_EFFORT=bogus $B/hub succeed --stage stage-a --fallback > $R/fbb.out 2>&1
 check "$?:$(grep -c "AGENT_HUB_SUCCESSOR_EFFORT 'bogus'" $R/fbb.out):$(pending kind):$(call stop count)" "2:1:bg:none" "effort: --fallback with a bad setting is refused before the reservation"
-$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check "$?:$(pending kind):$(pending effort)" "0:headless:high" "effort: …and the retry is not blocked (an old record falls back to the default)"
+CLAUDE_EFFORT=max $B/hub succeed --stage stage-a --fallback > /dev/null 2>&1
+check "$?:$(pending kind):$(pending effort)" "0:headless:max" "effort: …and the retry is not blocked (an old record gets the hub's own effort)"
+
+# the hub's own effort is inherited, and said so; with no way to read it nothing starts (no silent default)
+setup; CLAUDE_EFFORT=xhigh succeed --model opus > $R/inh.out 2>&1
+call --bg argv | grep -q -- "--model opus --effort xhigh --settings"; check "$? $(pending effort)" "0 xhigh" "effort: inherited from the hub's own session"
+J | grep -qF 'effort xhigh inherited from this hub (source: env — $CLAUDE_EFFORT)'; check $? 0 "effort: …and the journal line says where it came from"
+setup; CLAUDE_EFFORT=max succeed --model opus --dry-run > $R/inhd.out 2>&1
+grep -qF -- "--model opus --effort max --settings" $R/inhd.out && grep -qF '[plan] effort max inherited from this hub (source: env' $R/inhd.out; check "$?:$(call --bg count)" "0:none" "effort: the dry run shows the inherited effort and its source"
+setup; CLAUDE_EFFORT=xhigh succeed --model opus --headless > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "xhigh:xhigh" "effort: the headless hub gets the inherited effort"
+setup; env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/ref.out 2>&1; rc=$?
+check "$rc:$(call --bg count):$(chain):$(pending n)" "1:none:none:none" "effort: unreadable → exit 1, nothing started, the chain not counted, no reservation"
+grep -q '^FAILED: cannot determine the effort of this session; tried hook: .*env: \$CLAUDE_EFFORT is not set; transcript: .*job: .*desktop: .*argv: .*No successor is started on a guessed effort: pass --effort' $R/ref.out; check $? 0 "effort: …the refusal names every source tried and what to do"
+env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --headless > /dev/null 2>&1; check "$?:$(call --bg count):$(pending n)" "1:none:none" "effort: …also for --headless"
+env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --dry-run > /dev/null 2>&1; check $? 1 "effort: …and for a dry run (it would refuse the real one)"
+env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --effort low > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort low --settings"; check $? 0 "effort: …but --effort given needs no reading"
+setup; env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH AGENT_HUB_SUCCESSOR_EFFORT=medium $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort medium --settings"; check $? 0 "effort: …and so does AGENT_HUB_SUCCESSOR_EFFORT"
+setup; env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model haiku > /dev/null 2>&1
+call --bg argv | grep -q -- "--effort"; check "$?:$(call --bg count)" "1:1" "effort: Haiku has no effort to inherit — it starts, with no --effort"
+# a hub on Haiku has no effort: the $CLAUDE_EFFORT its Bash shows is an ancestor's leftover (probed), not inherited
+TRH=$HOME/.claude/projects/p/$HUB1.jsonl; mkdir -p $(dirname $TRH); [ -f $TRH ] && cp $TRH $TRH.keep
+echo '{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":5}}}' > $TRH
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=xhigh succeed --model opus > $R/hk.out 2>&1
+check "$?:$(call --bg count):$(grep -c 'which has no effort setting' $R/hk.out)" "1:none:1" "effort: a Haiku hub handing over to Opus — its inherited \$CLAUDE_EFFORT is not used, nothing starts"
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=xhigh succeed --model opus --effort high > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort high --settings"; check $? 0 "effort: …unless --effort says it"
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=xhigh succeed > /dev/null 2>&1
+call --bg argv | grep -q -- "--effort"; check "$?:$(call --bg argv | grep -c -- '--model claude-haiku-4-5-20251001')" "1:1" "effort: …and a Haiku successor of a Haiku hub starts with no --effort"
+rm -f $TRH; [ -f $TRH.keep ] && mv $TRH.keep $TRH
+# a hub that is a `claude --bg` session: its environment is the daemon's, so the job's respawnFlags answer, not $CLAUDE_EFFORT
+JD=$HOME/.claude/jobs/${HUB1:0:8}; mkdir -p $JD
+python3 -c 'import json,sys; json.dump({"sessionId": sys.argv[2], "respawnFlags": ["--effort", "medium", "--model", "opus"]}, open(sys.argv[1] + "/state.json", "w"))' $JD $HUB1
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=high succeed --model opus > /dev/null 2>&1
+call --bg argv | grep -q -- "--model opus --effort medium --settings"; check "$? $(pending effort)" "0 medium" "effort: a --bg hub — the job's effort, not the daemon's \$CLAUDE_EFFORT"
+rm -rf $JD
+setup; CLAUDE_EFFORT=bogus env PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/bogus.out 2>&1
+check "$?:$(grep -c 'is not one of low, medium, high, xhigh, max' $R/bogus.out):$(call --bg count)" "1:1:none" "effort: a \$CLAUDE_EFFORT that is not an effort level is no answer"
+setup; succeed --model opus > /dev/null 2>&1
+python3 - $R/stage-a/auto-handoff.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["pending"].pop("effort"); json.dump(d, open(sys.argv[1], "w"))
+PY
+env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --fallback > $R/fbr.out 2>&1
+check "$?:$(pending kind):$(call stop count)" "1:bg:none" "effort: --fallback of an old record with nothing readable is refused before the reservation"
 
 # ================================================================== review round 2
 setst(){ python3 - $R/stage-a/auto-handoff.json "$@" <<'PY'
@@ -462,9 +511,11 @@ $B/hub takeover --stage stage-a --session $HUB3 --n 2 --handoff $H > /dev/null 2
 setup
 TR=$R/tr.jsonl
 usage(){ python3 -c 'import json,sys; print(json.dumps({"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":int(sys.argv[1])}}}))' "$1" >> $TR; }
+# HOOK_EFFORT: the effort.level the CLI puts into the hook input (default high; "none" = the input carries none)
 cbh(){ python3 -c 'import json,sys; d={"hook_event_name":sys.argv[1],"session_id":sys.argv[5],"transcript_path":sys.argv[2],"tool_name":sys.argv[3],"tool_input":json.loads(sys.argv[4]),"permission_mode":"acceptEdits","cwd":"/repo/x","prompt":sys.argv[6]}
 if sys.argv[7]: d["agent_id"]=sys.argv[7]
-print(json.dumps(d))' "$1" "$TR" "${2:-}" "${3:-null}" "${SID:-$HUB1}" "${PROMPT:-}" "${AGENT:-}" | python3 $HOOKS/context_budget.py; }
+if sys.argv[8] != "none": d["effort"]={"level":sys.argv[8]}
+print(json.dumps(d))' "$1" "$TR" "${2:-}" "${3:-null}" "${SID:-$HUB1}" "${PROMPT:-}" "${AGENT:-}" "${HOOK_EFFORT:-high}" | python3 $HOOKS/context_budget.py; }
 usage 320000
 AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:handoff" $R/h0.out && ! grep -q Autopilot $R/h0.out; check $? 0 "hook, autopilot off: the warning stays as today"
 export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
@@ -478,6 +529,16 @@ cbh PostToolUse Bash | grep -qF -- '--permission-mode default --cwd'; check $? 0
 rm $R/config.json
 usage 420000
 AGENT_HUB_SUCCESSOR_EFFORT=max cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort max --permission-mode'; check $? 0 "hook, warn: the printed command carries AGENT_HUB_SUCCESSOR_EFFORT"
+# the effort of the command comes from the hook input; each case on a transcript that dropped below the threshold first
+# (re-arms the warning, which fires once per level)
+TR0=$TR; fresh(){ TR=$R/tr-$1.jsonl; rm -f $TR; usage 1000; cbh PostToolUse Bash > /dev/null; usage 420000; }
+fresh a; HOOK_EFFORT=xhigh cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort xhigh --permission-mode'; check $? 0 "hook, warn: the printed command carries the effort of the hook input"
+fresh b; HOOK_EFFORT=xhigh AGENT_HUB_SUCCESSOR_EFFORT=low cbh PostToolUse Bash | grep -qF -- '--effort low --permission-mode'; check $? 0 "hook, warn: AGENT_HUB_SUCCESSOR_EFFORT beats the hook input"
+fresh c; ( unset CLAUDE_EFFORT; PATH=$NO_PS:$PATH; HOOK_EFFORT=none cbh PostToolUse Bash ) > $R/h5.out
+grep -qF -- '--model claude-opus-5-5 --permission-mode' $R/h5.out; check $? 0 "hook, warn: an input with no effort and nothing else readable — the command has no --effort"
+grep -qF 'your own effort could not be read here' $R/h5.out; check $? 0 "hook, warn: …and the text tells the hub to let \`hub succeed\` read it, or pass --effort"
+fresh d; HOOK_EFFORT=none CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=max cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort max --permission-mode'; check $? 0 "hook, warn: no effort in the input — the hook's own environment answers"
+TR=$TR0
 cbh PreToolUse Bash '{"command":"ls"}' > $R/h3.out; check "$(wc -c < $R/h3.out | tr -d ' ')" 0 "hook: below block, Bash passes"
 usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""

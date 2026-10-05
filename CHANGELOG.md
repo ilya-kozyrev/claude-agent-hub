@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The autopilot successor starts at the hub's own effort, or not at all.** `hub succeed` used to pass `--effort high`
+  when neither `--effort` nor `AGENT_HUB_SUCCESSOR_EFFORT` said otherwise, so a hub at `xhigh` handed over to one at
+  `high`. It now reads the effort the hub runs at *now* and passes that; if no source answers it exits 1 naming every
+  source it tried and starts nothing (there is no default; a Haiku successor, which has no effort setting, needs none).
+  `--effort` and `AGENT_HUB_SUCCESSOR_EFFORT` still win. The budget message's ready command carries the hook input's
+  `effort.level`; `--again` keeps the previous attempt's effort. New `hub effort [--session ID] [--json]` prints the
+  effort and its source. Sources, most current first (each proved with a throw-away session, also after an in-session
+  `/effort`): the hook input's `effort.level`, `$CLAUDE_EFFORT` of the Bash tool (not in a `claude --bg` session, whose
+  environment is the daemon's), the last assistant record of the
+  transcript, `--effort` in a `claude --bg` session's `~/.claude/jobs/<id>/state.json`, the Desktop session record, the
+  process argv — the last is fixed at launch and lags `/effort`, and a `--bg` session's process has none. `$CLAUDE_JOB_DIR`
+  and `$CLAUDE_CODE_HOST_SESSION_ID` are not used: a session's children inherit its ancestor's. A session whose last turn
+  ran on Haiku has no effort: the CLI leaves `$CLAUDE_EFFORT` as inherited there, so it and the flags are no answer.
 - **Codex hubs use registry addresses and warn about a live predecessor.** `hub takeover` checks a detached worker's
   PID/process token (including a worker registered as `hub`) or native runtime status through the existing Codex
   daemon's read-only proxy. Native detection is verified only with a fake transport; without a running app-server
@@ -21,6 +34,12 @@
   A headless holder gets the text through `agent send` (it reads its inbox, not a journal). An answer comes back in the
   asker's own journal (`tell <asker's stage>`). `--address` takes no text. An unknown stage or no holder exits 1 and lists the stages that have one. The hub skill now says: the journal first,
   a direct message only to the registry address, never to a session picked by its name in a list.
+- **A background session no longer runs an old plugin's tools.** `claude --bg` sessions inherit the environment of the
+  long-running Claude Code daemon, including the `HUB_BIN` of the plugin version that was current when the daemon
+  started, so `"$HUB_BIN/jlog"` and `"$HUB_BIN/jwait"` ran an older copy. The SessionStart hook now appends
+  `export HUB_BIN=<this plugin's bin/>` to `$CLAUDE_ENV_FILE` when `HUB_BIN` is unset or points elsewhere (a symlink to
+  this `bin/` counts as the same) and says so in one line when it replaced a stale value. The `bin/` is that of the plugin
+  copy the hook belongs to; an inherited `PLUGIN_ROOT` (a Claude worker started from a Codex host) is ignored.
 - **Hub-to-hub addressing no longer loses requests.** `jwait --tag hub-30` on stage `core-c` also wakes on the
   stage-qualified address `@core-c-hub-30` (and `--tag hub` on `@core-c-hub`); `@hub-300`, `@xcore-c-hub-30` and another
   stage's `@dolya-hub-30` still do not match. `jlog` writing into another stage's journal signs a derived tag

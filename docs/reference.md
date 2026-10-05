@@ -55,7 +55,8 @@ flowchart LR
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
 | `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). |
-| `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub; `--replace` swaps the successor that already took over. |
+| `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
+| `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
 | `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
 | `agent-top` | Live console of all agents (curses), `--once` text, `--json`. |
 
@@ -127,7 +128,11 @@ a turn limit. `agent spawn` appends a footer that tells the agent how to talk ba
 finished, `jlog "@hub QUESTION …"` then `BLOCKED` when it needs an answer, and to read its inbox after every major step.
 The footer names `jlog` as `"$HUB_BIN/jlog"`, and the agent starts with the plugin's `bin/` first on its `PATH` and in
 `$HUB_BIN` (rebuilt at every spawn and resume, so a resumed agent follows a plugin update): an older `jlog` found first
-would write to a journal the hub never reads.
+would write to a journal the hub never reads. A `claude --bg` session gets the environment of the long-running Claude Code
+daemon, with the `$HUB_BIN` of whichever plugin version the daemon started under; the SessionStart hook
+(`hooks/path_shadow.py`) appends `export HUB_BIN=<this plugin's bin/>` to `$CLAUDE_ENV_FILE` when the variable is unset or
+points elsewhere, and says so in one line when it replaced a stale value (nothing is written under Codex, which has no
+such file, or on a machine without a hub home).
 The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules;
 `templates/brief-review.md` is the brief for a reviewer.
 
@@ -299,6 +304,7 @@ headless successor get `AGENT_HUB_HOME=<the parent's home>`, so parent and child
 stage when the home is another one), set `AGENT_HUB_HOME` to that place, or `mkdir -p <home>/<stage>` to start afresh.
 
 ```bash
+hub effort [--session ID] [--json]   # the effort this (or that) Claude Code session runs at now, and where it was read
 hub home [--cwd DIR] [--json]   # the home, the layer that chose it, protected or not, the grant lines with your path
 hub home migrate                # dry run: what would move from the legacy home to the resolved one
 hub home migrate --apply        # do it; --from DIR / --to DIR name other homes
@@ -466,8 +472,9 @@ hub:
 
 1. At the warn threshold the context-budget message becomes the procedure: at the next quiet point (no agent waiting
    for a reply, no merge or lock operation in flight) `hub handoff`, fill the TODOs, then `hub succeed` — the hook
-   writes the exact command with the hub's model, effort, permission mode and directory (`--effort`, else
-   `AGENT_HUB_SUCCESSOR_EFFORT`, else `high`: the CLI's own default would start the successor at medium).
+   writes the exact command with the hub's model, effort, permission mode and directory. The successor's effort is
+   `--effort`, else `AGENT_HUB_SUCCESSOR_EFFORT`, else the effort the hub runs at now (`hub effort` shows it and where
+   it was read). There is no default: when the hub's effort cannot be read, `hub succeed` exits 1 and starts nothing.
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
    `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, its Remote Control link and
    `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
@@ -564,7 +571,7 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_AUTO_HANDOFF` | `off` | hub home only | `on` (or JSON `true`): [autopilot](#autopilot-the-hub-hands-over-by-itself) — the stage hub hands over to a successor by itself. |
 | `AGENT_HUB_AUTO_HANDOFF_CHAIN` | `10` | hub home only | Automatic handoffs in a row without the owner; `0` = never start a successor. |
 | `AGENT_HUB_SUCCESSOR_MODEL` | the hub's own | hub home only | The successor's model (alias or `claude-…` id); default: the model of the hub's last turn. |
-| `AGENT_HUB_SUCCESSOR_EFFORT` | `high` | hub home only | The Claude successor's `--effort` (`low`…`max`); `hub succeed --effort` overrides it. Not readable from the hub's session, so it is not inherited. Codex successors inherit the hub's effort. |
+| `AGENT_HUB_SUCCESSOR_EFFORT` | the hub's own | hub home only | The Claude successor's `--effort` (`low`…`max`); `hub succeed --effort` overrides it. Unset: the effort the hub runs at now, read from its session (`hub effort`); if it cannot be read `hub succeed` refuses instead of guessing. A Haiku successor gets no effort. Codex successors inherit the hub's effort. |
 | `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` | `inherit` | hub home only | The successor's `--permission-mode`; `inherit` = the hub's own (plan mode starts it in the default mode). |
 | `AGENT_HUB_SUCCESSOR_TIMEOUT` | `600` | hub home only | Seconds to wait for the successor's takeover line before the headless fallback. |
 | `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |
