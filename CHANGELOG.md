@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.4 — 2026-10-06
+
 - **The agent-top mod is quick again, and its Feed no longer hangs on "loading the feed…".** `agent-top --json`
   (the mod runs a new one every few seconds) keeps its log offsets and what it read up to them in a cache,
   `<state dir>/agent-top/cache.sqlite` (`$AGENT_HUB_STATE_DIR`, else `<hub home>/.state`), so a run reads only what the
