@@ -129,21 +129,67 @@ TERM_ID=abababab-abab-4bab-8bab-abababababab
 $B/hub takeover --stage stage-a --n 17 --session $TERM_ID > $R/t11.out 2>&1; check $? 0 "takeover by a terminal session uuid"
 check "$(holder stage webapp)" $TERM_ID "locks recorded on the terminal session"
 $B/roles --stage stage-a list | grep -q "^hub .*cli .*$TERM_ID"; check $? 0 "hub role recorded as kind cli"
-# 12. the replaced hub still runs: one ATTENTION line (output and digest), nothing stopped; nothing when it is gone
+# 12. the replaced hub still runs: an idle background session is stopped (claude stop, never rm), a busy one, a Desktop
+# one and the caller's own session are only named in one ATTENTION line (output and digest); nothing when it is gone
 BG=abcdef12-3456-4789-8abc-def123456789
 runtake(){ setup local_$PREV none; $B/roles --stage stage-a set hub $1 --tag hub-16 ${2:-} >/dev/null || return 1
            FAKE_AGENTS=$3 FAKE_PREV_SID=$4 $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12.out 2>&1; }
+stops(){ grep -c '"argv": \["stop"' $FAKE_BG_LOG 2>/dev/null || true; }
+rms(){ grep -c '"argv": \["rm"' $FAKE_BG_LOG 2>/dev/null || true; }
+S0=$(stops)
 runtake local_$PREV "" prev $PREV_CLI; check $? 0 "takeover over a Desktop hub that still runs"
-check "$(grep -c 'ATTENTION: the previous hub' $R/t12.out)" 2 "live previous hub: ATTENTION in the output and in the digest"
-grep -q 'archive it in Desktop (local_'$PREV')' $R/t12.out && grep -q 'message it by name' $R/t12.out; check $? 0 "…a Desktop session: archive it, other hubs can message it by name"
-runtake $BG "--kind cli" prev $BG; check $? 0 "takeover over a background hub that is done but keeps its pid"
-grep -q 'ATTENTION: the previous hub.*pid 4242' $R/t12.out && grep -q 'claude stop abcdef12`, then `claude rm abcdef12`' $R/t12.out; check $? 0 "…a background session: claude stop / claude rm"
-! grep -q '"argv": \["\(stop\|rm\)"' $FAKE_BG_LOG; check $? 0 "…and nothing is stopped by the takeover"
+check "$(grep -c 'ATTENTION: the previous hub' $R/t12.out)" 2 "live Desktop hub: ATTENTION in the output and in the digest"
+grep -q 'archive it in Desktop (local_'$PREV')' $R/t12.out && grep -q 'message it by name' $R/t12.out && grep -q 'mcp__ccd_session_mgmt__archive_session' $R/t12.out; check $? 0 "…archive it in Desktop (the tool a Desktop hub archives it with), other hubs can message it by name"
+check "$(stops)" "$S0" "…a Desktop session is never stopped by the CLI"
+runtake $BG "--kind cli" prev $BG; check $? 0 "takeover over an idle background hub that keeps its pid"
+check "$(stops):$(rms)" "$((S0 + 1)):0" "…it is stopped (claude stop), never removed (no claude rm)"
+grep -q '^stopped the previous hub .*pid 4242.*`claude stop abcdef12`.*its history stays' $R/t12.out; check $? 0 "…the output says so"
+grep -q 'ATTENTION: the previous hub' $R/t12.out; check $? 1 "…and warns of nothing: the hub is stopped"
+grep -q '\[hub-17\] start: .*stopped the previous hub .*claude stop abcdef12' $(journal stage-a); check $? 0 "…the journal start line says so"
+S1=$(stops)
+runtake $BG "--kind cli" prevbusy $BG; check $? 0 "takeover over a busy background hub"
+check "$(stops)" "$S1" "…a busy session is not stopped"
+check "$(grep -c 'ATTENTION: the previous hub.*working now (status busy), so it was not stopped.*`claude stop abcdef12`' $R/t12.out)" 2 "…its warning (output and digest) names claude stop for later"
+setup local_$PREV none; $B/roles --stage stage-a set hub $BG --tag hub-16 --kind cli >/dev/null
+FAKE_STOP=fail FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12.out 2>&1; check $? 0 "claude stop fails: the takeover still completes"
+grep -q 'ATTENTION: the previous hub.*stopping it failed' $R/t12.out; check $? 0 "…with the warning that it still runs"
+setup local_$PREV none; $B/roles --stage stage-a set hub $BG --tag hub-16 --kind cli >/dev/null
+S3=$(stops); CLAUDE_CODE_SESSION_ID=$BG FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12.out 2>&1
+check "$(stops):$(grep -c 'running this command, so it was not stopped' $R/t12.out)" "$S3:2" "never the session that runs the takeover itself"
+setup local_$PREV none; $B/roles --stage stage-a set hub $BG --tag hub-16 --kind cli >/dev/null
+S4=$(stops); FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW --dry-run > $R/t12.out 2>&1
+check "$(stops)" "$S4" "dry run: nothing is stopped"
+grep -q '^\[plan\] stop the previous hub' $R/t12.out; check $? 0 "…it says what it would stop"
 runtake $BG "--kind cli" none $BG; check $? 0 "takeover over a hub that is gone"
-! grep -q 'previous hub .* still runs' $R/t12.out; check $? 0 "negative: gone (not listed) → no warning"
-runtake $BG "--kind cli" prevgone $BG; ! grep -q 'previous hub .* still runs' $R/t12.out; check $? 0 "negative: listed as done without a pid → no warning"
-runtake $BG "--kind cli" fail $BG; rc=$?; check $rc 0 "the CLI call fails: takeover still succeeds"
-! grep -q 'previous hub .* still runs' $R/t12.out; check $? 0 "negative: CLI failure → silent"
-FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12b.out 2>&1
-! grep -q 'previous hub .* still runs' $R/t12b.out; check $? 0 "negative: a re-run (the registry already names the new hub) → no warning"
+! grep -q 'ATTENTION: the previous hub\|^stopped the previous hub' $R/t12.out; check $? 0 "negative: gone (not listed) → no warning, no stop"
+S5=$(stops); runtake $BG "--kind cli" prevgone $BG; ! grep -q 'ATTENTION: the previous hub\|^stopped the previous hub' $R/t12.out; check "$?:$(stops)" "0:$S5" "negative: listed as done without a pid → no warning, no stop"
+S6=$(stops); runtake $BG "--kind cli" fail $BG; rc=$?; check $rc 0 "the CLI call fails: takeover still succeeds"
+! grep -q 'ATTENTION: the previous hub\|^stopped the previous hub' $R/t12.out; check "$?:$(stops)" "0:$S6" "negative: CLI failure → silent, no stop"
+S7=$(stops); FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t12b.out 2>&1
+! grep -q 'ATTENTION: the previous hub\|^stopped the previous hub' $R/t12b.out; check "$?:$(stops)" "0:$S7" "negative: a re-run (the registry already names the new hub) → no warning, no stop"
+# 13. the same shift taken again (the registered hub has this number): "re-took shift", one link in the lock reason
+setup local_$PREV none
+$B/roles --stage stage-a set hub $BG --tag hub-17 --kind cli >/dev/null
+python3 - "$R/board.md" "$BG" <<'PY'
+import json, re, sys
+path, sid = sys.argv[1:]
+t = open(path).read()
+rows = [json.loads(l) for l in re.search(r"```locks\n(.*?)```", t, re.S).group(1).splitlines() if l.strip()]
+for r in rows:
+    if r["kind"] == "stage" and r.get("repo") == "webapp":
+        r["session_id"] = sid
+        r["why"] = "Hub stage-a #17 old, took over from Hub stage-a #17: Hub stage-a #17 older, took over from Hub stage-a #16: staging data refresh"
+open(path, "w").write("# b\n\n```locks\n" + "\n".join(json.dumps(r) for r in rows) + "\n```\n")
+PY
+FAKE_AGENTS=prev FAKE_PREV_SID=$BG $B/hub takeover --stage stage-a --n 17 --session local_$NEW > $R/t13.out 2>&1; check $? 0 "takeover by the number of the registered hub"
+grep -q '\[hub-17\] start: .*re-took shift #17 (replaces abcdef12), handoff by #16' $(journal stage-a); check $? 0 "…the start line: 're-took shift #17 (replaces abcdef12), handoff by #<author of the handoff>'"
+grep -q 'took over from "Hub stage-a #17"' $(journal stage-a); check $? 1 "…not 'took over from #17' (a hub replacing itself)"
+check "$(python3 - $R/board.md <<'PY'
+import json, re, sys
+t = open(sys.argv[1]).read()
+rows = [json.loads(l) for l in re.search(r"```locks\n(.*?)```", t, re.S).group(1).splitlines() if l.strip()]
+print([r["why"] for r in rows if r["kind"] == "stage" and r.get("repo") == "webapp"][0])
+PY
+)" "Hub stage-a #17 local_$NEW, re-took shift #17 (replaces abcdef12), handoff by #16: staging data refresh" "…the lock's reason keeps one link, not the nest of earlier takeovers"
+grep -q '^stopped the previous hub' $R/t13.out; check $? 0 "…and the replaced session is stopped as in a plain takeover"
 exit $fail

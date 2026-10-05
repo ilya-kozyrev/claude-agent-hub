@@ -12,6 +12,10 @@ unset HUB_TAG HUB_STAGE CLAUDE_CODE_SESSION_ID AGENT_SESSION_ID AGENT_BOARD_FILE
       CLAUDE_CONFIG_DIR CODEX_THREAD_ID AGENT_SESSION_ID AGENT_HUB_ENGINE CODEX_BIN \
       AGENT_HUB_CODEX_MODEL_MAP AGENT_HUB_CODEX_DEFAULT_MODEL AGENT_HUB_CODEX_PERMISSION_MODE AGENT_HUB_CODEX_HOOK_TRUST \
       AGENT_HUB_SUCCESSOR_ENGINE
+# `hub start` / `hub takeover` refuse to run outside a fresh worktree of a project (exit 4); the scripts run them in
+# throw-away directories with no repository, so they opt out the way a scripted environment does. t_location.sh and
+# t_project_warn.sh unset it.
+export AGENT_HUB_NO_PROJECT=1
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
 new_home(){ export AGENT_HUB_HOME="$(mktemp -d)"; }

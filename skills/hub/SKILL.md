@@ -74,8 +74,16 @@ leave them until then.
 directory, registers you as `hub-1`, writes the start line and prints the first `jwait`. Use `--session self`;
 the tool resolves the current host's session identity (`CODEX_THREAD_ID` in Codex, `CLAUDE_CODE_SESSION_ID`
 in Claude, or `AGENT_SESSION_ID` in a detached worker). In Claude Desktop you may pass the `local_…` id.
-An ordinary shell must pass an actual full session id. Run from the project's checkout so `.agent-hub/` is found.
-Offer `agent-hub:setup` if it has no `.agent-hub/` yet. Follow warnings about shadowed tools or an outdated CLI.
+An ordinary shell must pass an actual full session id. Offer `agent-hub:setup` if the project has no `.agent-hub/` yet.
+Follow warnings about shadowed tools or an outdated CLI.
+
+A hub works in a fresh worktree of its project, never in the project's main clone and never outside git. When the
+command exits 4 with `MOVE <path>`, move as it prints — Claude Code: `EnterWorktree` with `path=<path>`, and if it refuses
+(the session was launched outside the repository, e.g. a Desktop session under "No folder")
+`mcp__ccd_directory__change_directory` with that path (it takes effect when the turn ends: use absolute paths until then);
+Codex: run every later command with that workdir — then run the command line it prints again. `NO PROJECT`: find the
+project the task is about (its main clone under `~/repos/`, or where the brief points) and re-run with
+`--repo <main clone>`; `--no-project` is only for a stage that has no repository at all.
 
 ## Taking over a shift
 
@@ -92,7 +100,11 @@ Offer `agent-hub:setup` if it has no `.agent-hub/` yet. Follow warnings about sh
    written during the handover.
 4. Read the project's hub rules and notes before planning (the digest names them): `hub-rules.md` (overrides of the
    recommended rules below) and `HUB-NOTES.md` (what the team knows: what goes to the owner, how data claims are
-   checked). Run `hub takeover` from the project's checkout: the project layer is found from the working directory.
+   checked). `hub takeover` has the same location rule as `hub start` (the paragraph under *Starting a stage*): exit 4
+   with `MOVE <path>` or `NO PROJECT` means move or add `--repo`, then run it again — nothing was registered before.
+   When the replaced hub is a background session that is not busy, the command stops it (`claude stop`, history kept) and
+   says so; if it names a Desktop hub that still runs and you have `mcp__ccd_session_mgmt__archive_session`, archive that
+   session with it (a busy one or a terminal one is only named: leave it to the owner).
 
 Leaving: `hub handoff --stage <S>` writes a `HANDOFF-hub-*.md` draft with the facts filled in and TODOs; fill the TODOs
 (skill `handoff`). Locks are not released — the successor's `hub takeover` takes them. It first looks for sub-agents of
@@ -107,7 +119,10 @@ start the `jwait` it prints using the host wait procedure below. Its start line 
 name and any link returned by the launcher) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a
 headless successor's ALARM: `--again`, if `agent status` says it is not running). A refusal that prints a `jwait` →
 run that `jwait`, then retry. Exit 3 (chain limit), exit 2, or any other exit 1 → tell the owner the handoff path and
-why, and wait for them. Run `hub succeed` yourself, never from a sub-agent.
+why, and wait for them. A successor that took over but has to be swapped (a wrong launch): `hub succeed --stage <S>
+--replace` — it stops that successor (not while it is busy, unless `--force`) and starts a new one from the same handoff
+with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
+yourself, never from a sub-agent.
 A session whose first prompt carries `[agent-hub auto-handoff k/N]` is an automatic successor: run the takeover
 command the prompt gives, then work the handoff's queue. The owner may be away: questions go to `ask add` with a
 default, and you hand over the same way when your own budget says so.
@@ -269,6 +284,8 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
 - **Worktrees.** Two agents writing in one checkout overwrite each other's files. Give every agent that writes code
   `--worktree [BRANCH]` (default branch `agent/<role>`): it runs in an existing worktree of that branch, or in
   `<repo>/.worktrees/<branch>` of the main repository — one place per repository, excluded in `.git/info/exclude`.
+  A new branch starts from origin's default branch (fetched first), not from the commit `--cwd` has checked out — which
+  may be someone's feature branch; `--base REF` chooses another start (`--base HEAD` for the checked-out commit).
   `agent spawn --worktree` refuses a repository with no commits: in a new, empty one the hub makes the first commit
   itself and says so in one line.
   Nothing removes a worktree; at handoff list them (`git worktree list`) and remove the finished ones

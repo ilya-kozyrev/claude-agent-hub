@@ -109,6 +109,26 @@ finally: stop()
 # Restore discovery for dry-run controls.
 ap.codex_rollouts.INDEX.checked=None
 
+# --replace of a Codex successor that already took over: the registered hub is that successor (hub-2), which must not
+# make the new start refuse after the old one was stopped
+home,handoff,cwd=setup('replace')
+try:
+    rc,out=succeed(handoff,cwd)
+    assert rc==0
+    first_pid=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())['pid']
+    ap.on_takeover('stage-a',2,True)
+    (home/'stage-a/roles.json').write_text(json.dumps({'roles':{'hub':{'session':'22222222-2222-4222-8222-222222222222',
+         'cli_session_id':'22222222-2222-4222-8222-222222222222','tag':'hub-2','kind':'cli'}}}))
+    before=len(calls())
+    rc,out=succeed(handoff,cwd,replace=True,force=True,succ=2)
+    assert rc==0, out
+    assert len(calls())==before+1, 'the replacement was not started'
+    meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
+    assert meta['pid']!=first_pid and state(home)['pending']['n']==2 and state(home)['chain']==1
+    assert not state(home)['pending'].get('taken_over')
+    print('PASS Codex --replace stops the successor that took over and starts a new one')
+finally: stop()
+
 # `hub succeed --effort` overrides the inherited Codex effort; an unknown one is refused before anything starts.
 home,handoff,cwd=setup('effort-override')
 try:

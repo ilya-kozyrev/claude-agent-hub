@@ -58,24 +58,26 @@ else:print(json.dumps({'id':2,'result':{'thread':{'id':r['params']['threadId'] i
 sys.stdin.read()
 ''');fake.chmod(0o755)
 os.environ['CODEX_BIN']=str(fake)
+# `hub takeover` stops a replaced Claude background hub itself (replaced_hub -> (stopped, warning)); a Codex hub is only named
+prev_warning=lambda r,a,b,st:hub.replaced_hub(r,a,b,st,True)[1]
 for state in ('idle','active','systemError'):
  os.environ['PROXY_MODE']=state
  assert cs.runtime_status(sid)==state
- warning=hub.live_previous_warning(rec,'new','new','stage-a')
+ warning=prev_warning(rec,'new','new','stage-a')
  assert 'still runs' in warning and 'Codex terminal/app session' in warning
 for state in ('notLoaded','wrongid','fail','malformed','badshape','brokenpipe','hang'):
  os.environ['PROXY_MODE']=state
- assert hub.live_previous_warning(rec,'new','new','stage-a')=='',state
+ assert prev_warning(rec,'new','new','stage-a')=='',state
 # Detached stale PID/token and process failure: never trust PID existence or recent rollout activity.
 meta={'engine':'codex','session_id':sid,'role':'old-hub','pid':1234,'process_token':'expected'}
 p=root/'stage-a'/'agents'/'old-hub'/'meta.json';p.write_text(json.dumps(meta))
 for table in ({1234:'unrelated-process'}, {}, None):
  with patch.object(cs.subagents,'process_table',return_value=table):
-  assert hub.live_previous_warning(rec,'new','new','stage-a')==''
+  assert prev_warning(rec,'new','new','stage-a')==''
 with patch.object(cs.subagents,'process_table',return_value={1234:'worker expected'}):
- assert 'agent stop --stage stage-a old-hub' in hub.live_previous_warning(rec,'new','new','stage-a')
+ assert 'agent stop --stage stage-a old-hub' in prev_warning(rec,'new','new','stage-a')
  # Legacy detached record lacking engine is detected from metadata too.
- assert 'still runs' in hub.live_previous_warning({**rec,'engine':'claude'},'new','new','stage-a')
+ assert 'still runs' in prev_warning({**rec,'engine':'claude'},'new','new','stage-a')
 p.unlink()
 # Native Codex address uses registry UUID and never asks Claude's session list; writes nothing.
 hc.roles_save('stage-a',{'version':1,'roles':{'hub':rec},'retired':[]})

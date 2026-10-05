@@ -2,11 +2,14 @@
 """Hub start, takeover and handoff, one command each.
 
   hub start    --stage stage-a --session <session id> [--name "Hub stage-a #1"] [--take-main-merge] [--dry-run]
+               [--repo PATH | --no-project]
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
                [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
+               [--repo PATH | --no-project]
   hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
   hub succeed  --stage stage-a --handoff PATH [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
+  hub succeed  --stage stage-a --replace [--force] [--handoff PATH] [--dry-run]
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
@@ -29,6 +32,22 @@ metadata for its CLI id and title) or a Claude Code CLI session uuid ($CLAUDE_CO
 running the command ($CLAUDE_CODE_SESSION_ID read by the tool, so the command line holds no shell expansion and an
 allow rule `Bash(hub takeover:*)` matches it).
 
+Where a hub runs (start and takeover; checked first, before anything is registered, journaled or locked): in a linked
+worktree of its project that has the project's .agent-hub/ — not in the project's main clone, which has whatever branch
+somebody checked out there, and not outside git (a Claude Desktop session started under "No folder" runs in ~ or a temp
+dir). The project is the repository of --repo PATH (any path inside it), else of the working directory, else the stage's
+recorded one (<hub home>/<stage>/stage.json, written by every successful start and takeover in a repository);
+--no-project, for a stage that has no repository, starts in place (the start line says so; recorded for the stage's
+later hubs, replacing a recorded repo: the latest choice wins); AGENT_HUB_NO_PROJECT=1 in the environment, for scripted environments and the test suite, does the same
+silently. A good place is refreshed — a clean worktree with no commits of its own is fast-forwarded to origin's
+default branch (origin/HEAD, else origin/main, else origin/master) after a bounded `git fetch` — and the command goes
+on. Any other place gets a fresh worktree <repo>/.claude/worktrees/<stage>-hub-<n> on a new branch from that branch (a
+clean one already there at that commit is reused, else the name gets -2, -3…; a failing fetch falls back to the local
+ref with a note; without an origin: the local main/master), and the command prints `MOVE <path>`, how to move there
+(Claude Code: EnterWorktree with path=<path>, else mcp__ccd_directory__change_directory with it; Codex: that workdir)
+and the command line to re-run, and exits 4. With nothing that names a project it prints `NO PROJECT: …`, exit 4:
+re-run with --repo <the project's main clone> or --no-project.
+
 takeover, in order, each step verified, the first failed step stops with a message; a step whose
 target state is already there is skipped as "already done", so a re-run finishes a broken takeover:
   1. locks: every active lock of the previous hub is taken over with `lock take --force`, keeping
@@ -47,12 +66,14 @@ target state is already there is skipped as "already done", so a re-run finishes
      repository's .agent-hub/, the hub home), run as `takeover.sh check` / `takeover.sh apply` with HUB_STAGE,
      HUB_N, HUB_TAG, HUB_NAME, HUB_SESSION, HUB_CLI_SESSION, HUB_PREVIOUS, HUB_TAKEOVER_AT, HUB_HANDOFF set.
   4. roles set hub <session> --tag hub-<n>. When the hub registered before is still running (`claude agents --json`;
-     a `done` background session that keeps its pid counts), one ATTENTION line, also in the digest, says that other hubs
-     can still message it by name and how to stop it (`claude stop <id>`, `claude rm <id>`; a Desktop session: archive
-     it). Nothing is stopped.
-  Start and takeover also warn (ATTENTION, never a refusal) when the working directory is not inside a git
-  repository ("no project folder": a Desktop session started under "No folder" runs in ~ or a temp dir), or when the
-  checkout has no .agent-hub/ while the remote default branch (origin/HEAD, else origin/main) has it.
+     a `done` background session that keeps its pid counts), other hubs could still message it by name: a background
+     session that is not busy is stopped (`claude stop <id>`, bounded; its history stays, `claude rm` is never run) and
+     the output, the digest and the journal start line say so. A busy one, a Desktop session (archive it in Desktop; a
+     Desktop hub does it with mcp__ccd_session_mgmt__archive_session), a terminal session, the session that runs the
+     takeover and a stop that failed keep running: one ATTENTION line, also in the digest, names it and how to stop it.
+     A CLI that does not answer is silent. A takeover by the registered hub's own number — the same shift taken again —
+     writes "re-took shift #N (replaces <id8>), handoff by #M" and keeps one link in a lock's reason, not the nest of
+     the earlier takeovers.
   5. jlog "[hub-<n>] start: …".
   Then prints a digest ≤ 3 KB: handoff § 0, the ask register (first line "awaiting execution: N (ids)" —
   owner answers without `ask done`; then open questions, recent owner answers and agent decisions — check
@@ -83,8 +104,14 @@ tail, stops it and starts the headless hub from the same handoff. Only the regis
 the hub never delegates it), only with AGENT_HUB_AUTO_HANDOFF on (exit 2; --force for the owner by hand), one
 successor per shift: a second call while one is
 being started or has not taken over is refused with the time to retry and a ready jwait; --again drops the record
-of a successor that did not take over and is not running. The successor's takeover carries --auto-handoff, which keeps the
-chain; any other takeover resets it.
+of a successor that did not take over and is not running. --replace replaces the successor that already took over (or
+runs): it stops it (`claude stop`, history kept; a busy one only with --force; a headless one with --force) and starts a
+new one from the same handoff through the same code — the same number, model, mode and chain position, the same
+--auto-handoff takeover command. Only the hub that handed over (the session recorded with the successor) or the owner at a
+terminal may; nothing is stopped when the sessions cannot be listed. The successor's takeover carries --auto-handoff,
+which keeps the chain; so does a takeover of the shift the pending successor already took over (its replacement, by hand
+or by --replace); a hand-started session is recorded as kind `manual`, which `--replace` refuses to act on; any other
+takeover resets it.
 With --engine codex, succeed starts a detached Codex hub in its own worktree from the main checkout, preserving
 model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
 Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
@@ -100,7 +127,7 @@ session access to it. home migrate moves the legacy home (--from) to the resolve
 which refuses while an agent or a background hub of the source runs, copies, verifies, rewrites the old path in the JSON files and renames the
 source to <source>.migrated-YYYYMMDD (bin/hubhome.py). Exit 0 ok; a dry run exits 1 when --apply would refuse.
 Exit: 0 ok, 1 step failed (reviewer: no reviewer available), 2 usage — or, for handoff, sub-agents of the hub's session
-still running; succeed: 3 chain limit reached.
+still running; succeed: 3 chain limit reached; start, takeover: 4 the session must move first (MOVE / NO PROJECT).
 """
 from __future__ import annotations
 
@@ -163,6 +190,16 @@ def cut(text: str, limit: int, where: str = "") -> str:
 
 def hub_name(stage: str, n: int) -> str:
     return f"Hub {stage} #{n}"
+
+
+# a takeover's lock reason: "<name> <session>, took over from <who>: <reason>" — peeled back to <reason>
+WHY_LINK_RE = re.compile(r"^.*?, (?:took over from|re-took shift)[^:]*: ")
+
+
+def peel_why(why: str) -> str:
+    while (m := WHY_LINK_RE.match(why)) is not None:
+        why = why[m.end():]
+    return why
 
 
 HANDOFF_TITLE_RE = re.compile(r'^# Handoff "[^"\n]*#(\d+)" → "[^"\n]*#(\d+)"', re.MULTILINE)
@@ -468,30 +505,57 @@ def running_session(cli_id: str):
     return None
 
 
-def live_previous_warning(prev: dict, new_session: str, new_cli: str, stage: str) -> str:
-    """One ATTENTION text when the hub registered before the takeover (`prev`, its roles record) still runs, else "".
-    Other hubs find it by name (ListAgents) and message it instead of the registered hub; nothing is stopped here."""
+def stop_background(row: dict, cli_id: str) -> str:
+    """`claude stop <id>` for a background session (bounded; its history stays, nothing is removed): "" when it was
+    stopped, else why not. Never raises."""
+    rid = row.get("id") or cli_id
+    try:
+        cli = hc.find_claude(persist=False)
+        if cli is None:
+            return "the claude CLI was not found"
+        res = subprocess.run([cli.path, "stop", rid], capture_output=True, text=True, timeout=20,
+                             env=autopilot.child_env(), stdin=subprocess.DEVNULL)
+    except (hc.Failure, OSError, subprocess.SubprocessError) as e:
+        return str(e) or type(e).__name__
+    return "" if res.returncode == 0 else f"`claude stop {rid}` exited {res.returncode}"
+
+
+def replaced_hub(prev: dict, new_session: str, new_cli: str, stage: str, dry_run: bool = False) -> tuple:
+    """(stopped, warning) about the hub registered before this takeover (`prev`, its roles record) when it still runs
+    — otherwise ("", ""): other hubs find it by name (ListAgents) and message it instead of the registered hub.
+    A background session that is not busy is stopped (`claude stop`, history kept; `stopped` says so). A busy one, a
+    Desktop session, a terminal session, the session running this command and a stop that failed are left alone and
+    named in the warning with how to stop them. A failing CLI is silent."""
     if not prev or {prev.get("session"), prev.get("cli_session_id")} & {new_session, new_cli}:
-        return ""
+        return "", ""
     import codex_sessions
     if prev.get("engine") == "codex" or codex_sessions.detached(stage, prev):
-        return codex_sessions.previous_warning(stage, prev)
+        return "", codex_sessions.previous_warning(stage, prev)  # a Codex hub: named, never stopped from here
     desktop = str(prev.get("session") or "").startswith("local_")
     cli_id = prev.get("cli_session_id") or ("" if desktop else str(prev.get("session") or ""))
     row = running_session(cli_id)
     if row is None:
-        return ""
+        return "", ""
     who = f"\"{prev.get('title') or row.get('name') or prev.get('tag') or '?'}\" ({prev.get('tag') or 'hub'}, sid {cli_id[:8]}"
     who += f", pid {row['pid']})" if row.get("pid") else ")"
+    rid = row.get("id") or cli_id
+    by_name = f"the previous hub {who} still runs: other hubs can still message it by name and it answers"
     if desktop:
-        stop = f"archive it in Desktop ({prev['session']})"
-    elif row.get("kind") == "background":
-        rid = row.get("id") or cli_id
-        stop = f"`claude stop {rid}`, then `claude rm {rid}`"
-    else:
-        stop = "close its terminal session"
-    return (f"the previous hub {who} still runs: other hubs can still message it by name and it answers — "
-            f"stop it: {stop}. Nothing was stopped.")
+        return "", f"{by_name} — archive it in Desktop ({prev['session']}); a Desktop hub archives it itself with mcp__ccd_session_mgmt__archive_session. Nothing was stopped."
+    if row.get("kind") != "background":
+        return "", f"{by_name} — close its terminal session. Nothing was stopped."
+    own = hc.session_id()
+    if own and own in (row.get("sessionId"), row.get("id"), cli_id):
+        return "", f"{by_name} — it is the session running this command, so it was not stopped."
+    if row.get("status") == "busy":
+        return "", (f"{by_name} — it is working now (status busy), so it was not stopped: `claude stop {rid}` once it is "
+                    "idle (`claude rm` would delete its history).")
+    if dry_run:
+        return f"[plan] stop the previous hub {who}: `claude stop {rid}`", ""
+    failed = stop_background(row, cli_id)
+    if failed:
+        return "", f"{by_name} — stopping it failed ({failed}): `claude stop {rid}` by hand. Nothing was stopped."
+    return f"stopped the previous hub {who} (`claude stop {rid}`; its history stays, `claude attach {rid}` shows it)", ""
 
 
 # ---------------------------------------------------------------- takeover steps
@@ -607,6 +671,39 @@ def resolve_self(raw: str) -> str:
     return sid
 
 
+PATH_OPTIONS = ("--repo", "--handoff")
+
+
+def absolute_argv(argv: list) -> list:
+    """`argv` with the values of the path options made absolute: the command is repeated from another directory, where a
+    relative --repo or --handoff names nothing."""
+    out, i = [], 0
+    while i < len(argv):
+        x = argv[i]
+        if x in PATH_OPTIONS and i + 1 < len(argv):
+            out += [x, os.path.abspath(os.path.expanduser(argv[i + 1]))]
+            i += 2
+            continue
+        for opt in PATH_OPTIONS:
+            if x.startswith(opt + "="):
+                x = f"{opt}={os.path.abspath(os.path.expanduser(x[len(opt) + 1:]))}"
+        out.append(x)
+        i += 1
+    return out
+
+
+def locate(a, stage: str, n: int):
+    """The location rule (hc.check_location) for `hub start` and `hub takeover`, once per command: None when the hub may
+    go on (a.project, a.location_note say where), else the exit code 4 — the session must move first, nothing has
+    been registered, journaled or locked."""
+    if hasattr(a, "project"):
+        return None
+    rerun = " ".join([autopilot.tool("hub")] + [shlex.quote(x) for x in absolute_argv(a.argv)])
+    loc = hc.check_location(stage, n, rerun, a.repo, a.no_project, a.dry_run)
+    a.project, a.location_note = loc.repo, loc.note
+    return loc.code
+
+
 def cmd_start(a) -> int:
     stage = hc.check_stage(a.stage)
     a.session = resolve_self(a.session)
@@ -618,9 +715,11 @@ def cmd_start(a) -> int:
     prev = latest("HANDOFF-hub-*.md", stage)
     if prev is not None and not rec:
         raise hc.UsageError(f"stage {stage} has a handoff ({prev.name}) — use `hub takeover --stage {stage} --session …`")
+    a.n = a.n or n or 1
+    if (code := locate(a, stage, a.n)) is not None:
+        return code
     if not a.dry_run:
         hc.work_dir(stage).mkdir(parents=True, exist_ok=True)
-    a.n = a.n or n or 1
     a.handoff, a.skip_lock, a.start, a.auto_handoff = None, None, True, False
     for warning in environment_warnings(persist=not a.dry_run):
         print(f"ATTENTION: {warning}")
@@ -648,6 +747,8 @@ def cmd_takeover(a) -> int:
          or takeover_number(stage, session, cli, handoff, notes))
     tag = f"hub-{n}"
     name = a.name or hub_name(stage, n)
+    if (code := locate(a, stage, n)) is not None:
+        return code
 
     # Predecessor: every source that does not already name the new hub. A re-run after a partial
     # takeover therefore still finds it, and a stale registry does not hide the real one's locks.
@@ -664,6 +765,12 @@ def cmd_takeover(a) -> int:
     first = starting or (not cands and handoff is None)
     prev_label = prev["name"] or (prev["local"] or prev["cli"][:8] or ("nobody (first hub of the stage)" if first
                                                                        else "unknown hub"))
+    # the registered hub has this very number: the same shift taken again (a restart, a replacement), not a handover
+    retake = ""
+    if not first and prev.get("tag") and hc.hub_number(prev["tag"]) == n:
+        by, _ = handoff_numbers(handoff) if handoff else (None, None)
+        retake = (f"re-took shift #{n} (replaces {(prev['cli'] or prev['local'] or '?')[:8]})"
+                  + (f", handoff by #{by}" if by else ""))
     t = hc.now()
     b = board_module()
     try:
@@ -716,10 +823,11 @@ def cmd_takeover(a) -> int:
     if kept:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 
-    warns = hc.project_warnings()
+    warns = []
     plan = Plan(a.dry_run)
     print(f"{name}: {session} (sid {cli[:8]}, {kind}) " + (f"starts stage {stage}" if first else
-          f"takes over from \"{prev_label}\"; handoff {handoff or '—'}"))
+          (retake.replace("re-took", "re-takes", 1) if retake else f"takes over from \"{prev_label}\"")
+          + f"; handoff {handoff or '—'}"))
     for note in notes:
         print(f"ATTENTION: {note}")
     for w in warns:
@@ -729,8 +837,11 @@ def cmd_takeover(a) -> int:
 
     for r in to_take:
         repo = repo_of(r)
-        why = f"{name} {session}, took over from {r.get('owner_name') or r.get('_from') or prev_label}: " \
-              f"{r.get('why') or ''}".strip()
+        if retake:  # only the last link: a re-taken shift must not nest the earlier takeovers' texts in its reason
+            why = f"{name} {session}, {retake}: {peel_why(r.get('why') or '')}".strip()
+        else:
+            why = f"{name} {session}, took over from {r.get('owner_name') or r.get('_from') or prev_label}: " \
+                  f"{r.get('why') or ''}".strip()
         argv = ["lock", "take", r["kind"], "--repo", repo, "--force", "--until", r["until"], "--why", why,
                 "--owner-name", name]
         if r.get("value"):
@@ -750,7 +861,7 @@ def cmd_takeover(a) -> int:
         plan.step(f"lock {r['kind']} ({repo}) until {str(r['until'])[:16]}{extra}", do, verify,
                   short=f"lock {r['kind']}")
 
-    updated = f"{t:%Y-%m-%dT%H:%M} {name} ({session}, sid {cli[:8]}) took over from {prev_label}" + \
+    updated = f"{t:%Y-%m-%dT%H:%M} {name} ({session}, sid {cli[:8]}) " + (retake or f"took over from {prev_label}") + \
               (f" by {handoff.name}" if handoff else "")
     if nightq_read(stage) is None:
         print("no night-queue.md — step skipped")
@@ -786,11 +897,20 @@ def cmd_takeover(a) -> int:
               else "role was not recorded",
               short="roles")
 
+    stopped, live = replaced_hub(prev_rec, session, cli, stage, a.dry_run)
+    if stopped:
+        print(stopped)
+        if not a.dry_run:
+            notes.append(stopped)  # the start line and the digest say so too
+    if live:
+        print(f"ATTENTION: {live}")
+        warns.append(live)
+
     lock_names = ", ".join(sorted({r["kind"] for r in to_take + mine})) or "none"
     start_text = (f"start: \"{name}\" ({session}, sid {cli[:8]}) "
-                  + (f"started stage {stage}" if first else f"took over from \"{prev_label}\"")
+                  + (f"started stage {stage}" if first else (retake or f"took over from \"{prev_label}\""))
                   + (f" by {handoff.name}" if handoff else "") + f"; locks: {lock_names}; " + ("night-queue, " if nightq_read(stage) is not None else "") + "roles updated"
-                  + ("; " + "; ".join(notes) if notes else ""))
+                  + ("; " + "; ".join(notes) if notes else "") + (f"; {a.location_note}" if a.location_note else ""))
     plan.step("journal: start line",
               lambda: hc.journal_append(stage, tag, start_text),
               lambda: None if start_line_present(stage, tag, session) else "no line in the journal",
@@ -801,11 +921,10 @@ def cmd_takeover(a) -> int:
             data = hc.roles_load(stage)
             data["roles"]["hub"]["engine"] = engines.selected()
             hc.roles_save(stage, data)
-        autopilot.on_takeover(stage, n, a.auto_handoff)  # the automatic successor keeps the chain; anyone else resets it
-    live = live_previous_warning(prev_rec, session, cli, stage)
-    if live:
-        print(f"ATTENTION: {live}")
-        warns.append(live)
+        # the automatic successor, and a retaking of its shift, keep the chain; anyone else resets it
+        autopilot.on_takeover(stage, n, a.auto_handoff, cli)
+        if a.project is not None or a.no_project:
+            hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
     print(digest(stage, n, name, handoff, plan.done, notes, warns))
     return 0
@@ -1004,22 +1123,53 @@ def check_caller(stage: str, n: int) -> None:
         raise hc.UsageError(f"HUB_TAG {tag} is not the hub of stage {stage} (hub-{n}) — only the registered hub hands over")
 
 
+def check_replace_caller(stage: str, pend: dict) -> None:
+    """`hub succeed --replace` is for the hub that started the successor (the session recorded in the pending record) or
+    for the owner at a terminal (neither a session id nor a tag); never for the successor itself, which is the
+    registered hub by then."""
+    rec = hc.roles_load(stage)["roles"].get("hub") or {}
+    sid, tag, author = hc.session_id(), os.environ.get("HUB_TAG", "").strip(), pend.get("author") or ""
+    if sid and author and sid != author:
+        raise hc.UsageError(f"--replace: only the hub that handed over (session {author[:8]}) or the owner at a terminal may "
+                            f"replace its successor; this session is {sid[:8]}")
+    if sid and not author and sid in (rec.get("session"), rec.get("cli_session_id")):
+        raise hc.UsageError(f"this session ({sid[:8]}) is the registered hub of stage {stage} — the successor cannot replace itself")
+    if tag and not sid and tag != f"hub-{(pend.get('n') or 1) - 1}":
+        raise hc.UsageError(f"HUB_TAG {tag} is not the hub that handed over (hub-{(pend.get('n') or 1) - 1}) — only it may replace its successor")
+
+
 def cmd_succeed(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir():
         raise hc.UsageError(f"no stage directory {hc.root() / stage}")
+    if a.replace and (a.again or a.fallback or a.headless):
+        raise hc.UsageError("--replace goes alone (with --force, --handoff, --model…): it starts the successor again the way it was started")
     if not (autopilot.enabled() or a.force or a.dry_run):
         raise hc.UsageError("autopilot is off (AGENT_HUB_AUTO_HANDOFF in the hub home's config.json): a hub starts no "
                             "background session unasked. The owner, at a terminal, may pass --force")
-    if a.fallback:
+    pend = autopilot.load_state(stage).get("pending") or {}
+    if a.fallback or (a.replace and not a.handoff):
         # the handoff the pending successor was started from: the numbers come out as they did then
-        handoff = (autopilot.load_state(stage).get("pending") or {}).get("handoff")
+        handoff = pend.get("handoff")
     elif not a.handoff:
         raise hc.UsageError("--handoff is required (the draft `hub handoff` wrote, TODOs filled)")
     else:
         handoff = Path(a.handoff).expanduser().resolve()
         if not handoff.is_file():
             raise hc.UsageError(f"--handoff {handoff}: no such file")
+    cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
+    if a.replace:
+        # the registered hub is the successor by now: the numbers come from the record, not from the registry
+        succ = pend.get("n")
+        if not isinstance(succ, int) or not handoff:
+            raise hc.Failure("--replace: no successor of a shift is recorded (auto-handoff.json) — nothing to replace")
+        out, _ = handoff_numbers(handoff)
+        n = out if out and out < succ else succ - 1
+        check_replace_caller(stage, pend)
+        if not cwd.is_dir():
+            raise hc.UsageError(f"--cwd {cwd}: no such directory")
+        return autopilot.succeed(stage, n, Path(handoff), a.model, a.permission_mode, cwd, False, a.dry_run, False,
+                                 engine=a.engine, succ=succ, effort_arg=a.effort, replace=True, force=a.force)
     # this hub's number (the handoff's outgoing one wins over a guess) and its successor's, from the function the
     # successor's takeover numbers by
     # `hub succeed` has no --n: the numbers are chosen in the handoff's title (`hub handoff --n N` writes it)
@@ -1032,7 +1182,6 @@ def cmd_succeed(a) -> int:
     check_caller(stage, n)
     if a.fallback:
         return autopilot.fallback(stage, n, a.why, succ)
-    cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
@@ -1094,6 +1243,9 @@ def main(argv: list) -> int:
     st.add_argument("--main-merge-until", default="+30d", help="main-merge expiry with --take-main-merge")
     st.add_argument("--take-main-merge", action="store_true", help="also take main-merge of this repository")
     st.add_argument("--dry-run", action="store_true")
+    st.add_argument("--repo", metavar="PATH", help="the project's repository (any path inside it) when the working "
+                                                   "directory is not in one; default: the stage's recorded project")
+    st.add_argument("--no-project", action="store_true", help="the stage has no repository: start in place")
     t = sub.add_parser("takeover", parents=[stage_opt], help="take over the hub role")
     t.add_argument("--n", type=int, help="number of the new hub (default: derived from roles.json / the handoff)")
     t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid; `self` = "
@@ -1109,6 +1261,9 @@ def main(argv: list) -> int:
                    help="this is the successor `hub succeed` started (its prompt gives the command): keeps the chain of "
                         "automatic handoffs, which any other takeover resets")
     t.add_argument("--dry-run", action="store_true")
+    t.add_argument("--repo", metavar="PATH", help="the project's repository (any path inside it) when the working "
+                                                  "directory is not in one; default: the stage's recorded project")
+    t.add_argument("--no-project", action="store_true", help="the stage has no repository: take over in place")
     h = sub.add_parser("handoff", parents=[stage_opt], help="write a handoff draft")
     h.add_argument("--n", type=int, help="number of the outgoing hub (default: the registered hub's)")
     h.add_argument("--out")
@@ -1130,7 +1285,12 @@ def main(argv: list) -> int:
     sc.add_argument("--why", help="with --fallback: the reason for the journal")
     sc.add_argument("--again", action="store_true", help="the recorded successor did not take over and is not running: "
                                                          "drop its record and start a new one")
-    sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand)")
+    sc.add_argument("--replace", action="store_true",
+                    help="replace the successor that already took over (or runs): stop it (`claude stop`; not while it is "
+                         "busy, unless --force) and start a new one from the same handoff with the same number and chain "
+                         "position. For the hub that handed over, or the owner at a terminal")
+    sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand); "
+                                                          "with --replace: also stop a successor that is busy")
     sc.add_argument("--dry-run", action="store_true")
     r = sub.add_parser("reviewer", parents=[stage_opt], help="choose the reviewer for a change and print how to start it "
                        "(with a stage, the `agent spawn` line carries --stage)")
@@ -1148,6 +1308,7 @@ def main(argv: list) -> int:
                                                             "the source)")
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
     a = p.parse_args(argv)
+    a.argv = list(argv)  # a MOVE message repeats the command line
     explicit, a.stage = a.stage, a.stage or os.environ.get("HUB_STAGE") or None
     needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed")
     if needs_stage and not a.stage:

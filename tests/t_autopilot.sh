@@ -64,6 +64,7 @@ J | grep -q '\[hub-1\] auto-handoff 1/10: started "Hub stage-a #2" (opus, defaul
 check "$(chain):$(pending kind):$(pending id)" "1:bg:bg-1234abcd" "succeed: chain 1, pending bg successor recorded"
 grep -qF "$BR_BIN/jwait --journal --stage stage-a" $R/s1.out && grep -q "jwait --journal --stage stage-a --match '\\\\\[hub-2\\\\\] start:' --since [0-9:]* --settle 1 --for 2s" $R/s1.out; check $? 0 "succeed: prints the exact jwait command"
 grep -qF "ALARM (exit 3) → $BR_BIN/hub succeed --stage stage-a --fallback" $R/s1.out; check $? 0 "succeed: says what to do on ALARM"
+grep -q 'tell the owner one line: "Hub stage-a #2" took over — https://claude.ai/code/session_01AbC-xyz; it is a background Remote Control session named "stage-a-hub-2": in Claude Desktop it is listed under the repository.s address group (for a repository not hosted on github.com that is a separate group from the folder group), on the phone in the Remote Control list' $R/s1.out; check $? 0 "succeed: the owner line says where the successor is (background Remote Control session, Desktop group, phone list)"
 succeed --model opus > $R/s1b.out 2>&1; check $? 1 "succeed: refused while the started successor has not taken over"
 check "$(call --bg count)" 1 "…no second background session"
 # the successor takes over: its jwait wakes, the chain is kept
@@ -383,6 +384,80 @@ python3 -c 'import json,sys; json.dump({"chain":1,"pending":{"n":7,"kind":"bg","
 $B/hub takeover --stage stage-a --session $HUB2 --auto-handoff --handoff $H > /dev/null 2>&1
 check "$($B/roles --stage stage-a list 2>/dev/null | grep -c 'hub-7'):$(chain)" "1:1" "takeover --auto-handoff: the pending successor's number (hub-7), chain kept"
 
+# ================================================================== hub succeed --replace; a retaken shift keeps the chain
+# hub #1 started successor #2 (bg-1234abcd), which took over (--auto-handoff). Then:
+took2(){ setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > $R/rp0.out 2>&1
+         CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/rp1.out 2>&1; }
+replace(){ $B/hub succeed --stage stage-a --cwd $W "$@"; }
+took2; check "$(chain):$(pending author):$(call --bg count)" "1:$HUB1:1" "replace: setup — successor #2 took over, chain 1, the record names its author"
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 replace --replace --model opus > $R/rp2.out 2>&1; rc=$?
+check "$rc:$(call stop count):$(grep -c '"argv": \["stop", "bg-1234a"\]' $FAKE_BG_LOG)" "0:1:1" "replace: the successor that took over is stopped (claude stop <id>), by the hub that handed over"
+check "$(call rm count)" none "…never removed (no claude rm)"
+check "$(call --bg count)" 2 "…and a new background successor is started"
+call --bg argv | grep -q -- "--remote-control stage-a-hub-2 -n Hub stage-a #2 "; check $? 0 "…with the same number (hub-2)"
+call --bg prompt | grep -qF "[agent-hub auto-handoff 1/10]" && call --bg prompt | grep -qF -- "--auto-handoff --handoff $H"; check $? 0 "…the same chain position (1/10) and the same --auto-handoff takeover command"
+check "$(chain):$(pending kind):$(pending taken_over):$(pending author)" "1:bg:None:$HUB1" "…chain still 1; a fresh pending record (not yet taken over), same author"
+J | grep -q '\[hub-1\] auto-handoff: replacing hub-2 (bg bg-1234abcd): stopped background session bg-1234abcd'; check $? 0 "…journaled"
+grep -q 'replaces the earlier hub-2' $R/rp2.out; check $? 0 "…and the journal line of the new successor says so"
+# the new successor takes over: the shift is retaken, the chain stays
+CLAUDE_CODE_SESSION_ID=$HUB3 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/rp3.out 2>&1; check $? 0 "replace: the new successor's takeover (--auto-handoff)"
+J | grep -q "\[hub-2\] start: .*re-took shift #2 (replaces 22222222), handoff by #1"; check $? 0 "…'re-took shift #2 (replaces <id8>), handoff by #1', not 'took over from #2'"
+check "$(chain):$(pending taken_over | cut -c1-2)" "1:20" "…the chain is kept"
+# who may replace
+took2
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB3 replace --replace --model opus > $R/rp4.out 2>&1; check "$?:$(call stop count)" "2:none" "replace: a session that is not the author is refused"
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB2 replace --replace --model opus > $R/rp4.out 2>&1; check "$?:$(call stop count)" "2:none" "replace: the successor itself is refused"
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd HUB_TAG=hub-5 replace --replace --model opus > $R/rp4.out 2>&1; check "$?:$(call stop count)" "2:none" "replace: a foreign HUB_TAG is refused"
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd replace --replace --model opus > $R/rp5.out 2>&1; check "$?:$(call stop count):$(call --bg count)" "0:1:2" "replace: the owner at a terminal (no session, no tag) may"
+# busy: refused unless --force
+took2
+FAKE_AGENTS=prevbusy FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 replace --replace --model opus > $R/rp6.out 2>&1
+check "$?:$(call stop count):$(call --bg count):$(grep -c 'working now (status busy)' $R/rp6.out)" "1:none:1:1" "replace: a busy successor is not stopped, nothing started"
+check "$(chain):$(pending kind)" "1:bg" "…the record is untouched"
+FAKE_AGENTS=prevbusy FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 replace --replace --force --model opus > $R/rp7.out 2>&1
+check "$?:$(call stop count):$(call --bg count)" "0:1:2" "replace --force: stops it and starts the new one"
+# failures never start a second hub beside the first
+took2
+FAKE_STOP=fail FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 replace --replace --model opus > $R/rp8.out 2>&1
+check "$?:$(call --bg count):$(pending kind):$(chain)" "1:1:bg:1" "replace: claude stop failing → failure, nothing started, record kept"
+FAKE_AGENTS=fail CLAUDE_CODE_SESSION_ID=$HUB1 replace --replace --model opus > $R/rp9.out 2>&1
+check "$?:$(call stop count):$(call --bg count)" "1:1:1" "replace: the session list failing → failure (whether it runs is unknown), no further stop, nothing started"
+FAKE_AGENTS=none CLAUDE_CODE_SESSION_ID=$HUB1 replace --replace --model opus > $R/rp10.out 2>&1
+check "$?:$(call stop count):$(call --bg count)" "0:1:2" "replace: a successor that is gone is not stopped again (the one earlier attempt stays the only stop); a new one starts"
+setup; replace --replace --model opus > $R/rp11.out 2>&1; check "$?:$(call --bg count)" "1:none" "replace: nothing recorded → nothing to replace"
+took2; FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd replace --replace --dry-run --model opus > $R/rp12.out 2>&1
+check "$?:$(call stop count):$(call --bg count):$(grep -c '^\[plan\] --replace: stop the recorded successor hub-2' $R/rp12.out)" "0:none:1:1" "replace --dry-run: a plan, nothing stopped or started"
+replace --replace --again > /dev/null 2>&1; check $? 2 "replace: not together with --again"
+# a headless successor that took over and ended, its shift taken again by hand: the record must not keep the stale headless role
+setup
+python3 - $R/stage-a/auto-handoff.json "$H" <<'PY'
+import json, sys
+json.dump({"chain": 1, "pending": {"n": 2, "kind": "headless", "role": "hub-2", "at": "2026-10-05T10:00:00+00:00", "taken_over": "2026-10-05T10:01:00+00:00",
+                                   "handoff": sys.argv[2], "model": "opus", "k": 1, "author": "11111111-1111-4111-8111-111111111111"}}, open(sys.argv[1], "w"))
+PY
+$B/roles --stage stage-a set hub $HUB2 --tag hub-2 --kind cli > /dev/null
+$B/hub takeover --stage stage-a --session $HUB3 --n 2 --handoff $H > $R/rp15.out 2>&1; check "$?:$(pending kind):$(pending role)" "0:manual:None" "stale role: a headless successor's shift taken by hand → the record says manual, the headless role is dropped"
+replace --replace --model opus > $R/rp16.out 2>&1
+check "$?:$(call --bg count):$(call stop count)" "1:none:none" "…and a later --replace starts no twin beside the session that holds the shift"
+# a hub succeed that is still waiting for the Remote Control link while the successor takes over and another session retakes
+# the shift by hand: the late record write must not restore the launch (kind bg, the old id)
+setup
+ONLOGS="CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > /dev/null 2>&1; $B/hub takeover --stage stage-a --session $HUB3 --n 2 --handoff $H > /dev/null 2>&1"
+FAKE_ON_LOGS="$ONLOGS" CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > $R/rp17.out 2>&1
+check "$?:$(pending kind):$(pending id):$(chain)" "0:manual:${HUB3:0:8}:1" "late record: a takeover by hand while hub succeed waits for the link → the record stays manual (not restored to the bg launch)"
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd replace --replace --model opus > $R/rp18.out 2>&1
+check "$?:$(call stop count):$(call --bg count)" "1:none:1" "…and --replace afterwards starts no twin"
+# a takeover by hand of the shift that already was taken keeps the chain; one of a successor that has not taken over resets it
+took2
+$B/hub takeover --stage stage-a --session $HUB3 --n 2 --handoff $H > $R/rp13.out 2>&1; check $? 0 "retake: a takeover by hand of the same number (no --auto-handoff)"
+check "$(chain):$(pending n):$(pending kind):$(pending id)" "1:2:manual:${HUB3:0:8}" "…keeps the chain and the pending record; the session that holds the shift now is recorded (kind manual)"
+FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd replace --replace --model opus > $R/rp14.out 2>&1
+check "$?:$(call stop count):$(call --bg count):$(grep -c 'taken over by hand' $R/rp14.out)" "1:none:1:1" "…and --replace of a hand-held shift is refused: nothing stopped, no second hub started beside it"
+J | grep -q "chain reset"; check $? 1 "…no chain reset"
+J | grep -q "\[hub-2\] start: .*re-took shift #2 (replaces 22222222), handoff by #1"; check $? 0 "…the start line says 're-took shift'"
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > /dev/null 2>&1
+$B/hub takeover --stage stage-a --session $HUB3 --n 2 --handoff $H > /dev/null 2>&1; check "$(chain):$(pending n)" "0:None" "negative control: by hand while the pending successor has not taken over → the chain is reset, as before"
+
 # ================================================================== the hook
 setup
 TR=$R/tr.jsonl
@@ -395,6 +470,7 @@ AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > $R/h0.out; grep -q "agent-hub:
 export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
 cbh UserPromptSubmit > $R/h1.out
 grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --effort high --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, effort, mode, cwd)"
+grep -q "plainly where it is: a background Remote Control session; in Claude Desktop it is listed under the repository's address group (for a repository not hosted on github.com a separate group from the folder group), on the phone in the Remote Control list" $R/h1.out; check $? 0 "hook, warn: the instruction tells the hub to say where the successor is"
 grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF "$BR_BIN/hub succeed --stage stage-a --fallback" $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
 SID=$HUB2 cbh PostToolUse Bash > $R/h2.out; grep -q "agent-hub:handoff" $R/h2.out && ! grep -q Autopilot $R/h2.out; check $? 0 "hook, warn: a session that is not the hub gets today's warning"
 echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "default"}' > $R/config.json; usage 360000

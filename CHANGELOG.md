@@ -22,14 +22,31 @@
   stage's `@dolya-hub-30` still do not match. `jlog` writing into another stage's journal signs a derived tag
   (`$HUB_TAG` or the registry) with the caller's own stage — `[core-c-hub-30]` in the Dolya journal — so the answer
   `@core-c-hub-30` is heard; an explicit `--tag` is written as given, and an own stage that cannot be told leaves the tag as before.
-- **`hub takeover` warns about a replaced hub that still runs.** When the hub registered before the takeover is still
-  a live session (`claude agents --json`; a `done` background session that keeps its pid counts), one `ATTENTION:` line
-  in the output and the digest says other hubs can still message it by name and gives `claude stop <id>` /
-  `claude rm <id>` (a Desktop session: archive it in Desktop). Nothing is stopped; a failing CLI call is silent.
-- **`hub start`, `hub takeover` and `agent spawn --cwd` warn about a missing project folder.** An `ATTENTION:` line
-  (never a refusal) when the working directory is not inside a git repository (a Desktop session started under "No
-  folder" runs in `~` or a temp dir), or when the checkout has no `.agent-hub/` while the remote default branch
-  (`origin/HEAD`, else `origin/main`) has it — the project's rules, locks and brief footer would silently not apply.
+- **`hub start` and `hub takeover` run only in a fresh worktree of the project.** In the project's main clone (whatever
+  branch it has checked out), in a directory outside git (a Desktop session started under "No folder") or in a worktree
+  without the `.agent-hub/` that `origin`'s default branch has, they create `<repo>/.claude/worktrees/<stage>-hub-<n>`
+  from `origin`'s default branch, print `MOVE <path>` with how to move (`EnterWorktree`, else
+  `mcp__ccd_directory__change_directory`; Codex: the workdir) and the command to re-run, and exit 4 before anything is
+  registered, journaled or locked; a clean worktree behind `origin` is fast-forwarded ("refreshed to origin/main abc1234").
+  New `--repo PATH` names the project when the directory is not in one; the stage's project is remembered in
+  `<stage>/stage.json`. Nothing that names a project exits 4 with `NO PROJECT:`; `--no-project` is for a stage that has no repository.
+- **`agent spawn --worktree` branches from `origin`'s default branch**, after a bounded `git fetch`, not from the commit
+  `--cwd` has checked out (a foreign feature branch in the owner's clone). New `--base REF` chooses another start
+  (`--base HEAD`: the old behaviour); the "worktree … created" line names the base.
+- **`hub takeover` stops the hub it replaces** when that is a background session that is not busy (`claude stop`,
+  history kept, never `claude rm`) and says so in the output, the digest and the journal start line; a busy one, a
+  Desktop session and a stop that failed are only named in one `ATTENTION:` line (a failing CLI is silent). A takeover by
+  the registered hub's own number writes "re-took shift #N (replaces <id8>), handoff by #M" and keeps one link in a
+  lock's reason instead of nesting every earlier takeover's.
+- **`hub succeed --replace` swaps a successor that already took over.** It stops it (`claude stop`; a busy one only with
+  `--force`) and starts a new one from the same handoff with the same number, model, mode and chain position; a takeover
+  by hand of the shift the pending successor took over keeps the autopilot chain instead of resetting it (the record
+  then names that session, kind `manual`, and `--replace` refuses to act on it).
+- **`agent spawn --cwd` warns about a missing project folder.** An `ATTENTION:` line (never a refusal) when the
+  directory is not inside a git repository, or the checkout has no `.agent-hub/` while the remote default branch
+  (`origin/HEAD`, else `origin/main`) has it. (`hub start` and `hub takeover` relocate instead, see above.)
+- The hub skill says how to reach another stage's hub: `@hub` or `@<stage>-hub-<N>` in its journal, or the session
+  from `roles --stage <X> get hub`, never a session picked by name in `ListAgents`.
 
 - **Pixel-art illustrations explain worker coordination and hub handoff.** The README shows distinct worker tasks
   feeding a shared journal; the handoff scene shows OLD HUB → FRESH HUB, with all continuing workers under the fresh hub.

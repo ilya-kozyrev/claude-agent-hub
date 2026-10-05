@@ -67,6 +67,13 @@ IN_PROGRESS = ("starting", "falling-back")
 DEFAULT_EFFORT = "high"  # the Claude successor's effort when neither --effort nor AGENT_HUB_SUCCESSOR_EFFORT says
 
 
+# What the outgoing hub tells the owner about a background successor (bin/autopilot.py `instruction` and `report`): where to
+# find it. Claude Desktop groups sessions by the repository's address, and derives an owner for github.com only.
+FIND_SUCCESSOR = ("it is a background Remote Control session named \"{name}\": in Claude Desktop it is listed under the "
+                  "repository's address group (for a repository not hosted on github.com that is a separate group from the "
+                  "folder group), on the phone in the Remote Control list")
+
+
 def tool(name: str) -> str:
     """A plugin tool as the commands this module writes call it: by the absolute path of this bin/, so a same-named
     command earlier on PATH (GitHub CLI `hub`) cannot answer instead, and with no shell expansion ($HUB_BIN), which an
@@ -156,16 +163,27 @@ def reset_chain(stage: str, why: str) -> bool:
     return True
 
 
-def on_takeover(stage: str, n: int, auto: bool = False) -> None:
+def on_takeover(stage: str, n: int, auto: bool = False, session: str = "") -> None:
     """Called by `hub takeover` once it is done: the pending automatic successor (its takeover carries
-    --auto-handoff, which only `hub succeed` writes) keeps the chain; any other takeover resets it — a takeover by
-    hand means the owner is involved, even when it gets the same number."""
+    --auto-handoff, which only `hub succeed` writes) keeps the chain; so does a takeover of the shift that successor
+    already took over (a replacement of it, by hand or by `hub succeed --replace`): the record stays and only its
+    session id is rewritten. Any other takeover resets the chain — a takeover by hand means the owner is involved,
+    even when it gets the number of a successor that has not taken over yet."""
     with state_lock(stage):
         data = load_state(stage)
         pend = data.get("pending") or {}
-        if auto and pend.get("n") == n:
+        if pend.get("n") == n and (auto or pend.get("taken_over")):
+            changed = False
             if not pend.get("taken_over"):
                 pend["taken_over"] = hc.now().isoformat(timespec="seconds")
+                changed = True
+            if not auto and session and (pend.get("id") != session[:8] or pend.get("kind") != "manual"):
+                # a session started by hand holds the shift now: the launch the record described (a background
+                # session, a headless role) is gone, and `--replace` must not act on it
+                pend["id"], pend["kind"], changed = session[:8], "manual", True
+                for key in ("role", "link", "worktree", "bg_id", "why"):
+                    pend.pop(key, None)
+            if changed:
                 save_state(stage, data)
             return
         if not data["chain"] and not pend:
@@ -370,7 +388,10 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
             f"(2) `{succeed_command(stage, model, mode, cwd, effort=successor_effort(None))}` (Bash timeout 300000: it may take minutes) — it starts the successor (a background Remote Control "
             "session, else a headless hub) and prints a `jwait` command; (3) run that `jwait` with Bash "
             "run_in_background: true. When it delivers the successor's start line, tell the owner one line — the "
-            "successor's name and link from `hub succeed` — and stop: no more tool calls, release no locks (the "
+            "successor's name and link from `hub succeed`, and plainly where it is: a background Remote Control session; "
+            "in Claude Desktop it is listed under the repository's address group (for a repository not hosted on "
+            "github.com a separate group from the folder group), on the phone in the Remote Control list — and stop: "
+            "no more tool calls, release no locks (the "
             f"successor's takeover moves them). If it ends with ALARM: `{tool('hub')} succeed --stage {stage} --fallback` "
             "(Bash timeout 300000). If "
             "`hub succeed` reports the chain limit, stop after the handoff and wait for the owner. "
@@ -601,7 +622,7 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
                 "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title,
                 "--effort", self.effort]
         if self.root:
-            # agent spawn's own worktree: <root>/.worktrees/<branch>, a new branch from the root's HEAD
+            # agent spawn's own worktree: <root>/.worktrees/<branch>, a new branch from origin's default branch
             branch = free_worktree_name(self.root, self.rc_name)
             argv += ["--worktree", branch]
             self.worktree = self.root / ".worktrees" / branch
@@ -769,7 +790,8 @@ def report(stage: str, s: Successor, pend: dict, timeout_s: int) -> None:
           + jwait_command(stage, s.succ, since, timeout_s))
     if pend["kind"] == "bg":
         print(f"Exit 0 (its start line) → tell the owner one line: \"{s.title}\" took over — "
-              f"{pend.get('link') or 'claude attach ' + pend['id']}; then stop: no more tool calls.\n"
+              f"{pend.get('link') or 'claude attach ' + pend['id']}; "
+              + FIND_SUCCESSOR.format(name=s.rc_name) + "; then stop: no more tool calls.\n"
               f"ALARM (exit 3) → {tool('hub')} succeed --stage {stage} --fallback")
     else:
         print(f"Exit 0 → tell the owner one line: \"{s.title}\" took over headless — `agent send {pend['role']} \"…\"`; "
@@ -868,14 +890,104 @@ def drop_dead(stage: str, n: int, cwd, succ: int) -> None:
                                          f"{pend.get('id') or pend.get('role')}): it did not take over and is not running")
 
 
+def list_agents(cli_path: str, cwd=None) -> Optional[list]:
+    """The rows of `claude agents --json`; None when the call fails (never an empty list for a failure)."""
+    try:
+        res = subprocess.run([cli_path, "agents", "--json"], capture_output=True, text=True, timeout=30,
+                             env=child_env(), stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None)
+        rows = json.loads(res.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else None
+
+
+def stop_recorded(stage: str, pend: dict, cwd, force: bool) -> str:
+    """Stop the recorded successor (a background session: `claude stop`, history kept, never `claude rm`; a headless
+    agent: `agent stop`) and say what happened. A session that is working now (`busy`; a running headless agent always
+    is) is left alone unless `force`. Raises hc.Failure when it cannot be told or stopped: replacing blind would start
+    a second hub beside the first."""
+    own = hc.session_id()
+    if pend.get("kind") == "headless":
+        ag = _agent_module()
+        try:
+            meta = ag.load_meta(stage, pend["role"])
+        except (hc.Failure, KeyError, OSError, ValueError):
+            return f"the headless agent {pend.get('role')} was already gone"
+        if not ag.alive(meta):
+            return f"the headless agent {pend.get('role')} was not running"
+        if own and own == meta.get("session_id"):
+            raise hc.Failure("--replace: that is the session running this command")
+        if not force:
+            raise hc.Failure(f"--replace: the headless successor {pend.get('role')} is running (working now) — --force stops it too")
+        res = subprocess.run([sys.executable, str(hc.BIN / "agent"), "stop", "--stage", stage, pend["role"]],
+                             capture_output=True, text=True, env=child_env(), stdin=subprocess.DEVNULL)
+        if res.returncode != 0:
+            raise hc.Failure(f"--replace: `agent stop {pend['role']}` failed: {tail(res.stderr or res.stdout, 300)}")
+        return f"stopped the headless agent {pend['role']}"
+    bg_id = pend.get("id") or ""
+    cli = hc.find_claude(cwd)
+    if cli is None:
+        raise hc.Failure("--replace: claude not found on PATH (set $CLAUDE_BIN): the successor cannot be stopped")
+    rows = list_agents(cli.path, cwd)
+    if rows is None:
+        raise hc.Failure("--replace: `claude agents --json` failed, so whether hub-%s still runs is unknown — not starting a "
+                         "second one blind; retry, or `claude stop %s` by hand and use --again" % (pend.get("n"), bg_id))
+    row = next((r for r in rows if bg_id and (bg_id in (r.get("id"), r.get("sessionId"))
+                                              or str(r.get("sessionId") or "").startswith(bg_id))), None)
+    if row is None:
+        return f"background session {bg_id} was not running"
+    if own and own in (row.get("sessionId"), row.get("id")):
+        raise hc.Failure("--replace: that is the session running this command")
+    if row.get("status") == "busy" and not force:
+        raise hc.Failure(f"--replace: the successor hub-{pend.get('n')} ({bg_id}) is working now (status busy) — wait for it "
+                         "to go idle, or --force")
+    res = subprocess.run([cli.path, "stop", row.get("id") or bg_id], capture_output=True, text=True, timeout=30,
+                         env=child_env(), stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None)
+    if res.returncode != 0:
+        raise hc.Failure(f"--replace: `claude stop {bg_id}` failed (exit {res.returncode}): {tail(res.stderr or res.stdout, 300)}")
+    return f"stopped background session {bg_id} (`claude stop`; its history stays: `claude attach {bg_id}`)"
+
+
+def replace_successor(stage: str, n: int, cwd, succ: int, force: bool) -> str:
+    """`hub succeed --replace`: the recorded successor of this shift — one that took over, or one that runs — is
+    stopped and its place in the chain given back, so that the successor started next takes the same number and the
+    same chain position. Returns what happened to the old one."""
+    pend = load_state(stage).get("pending") or {}
+    if pend.get("n") == succ and pend.get("kind") == "manual":
+        raise hc.Failure(f"--replace: hub-{succ} was taken over by hand (session {pend.get('id')}), not started by "
+                         "`hub succeed`: the plugin cannot stop it — stop that session yourself and take the shift over again")
+    if pend.get("n") != succ or pend.get("kind") not in ("bg", "headless"):
+        if pend.get("n") == succ and pend.get("kind") in IN_PROGRESS:
+            raise hc.Failure(f"--replace: hub-{succ} is being started right now — {wait_hint(stage, pend)}")
+        raise hc.Failure(f"--replace: no started successor hub-{succ} is recorded (pending: "
+                         f"{'hub-' + str(pend['n']) if pend.get('n') else 'none'}); `hub succeed` starts one, "
+                         "`--again` replaces one that did not take over and does not run")
+    done = stop_recorded(stage, pend, cwd, force)
+    with state_lock(stage):
+        data = load_state(stage)
+        if data.get("pending") != pend:
+            raise hc.Failure("--replace: the pending record changed meanwhile — look again (`hub succeed --replace` once more)")
+        data["pending"] = None
+        if pend.get("k") and data["chain"] == pend["k"]:
+            data["chain"] -= 1
+        save_state(stage, data)
+    hc.journal_append(stage, f"hub-{n}", f"auto-handoff: replacing hub-{succ} ({pend.get('kind')} "
+                                         f"{pend.get('id') or pend.get('role')}): {done}")
+    return done
+
+
 def _record(stage: str, succ: int, pend: dict) -> None:
-    """Replace the pending record of this shift (a takeover by hand in between cleared it: then leave it)."""
+    """Replace the pending record of this shift (a takeover by hand in between cleared it: then leave it). A record a
+    takeover by hand rewrote (kind manual: another session holds the shift now) is not the launcher's any more: a
+    `hub succeed` that is still waiting for its link must not restore the launch it made."""
     with state_lock(stage):
         data = load_state(stage)
         previous = data.get("pending") or {}
-        if previous.get("n") == succ:
+        if previous.get("n") == succ and previous.get("kind") != "manual":
             if previous.get("taken_over"):
                 pend = dict(pend, taken_over=previous["taken_over"])
+            if previous.get("author") and not pend.get("author"):
+                pend = dict(pend, author=previous["author"])  # who ran `hub succeed`: `--replace` is theirs to run
             data["pending"] = pend
             save_state(stage, data)
 
@@ -893,12 +1005,13 @@ def _release(stage: str, succ: int, k: int) -> None:
 
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
             headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
-            succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None) -> int:
+            succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None,
+            replace: bool = False, force: bool = False) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
-    retry = (load_state(stage).get("pending") or {}) if again else {}
-    if retry.get("n") != succ or retry.get("taken_over"):
-        retry = {}
+    retry = (load_state(stage).get("pending") or {}) if again or replace else {}
+    if retry.get("n") != succ or (retry.get("taken_over") and not replace):
+        retry = {}  # --replace starts from the record of a successor that took over; --again only from one that did not
     engine = engines.selected(engine or hc.setting("AGENT_HUB_SUCCESSOR_ENGINE") or retry.get("engine"), cwd)
     approval, sandbox_policy, effort = "never", None, None
     if engine == "codex":
@@ -923,18 +1036,26 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     else:
         # --again without a new --effort: the previous attempt's effort, not the default
         effort = successor_effort(effort_arg or (retry.get("effort") if retry.get("engine") != "codex" else None))
-        model = successor_model(model)
+        model = successor_model(model or (retry.get("model") if replace else None))
         if not model:
             raise hc.UsageError("no model for the successor: pass --model (the hub's transcript was not found and "
                                 "AGENT_HUB_SUCCESSOR_MODEL is not set)")
         problem = hc.model_problem(model, cwd)
-        mode = successor_mode(mode)
+        mode = successor_mode(mode or (retry.get("mode") if replace else None))
         if mode not in MODES:
             raise hc.UsageError(f"permission mode {mode!r}: one of {', '.join(MODES)}")
     if problem:
         raise hc.UsageError(f"--model {model!r}: {problem}")
     if again and not dry_run:
         drop_dead(stage, n, cwd, succ)
+    replaced = ""
+    if replace:
+        if dry_run:
+            print(f"[plan] --replace: stop the recorded successor hub-{succ} "
+                  f"({retry.get('kind') or '?'} {retry.get('id') or retry.get('role') or '?'}), then start a new one "
+                  f"with the same number and chain position {retry.get('k') or '?'}")
+        else:
+            replaced = replace_successor(stage, n, cwd, succ, force)
     started = hc.now().isoformat(timespec="seconds")
     # One successor per shift and the chain counted under the lock, before anything starts: a second `hub succeed`
     # (a retry after a Bash timeout, a parallel call) sees the reservation, and an owner's reset is never overwritten.
@@ -950,7 +1071,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if not at_limit and not dry_run:
             data["chain"] = k
             data["pending"] = {"n": succ, "kind": "starting", "at": started, "handoff": str(handoff),
-                               "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}
+                               "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort,
+                               "author": hc.session_id()}
             save_state(stage, data)
     if at_limit:
         line = (f"auto-handoff chain limit {limit} reached — waiting for the owner; handoff {handoff}. "
@@ -963,6 +1085,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         s = (CodexSuccessor(stage, n, handoff, model, mode, cwd, k, limit, approval, sandbox_policy, effort, succ) if engine == "codex"
              else Successor(stage, n, handoff, model, mode, cwd, k, limit, succ, effort))
         s.notes.extend(notes)
+        if replaced:
+            s.notes.append(f"replaces the earlier hub-{succ}: {replaced}")
         if engine == "codex" and context.get("approval_policy") not in (None, "never"):
             s.notes.append(f"inherited sandbox {mode}; approval policy {context['approval_policy']} becomes never "
                            "for the unattended successor (denied tools fail without broadening permissions)")
@@ -1001,7 +1125,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     _record(stage, succ, {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
                           "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
                           "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort})  # a new phase: a fresh start budget
-    got = headless_or_owner(stage, s, why)
+    got = headless_or_owner(stage, s, why, replacing=replace)
     pend = {"n": succ, "kind": "headless", "at": started, "handoff": str(handoff), "model": model, "k": k,
             "why": why, "cwd": str(s.cwd), "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort, **got}
     _record(stage, succ, pend)
@@ -1009,16 +1133,18 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     return 0
 
 
-def headless_or_owner(stage: str, s: Successor, why: str) -> dict:
+def headless_or_owner(stage: str, s: Successor, why: str, replacing: bool = False) -> dict:
     try:
         if isinstance(s, CodexSuccessor):
             # A manual takeover while this command prepared its successor ends our reservation.
             # Keep the lock until spawn has returned its init handshake; takeover then proceeds normally.
+            # Under --replace the registered hub is the successor just stopped (the new one's number), which is expected.
             with state_lock(stage):
                 current = hc.roles_load(stage)["roles"].get("hub") or {}
                 pending = load_state(stage).get("pending") or {}
                 number = hc.hub_number(current.get("tag"))
-                if not current or (number is not None and number != s.n) or pending.get("n") != s.succ or pending.get("taken_over"):
+                expected = (s.n, s.succ) if replacing else (s.n,)
+                if not current or (number is not None and number not in expected) or pending.get("n") != s.succ or pending.get("taken_over"):
                     raise hc.Failure("the hub changed while the successor was prepared; no Codex process started")
                 return s.start_headless(why)
         return s.start_headless(why)

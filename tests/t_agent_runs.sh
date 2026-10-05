@@ -68,6 +68,9 @@ git -C $P/orph checkout -q --orphan unborn
 $B/agent spawn --role ex --cwd $P/orph --model haiku --brief $W/b.md --worktree main > $P/o1.out 2>&1; check $? 0 "HEAD unborn, commits on main: --worktree main (an existing branch) works"
 [ -d $P/orph/.worktrees/main ] && [ "$(git -C $P/orph/.worktrees/main rev-parse --abbrev-ref HEAD)" = main ]; check $? 0 "…a worktree of main"
 wait_dead ex
-$B/agent spawn --role nb --cwd $P/orph --model haiku --brief $W/b.md --worktree brand-new > $P/o2.out 2>&1; check $? 1 "negative: a new branch from the unborn HEAD still says there are no commits"
-grep -q 'has no commits yet' $P/o2.out; check $? 0 "…naming the reason"
+$B/agent spawn --role nb --cwd $P/orph --model haiku --brief $W/b.md --worktree brand-new > $P/o2.out 2>&1; check $? 0 "a new branch with HEAD unborn starts from the default branch (main), not from HEAD"
+[ "$(git -C $P/orph/.worktrees/brand-new rev-parse HEAD)" = "$(git -C $P/orph rev-parse main)" ]; check $? 0 "…a worktree at main's commit"
+wait_dead nb
+$B/agent spawn --role nb2 --cwd $P/orph --model haiku --brief $W/b.md --worktree brand-new2 --base HEAD > $P/o3.out 2>&1; check $? 1 "negative: --base HEAD from the unborn HEAD still says there are no commits"
+grep -q 'has no commits yet' $P/o3.out; check $? 0 "…naming the reason"
 exit $fail
