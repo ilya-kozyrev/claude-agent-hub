@@ -77,8 +77,11 @@ def runtime_status(sid: str, cwd=None):
                     proc.wait(timeout=1)
             except (OSError, subprocess.SubprocessError):
                 pass
-            proc.stdin.close()
-            proc.stdout.close()
+            for pipe in (proc.stdin, proc.stdout):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
     return None
 
 

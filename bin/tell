@@ -11,7 +11,9 @@ session list: a replaced hub can still run under the same display name. Then:
      the holder's `jwait --tag hub` hears it;
   2. the direct address is printed for the rare case a direct message is needed (the other hub must act before its
      next wake-up): the full session id, kind and title; for a Claude session the name a cross-session message
-     goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer).
+     goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer). Codex uses
+     `agent send` for a detached holder (including one promoted to hub), or `codex queue --thread <UUID>` on a CLI
+     with queue support, never a Claude session name.
 A headless agent reads its inbox, not a journal: for a holder of kind headless tell delivers through
 `agent send --stage <stage> <role> "text (from <your tag>)"` itself (it journals the line too), says so, and exits with
 that command's code.

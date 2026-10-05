@@ -47,6 +47,8 @@ mode=os.environ.get('PROXY_MODE','idle')
 if mode=='fail':sys.exit(1)
 if mode=='hang':time.sleep(30);sys.exit(1)
 assert json.loads(sys.stdin.readline())['method']=='initialize'
+if mode=='brokenpipe':
+ os.close(0);print(json.dumps({'id':1,'result':{}}),flush=True);time.sleep(1);sys.exit(0)
 print(json.dumps({'id':1,'result':{}}),flush=True)
 assert json.loads(sys.stdin.readline())['method']=='initialized'
 r=json.loads(sys.stdin.readline());assert r['method']=='thread/read' and r['params']['includeTurns'] is False
@@ -61,7 +63,7 @@ for state in ('idle','active','systemError'):
  assert cs.runtime_status(sid)==state
  warning=hub.live_previous_warning(rec,'new','new','stage-a')
  assert 'still runs' in warning and 'Codex terminal/app session' in warning
-for state in ('notLoaded','wrongid','fail','malformed','badshape','hang'):
+for state in ('notLoaded','wrongid','fail','malformed','badshape','brokenpipe','hang'):
  os.environ['PROXY_MODE']=state
  assert hub.live_previous_warning(rec,'new','new','stage-a')=='',state
 # Detached stale PID/token and process failure: never trust PID existence or recent rollout activity.
