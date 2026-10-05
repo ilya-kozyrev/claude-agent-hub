@@ -6,8 +6,9 @@
   that stage's registry, appends `@hub text` (`@hub QUESTION text` with `--question`) to its journal signed with the
   caller's stage-qualified tag, and prints the registered direct address: session id, kind, title, the name for a
   cross-session message (from `claude agents --json` by session id; skipped when the CLI does not answer), or
-  `agent send --stage <stage> <role>` for a headless agent. `--address` prints only the address and writes nothing.
-  An unknown stage or no holder exits 1 and lists the stages that have one. The hub skill now says: the journal first,
+  `agent send --stage <stage> <role>`, which `tell` runs itself for a headless agent. `--address` prints only the address and writes nothing.
+  A headless holder gets the text through `agent send` (it reads its inbox, not a journal). An answer comes back in the
+  asker's own journal (`tell <asker's stage>`). `--address` takes no text. An unknown stage or no holder exits 1 and lists the stages that have one. The hub skill now says: the journal first,
   a direct message only to the registry address, never to a session picked by its name in a list.
 - **Hub-to-hub addressing no longer loses requests.** `jwait --tag hub-30` on stage `core-c` also wakes on the
   stage-qualified address `@core-c-hub-30` (and `--tag hub` on `@core-c-hub`); `@hub-300`, `@xcore-c-hub-30` and another

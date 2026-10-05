@@ -2,21 +2,26 @@
 """Write to another stage's hub: a journal line addressed by the registry, and the registered direct address.
 
   tell <target-stage> "text" [--question] [--role hub] [--address]
+  tell <target-stage> [options] -- "-text that starts with a dash"
 
 The target's current holder of the role (default hub) is read from <target-stage>/roles.json — the registry, not a
 session list: a replaced hub can still run under the same display name. Then:
   1. one line is appended to the target stage's journal, "@hub text" ("@<role> text" for --role; "@hub QUESTION text"
      with --question), signed with your stage-qualified tag (`[dolya-hub-3]`, as `jlog` does in a foreign journal), so
-     the holder's `jwait --tag hub` hears it and its answer "@dolya-hub-3" reaches your `jwait --tag hub-3`;
+     the holder's `jwait --tag hub` hears it;
   2. the direct address is printed for the rare case a direct message is needed (the other hub must act before its
      next wake-up): the full session id, kind and title; for a Claude session the name a cross-session message
-     goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer); for a
-     headless agent the command `agent send --stage <stage> <role> "…"`.
-The journal is the preferred channel between hubs. A direct message goes only to this address, never to a session
-picked by its name in a list.
---address: print only the direct address, write nothing.
-Hub home: `hub home` shows which and why. Exit: 0 ok, 1 stage or holder not found / write failed, 2 usage (no tag to
-sign with, empty text).
+     goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer).
+A headless agent reads its inbox, not a journal: for a holder of kind headless tell delivers through
+`agent send --stage <stage> <role> "text (from <your tag>)"` itself (it journals the line too), says so, and exits with
+that command's code.
+The answer reaches you only in YOUR journal: the other hub answers with `tell <your stage> "…"`; its jwait does not read
+your stage's journal, and yours does not read its.
+The journal is the preferred channel between hubs. A direct message goes only to the registry address, never to a
+session picked by its name in a list. Text that starts with a dash goes after `--`.
+--address: print only the direct address, write nothing (no text allowed).
+Hub home: `hub home` shows which and why. Exit: 0 ok, 1 stage or holder not found / write or delivery failed, 2 usage
+(no tag to sign with, empty text, text with --address).
 """
 from __future__ import annotations
 
@@ -84,7 +89,7 @@ def address_lines(stage: str, role: str, rec: dict) -> list:
              f"  kind     {kind}",
              f"  title    \"{rec.get('title') or role}\""]
     if kind == "headless":
-        lines.append(f"  send     agent send --stage {stage} {role} \"…\"")
+        lines.append(f"  send     agent send --stage {stage} {role} \"…\"   (tell does this itself)")
     else:
         name = claude_name(rec)
         if name:
@@ -92,16 +97,32 @@ def address_lines(stage: str, role: str, rec: dict) -> list:
     return lines
 
 
+def deliver_headless(stage: str, role: str, tag: str, text: str) -> int:
+    """A headless agent reads its inbox only: hand the text to `agent send` (inbox while alive, resume after exit; it
+    journals the line itself) and return its exit code."""
+    cmd = [sys.executable, str(hc.BIN / "agent"), "send", "--stage", stage, role, f"{text} (from {tag})"]
+    try:
+        res = subprocess.run(cmd, env=hc.child_env(), stdin=subprocess.DEVNULL)
+    except OSError as e:
+        raise hc.Failure(f"could not run agent send: {e}") from None
+    print(f"{role} in {stage} is headless: delivered through `agent send --stage {stage} {role}` "
+          f"(exit {res.returncode}), not as a journal line of its own" if res.returncode == 0 else
+          f"{role} in {stage} is headless: `agent send --stage {stage} {role}` failed (exit {res.returncode})")
+    return res.returncode
+
+
 def main(argv: list) -> int:
     p = argparse.ArgumentParser(prog="tell", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("stage", help="the stage whose hub (or --role) is written to")
-    p.add_argument("text", nargs="*", help="line text (newlines are collapsed); not needed with --address")
+    p.add_argument("text", nargs="*", help="line text (newlines are collapsed); a text starting with '-' goes after --; none with --address")
     p.add_argument("--question", action="store_true", help="prefix the text with QUESTION (a jwait wake word)")
     p.add_argument("--role", default="hub", help="role to address (default: hub)")
     p.add_argument("--address", action="store_true", help="print only the direct address, write nothing")
     args = p.parse_intermixed_args(argv)  # options between the stage and a nargs="*" text: plain parse_args drops the text on older Pythons
     stage = hc.check_stage(args.stage)
     text = " ".join(args.text).strip()
+    if args.address and text:
+        raise hc.UsageError("--address takes no text")
     if not args.address and not text:
         raise hc.UsageError("empty text")
     rec = holder(stage, args.role)
@@ -111,6 +132,8 @@ def main(argv: list) -> int:
             raise hc.UsageError("no tag: set $HUB_TAG or register this session (the first hub of a stage: "
                                 "`hub start --stage S --session $CLAUDE_CODE_SESSION_ID`; anyone else: "
                                 "`roles set <role> <session id> --tag …`)")
+        if rec.get("kind") == "headless":
+            return deliver_headless(stage, args.role, tag, ("QUESTION " if args.question else "") + text)
         try:
             line = hc.journal_append(stage, tag, f"@{args.role} " + ("QUESTION " if args.question else "") + text)
         except OSError as e:

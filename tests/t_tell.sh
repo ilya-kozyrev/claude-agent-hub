@@ -8,7 +8,6 @@ HUBC=aaaaaaaa-1111-4111-8111-111111111111   # tc-core's hub (a terminal session)
 ME=bbbbbbbb-2222-4222-8222-222222222222     # the caller: hub-4 of tc-dolya
 STW=cccccccc-3333-4333-8333-333333333333    # a headless steward of tc-core
 $B/roles --stage tc-core set hub $HUBC --kind cli --tag hub-30 --title "Hub tc-core #30" >/dev/null
-$B/roles --stage tc-core set steward $STW --kind headless --tag steward --title "steward" >/dev/null
 $B/roles --stage tc-dolya set hub $ME --kind cli --tag hub-4 >/dev/null
 JC=$(journal tc-core); JD=$(journal tc-dolya)
 tell(){ HUB_STAGE=tc-dolya CLAUDE_CODE_SESSION_ID=$ME $B/tell "$@"; }
@@ -22,11 +21,21 @@ grep -q 'name     Hub stage-a #16' $O/t1.out; check $? 0 "…and the name from c
 # 2. --question
 FAKE_AGENTS=prev FAKE_PREV_SID=$HUBC tell tc-core --question "merge or wait?" > $O/t2.out 2>&1; check $? 0 "--question exits 0"
 grep -q '\[tc-dolya-hub-4\] @hub QUESTION merge or wait?$' $JC; check $? 0 "--question: @hub QUESTION …"
-# 3. --role: the steward is headless → agent send, no session name lookup
-tell tc-core --role steward "pause the merge" > $O/t3.out 2>&1; check $? 0 "--role steward exits 0"
-grep -q '\[tc-dolya-hub-4\] @steward pause the merge$' $JC; check $? 0 "--role: @steward …"
-grep -q 'agent send --stage tc-core steward' $O/t3.out; check $? 0 "headless: the address is the agent send command"
-! grep -q 'name  ' $O/t3.out; check $? 0 "negative: no session name for a headless agent"
+# 3. --role: a headless holder reads its inbox, so tell hands the text to agent send (which journals) and writes no line of its own
+W=$O/w; mkdir -p $W; echo "brief: wait" > $W/b.md
+FAKE_HOLD=0 HUB_TAG=hub-test $B/agent spawn --stage tc-core --role steward --cwd $W --model haiku --brief $W/b.md > $O/spawn.out 2>&1; check $? 0 "spawn a headless steward (fake CLI)"
+for i in $(seq 1 40); do $B/agent status --stage tc-core steward | grep -q ALIVE || break; sleep 0.5; done
+tell tc-core --role steward --question "pause the merge" > $O/t3.out 2>&1; check $? 0 "--role steward (headless) exits 0"
+grep -q 'pause the merge' $O/tc-core/agents/steward/inbox.md; check $? 0 "headless: the text reached the agent's inbox"
+grep -q 'QUESTION pause the merge (from tc-dolya-hub-4)' $O/tc-core/agents/steward/inbox.md; check $? 0 "…with QUESTION and the sender's qualified tag"
+grep -q '@steward .*pause the merge' $JC; check $? 0 "…and agent send journaled the @steward line"
+grep -q '\[tc-dolya-hub-4\] @steward' $JC; check $? 1 "negative: tell wrote no journal line of its own for a headless holder"
+grep -q 'delivered through `agent send --stage tc-core steward`' $O/t3.out; check $? 0 "tell says it delivered through agent send"
+for i in $(seq 1 40); do $B/agent status --stage tc-core steward | grep -q ALIVE || break; sleep 0.5; done   # a resumed fake run must end before the home goes
+tell tc-core --role steward --address > $O/t3b.out 2>&1; check $? 0 "--address for a headless holder exits 0"
+grep -q 'agent send --stage tc-core steward' $O/t3b.out; check $? 0 "headless: the address shows the agent send command"
+$B/agent stop --stage tc-core steward >/dev/null 2>&1
+tell tc-core --role steward "after stop" > $O/t3c.out 2>&1; check $? 1 "a retired role → exit 1, no delivery"
 # 4. --address: prints the address, writes nothing
 before=$(cat $JC | wc -l)
 FAKE_AGENTS=prev FAKE_PREV_SID=$HUBC tell tc-core --address > $O/t4.out 2>&1; check $? 0 "--address exits 0"
@@ -40,6 +49,10 @@ mkdir -p $O/tc-empty; $B/roles --stage tc-empty set qa $STW --kind headless >/de
 tell tc-empty "hello" > $O/t5b.out 2>&1; check $? 1 "a stage without a hub → exit 1"
 tell tc-core --role nobody --address > $O/t5c.out 2>&1; check $? 1 "no holder of the role → exit 1, also with --address"
 # 6. usage
+tell tc-core --address "text" > $O/t6a.out 2>&1; check $? 2 "--address with text → exit 2"
+grep -q -- '--address takes no text' $O/t6a.out; check $? 0 "…saying so"
+tell tc-core -- "-x: starts with a dash" > $O/t6c.out 2>&1; check $? 0 "text starting with a dash after --"
+grep -q '@hub -x: starts with a dash$' $JC; check $? 0 "…is written as given"
 tell tc-core > $O/t6.out 2>&1; check $? 2 "no text → exit 2"
 env -u CLAUDE_CODE_SESSION_ID -u HUB_STAGE -u HUB_TAG $B/tell tc-core "anonymous" > $O/t6b.out 2>&1; check $? 2 "caller without a tag → exit 2"
 grep -q 'anonymous' $JC; check $? 1 "negative: nothing written without a tag"
