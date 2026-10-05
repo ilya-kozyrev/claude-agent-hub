@@ -10,6 +10,7 @@ description: Answer questions about running agents, tasks or stages, who is wait
    an unrelated command may shadow it on PATH. This reads the shared hub home and session logs without changing them.
    Use `--stage <stage>` for a named or clearly implied stage (repeatable), otherwise cover every stage.
    Add `--all` when older finished runs matter; `--agent <role> --feed 10` gives one agent's recent activity.
+   Collection can take minutes on a busy home; wait for completion through the host's execution continuation tools.
 2. Read the fresh snapshot before answering. Group by stage: live agents with role, task/current action and duration,
    relevant finished/failed work since the previous snapshot in this conversation, owner questions and held locks.
    Use `action.elapsed_s` for action duration and `started_at` for run duration; `age_s` is time since the last log
