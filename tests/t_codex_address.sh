@@ -8,6 +8,9 @@ trap '"$B/agent" stop --stage stage-a old-hub >/dev/null 2>&1' EXIT
 FAKE_CODEX_HOLD=60 "$B/agent" spawn --engine codex --role old-hub --cwd "$W" --brief "$W/brief.md" > "$W/spawn.out" 2>&1
 check $? 0 'spawn a fake detached Codex predecessor'
 SID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$AGENT_HUB_HOME/stage-a/agents/old-hub/meta.json")
+"$B/tell" stage-a --role old-hub --address > "$W/headless-address.out" 2>&1
+check $? 0 'Codex headless address'
+grep -q 'agent send .* (tell does this itself)' "$W/headless-address.out"; check $? 0 'headless address says tell delivers automatically'
 NEW=77777777-7777-4777-8777-777777777777
 # hub takeover registers a detached successor as kind cli, without worker PID/token.
 "$B/roles" set hub "$SID" --kind cli --tag hub-1 > /dev/null
@@ -18,6 +21,7 @@ PY
 "$B/tell" stage-a --address > "$W/address.out" 2>&1
 check $? 0 'Codex promoted worker address'
 grep -q 'agent send --stage stage-a old-hub' "$W/address.out"; check $? 0 'address resolves original detached role by UUID'
+! grep -q '(tell does this itself)' "$W/address.out"; check $? 0 'promoted cli address does not promise automatic inbox delivery'
 "$B/hub" takeover --stage stage-a --session "$NEW" > "$W/take.out" 2>&1
 check $? 0 'takeover over a detached Codex predecessor'
 check "$(grep -c 'ATTENTION: the previous hub' "$W/take.out")" 2 'Codex warning in output and digest'
@@ -28,7 +32,7 @@ grep -q 'agent stop --stage stage-a old-hub' "$W/take.out"; check $? 0 'Codex wa
 "$B/agent" stop old-hub > /dev/null 2>&1
 
 python3 - "$B" "$AGENT_HUB_HOME" <<'PY'
-import importlib.machinery, importlib.util, json, os, subprocess, sys
+import importlib.machinery, importlib.util, json, os, subprocess, sys, time
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,sys.argv[1])
@@ -67,7 +71,11 @@ for state in ('idle','active','systemError'):
  assert 'still runs' in warning and 'Codex terminal/app session' in warning
 for state in ('notLoaded','wrongid','fail','malformed','badshape','brokenpipe','hang'):
  os.environ['PROXY_MODE']=state
+ started=time.monotonic()
  assert prev_warning(rec,'new','new','stage-a')=='',state
+ if state=='hang':
+  elapsed=time.monotonic()-started
+  assert elapsed < 12, f'hanging transport exceeded deadline: {elapsed:.3f}s'
 # Detached stale PID/token and process failure: never trust PID existence or recent rollout activity.
 meta={'engine':'codex','session_id':sid,'role':'old-hub','pid':1234,'process_token':'expected'}
 p=root/'stage-a'/'agents'/'old-hub'/'meta.json';p.write_text(json.dumps(meta))

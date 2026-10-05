@@ -36,6 +36,7 @@ codex plugin list --marketplace agent-hub-codex
 ```
 
 Restart the Codex chat so it loads the installed skills, then ask for `agent-hub:setup` in the project.
+Ask the session what is running; the `status` skill answers in words from fresh `agent-top` data.
 `.codex-plugin/plugin.json` packages `./skills/` and explicitly selects `./hooks/codex-hooks.json`;
 it does not load the Claude hook configuration. Installation and enabling do not grant hook trust: review
 and trust the installed hooks in Codex before using them interactively. Untrusted hooks are skipped.
@@ -100,6 +101,7 @@ matched worker role, including after `hub takeover` registers it as `hub`. Nativ
 `hub takeover` checks detached PID/process-token identity or the existing shared daemon's read-only `thread/read`
 runtime status through `codex app-server proxy`. A missing/older CLI, unavailable daemon or unknown state is silent;
 rollout recency alone is not liveness evidence. The warning never stops a session.
+Native predecessor detection is verified only with a fake transport; it stays silent when no app-server daemon runs.
 
 ## Full access and hook trust
 

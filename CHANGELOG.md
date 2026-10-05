@@ -4,11 +4,15 @@
 
 - **Codex hubs use registry addresses and warn about a live predecessor.** `hub takeover` checks a detached worker's
   PID/process token (including a worker registered as `hub`) or native runtime status through the existing Codex
-  daemon's read-only proxy; failures are silent and nothing is stopped. The warning gives `agent stop` for a worker
+  daemon's read-only proxy. Native detection is verified only with a fake transport; without a running app-server
+  daemon it stays silent. Failures are silent and nothing is stopped. The warning gives `agent stop` for a worker
   or asks to close the native Codex session. `tell --address` resolves promoted workers to their original role and
   prints `codex queue --thread <UUID> --message "…"` for native targets on CLIs with queue support, without Claude
   name discovery. Codex instructions require `tell` first and direct messages only to the registry address.
 
+- **Ask what is running in Claude Code or Codex.** The shared `status` skill answers agent, task, stage,
+  owner-question and lock questions in plain text from a fresh read-only snapshot. The Claude Code live pane
+  remains `/agent-top`; the removed chat-widget skill stays removed.
 - **`tell <stage> "text"` writes to another stage's hub.** It reads the holder of the role (default `hub`, `--role`) from
   that stage's registry, appends `@hub text` (`@hub QUESTION text` with `--question`) to its journal signed with the
   caller's stage-qualified tag, and prints the registered direct address: session id, kind, title, the name for a

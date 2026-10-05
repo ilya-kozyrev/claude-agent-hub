@@ -22,13 +22,13 @@ def validate(m):
     hooks = json.loads((root / m['hooks']).read_text())['hooks']
     assert 'SessionStart' in hooks and 'PreToolUse' in hooks
     assert not (root / m['skills'] / 'agent-top').exists(), 'agent-top is a Claude Code mod and console, not a skill'
-    for skill in ('hub', 'handoff', 'setup', 'delegation'):
+    for skill in ('hub', 'handoff', 'setup', 'delegation', 'status'):
         text = (root / m['skills'] / skill / 'SKILL.md').read_text()
         assert text.startswith('---\n') and re.search(r'^name: ' + skill + r'$', text, re.M)
         assert 'PLUGIN_ROOT' in text, f'{skill} must support native Codex root'
 
 validate(manifest)
-print('PASS native manifest identity, resources and four skills')
+print('PASS native manifest identity, resources and five skills')
 for label, change in (
     ('implicit Claude hooks', lambda m: m.pop('hooks')),
     ('wrong engine hooks', lambda m: m.update(hooks='./hooks/hooks.json')),
@@ -77,6 +77,7 @@ root = pathlib.Path(installed['installedPath'])
 manifest = json.loads((root / '.codex-plugin/plugin.json').read_text())
 assert (root / manifest['hooks']).is_file()
 assert (root / manifest['skills'] / 'hub/SKILL.md').is_file()
+assert (root / manifest['skills'] / 'status/SKILL.md').is_file()
 assert (root / 'bin/agent').is_file()
 print('PASS actual Codex marketplace install includes hooks, skills and launcher')
 PY
