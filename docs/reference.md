@@ -6,6 +6,8 @@ Read only the section needed for the current task; each CLI’s `--help` owns it
 
 ## How it works
 
+[Precise workflow sketch](assets/hub-workflow.svg) · [Pixel-art prompts and reference](assets/pixel-art-prompts.md).
+
 ```mermaid
 flowchart LR
     owner(["Owner"])

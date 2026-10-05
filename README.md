@@ -19,7 +19,7 @@ It gives you:
 Skip it for a small task one session can finish, or when built-in subagents already cover your needs.
 It runs locally for **one person on one machine**.
 
-![A hub briefs detached workers; workers record progress in shared files; a fresh hub reads the handoff and continues with the same workers.](docs/assets/hub-workflow.svg)
+![A hub conductor assigns distinct coding, testing, review, documentation and assembly tasks to workers; their results flow into a shared journal.](docs/assets/agent-orchestra.png)
 
 ## Start
 
