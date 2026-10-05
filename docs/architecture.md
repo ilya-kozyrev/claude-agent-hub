@@ -3,11 +3,11 @@
 ## Roles
 
 - **Owner** — the human. Decides product, money and anything that leaves the team; answers questions in chat.
-- **Hub** — one interactive Claude Code session per stage and shift (`hub-<N>`; the number is derived from `roles.json`
+- **Hub** — one interactive Claude Code or Codex session per stage and shift (`hub-<N>`; the number is derived from `roles.json`
   and the latest handoff). A **stage** is one stream of work with its own directory under the hub home. The hub plans,
   writes briefs, spawns and answers agents, records questions and decisions. It keeps its own context small: tool output
   goes to agents.
-- **Agents** — headless `claude -p` sessions (`agent spawn`), one per long task, tagged `hub-<N>-<role>`. They work in
+- **Agents** — detached `claude -p` or `codex exec` sessions (`agent spawn`), one per long task, tagged `hub-<N>-<role>`. They work in
   their own checkout (`--worktree` makes one) and talk only through files.
 - **Other sessions** (optional) — interactive sessions with a role in `roles.json` (a session that does the merges, a
   second hub of another stage). They are messaged with SendMessage (on Claude Desktop within the send budget), or
@@ -19,7 +19,7 @@
 flowchart TB
     subgraph writers["Writers"]
         hub["hub session"]
-        agent["agent (claude -p)"]
+        agent["agent (Claude or Codex)"]
         cli_agent["agent CLI"]
         ask_cli["ask"]
         lock_cli["lock"]
@@ -63,8 +63,8 @@ flowchart TB
 `hubcore.home()` resolves it, most specific first: `$AGENT_HUB_HOME` (any path); a repository's
 `.agent-hub/config.json` key `AGENT_HUB_HOME`, only `"project"` (`<main checkout>/.agent-hub/local/`, shared by the
 repository's worktrees) or `"user"`; the user default `~/agent-hub`; and, while `~/agent-hub` does not exist and
-`~/.claude/agent-hub` does, that legacy home with a warning (`.claude` is protected by Claude Code, see README § Where
-the hub's files live). Tools resolve it for their working directory; hooks for the session's directory, the hook
+`~/.claude/agent-hub` does, that legacy home with a warning (`.claude` is protected by Claude Code, see
+[Home resolution](reference.md#where-the-hubs-files-live)). Tools resolve it for their working directory; hooks for the session's directory, the hook
 input's `cwd` (`hubcore.use_cwd`). Children never resolve on their own: `agent spawn`, a resume, the autopilot
 successor and the headless successor get `AGENT_HUB_HOME=<the parent's resolved home>`, plus `--add-dir <home>` when
 the home is not under their directory. A stage that exists in `~/agent-hub` or the legacy home but not in the resolved

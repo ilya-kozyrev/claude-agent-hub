@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 210" role="img" aria-labelledby="title desc">
+  <title id="title">Workers continue across hub handoffs</title>
+  <desc id="desc">A hub sends briefs to detached workers. Workers record progress in shared files. A fresh hub reads the handoff and continues coordinating the same workers.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect width="820" height="210" rx="12" fill="#f8fafc"/>
+  <g stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)">
+    <path d="M 174 90 H 226"/>
+    <path d="M 392 90 H 444"/>
+    <path d="M 610 90 H 662"/>
+    <path d="M 741 120 V 180 H 309 V 126"/>
+  </g>
+  <g stroke-width="1.5">
+    <rect x="16" y="55" width="158" height="70" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+    <rect x="226" y="55" width="166" height="70" rx="8" fill="#dcfce7" stroke="#15803d"/>
+    <rect x="444" y="55" width="166" height="70" rx="8" fill="#fef3c7" stroke="#a16207"/>
+    <rect x="662" y="55" width="142" height="70" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+  </g>
+  <g font-family="system-ui, sans-serif" text-anchor="middle" fill="#0f172a">
+    <g font-size="18" font-weight="600">
+      <text x="95" y="84">Hub</text>
+      <text x="309" y="84">Workers</text>
+      <text x="527" y="84">Shared files</text>
+      <text x="733" y="84">Fresh hub</text>
+    </g>
+    <g font-size="13">
+      <text x="95" y="106">plan &amp; decide</text>
+      <text x="309" y="106">build in own checkouts</text>
+      <text x="527" y="106">progress &amp; decisions</text>
+      <text x="733" y="106">read &amp; continue</text>
+      <text x="200" y="43">briefs</text>
+      <text x="418" y="43">reports</text>
+      <text x="636" y="43">handoff</text>
+      <text x="521" y="169">same workers keep running</text>
+    </g>
+  </g>
+</svg>

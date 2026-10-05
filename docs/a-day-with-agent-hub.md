@@ -7,7 +7,7 @@ loaded) runs in Bash.
 Set-up behind the example: the repository ran `agent-hub:setup` once, so `.agent-hub/lock-rules.json` names the
 project's shared resources, and the first hub of the stage began with
 `hub start --stage stage-a --session "$CLAUDE_CODE_SESSION_ID"`. A day that needs less can drop `ask`, `lock` and the
-handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](../README.md#minimal-mode)).
+handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#minimal-mode)).
 
 1. **Morning: take over the shift.** Yesterday's hub left a handoff.
    ```bash

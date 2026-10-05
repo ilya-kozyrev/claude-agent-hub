@@ -29,7 +29,7 @@ the line is `hub handoff`, `hub succeed`, `jlog` or `jwait` (no substitution, no
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
 "[agent-hub auto-handoff k/N]" (the owner spoke) resets the stage's automatic-handoff chain.
 
-Settings (hub home config.json or environment; README "Agent discipline"):
+Settings (hub home config.json or environment; docs/reference.md "Agent discipline"):
   AGENT_HUB_CONTEXT_BUDGET       on | off (default on)
   AGENT_HUB_CONTEXT_WARN         300000      AGENT_HUB_CONTEXT_WARN_STEP  50000
   AGENT_HUB_CONTEXT_BLOCK        500000      AGENT_HUB_CONTEXT_BLOCK_TOOLS ["Agent", "Task", "SendMessage"]

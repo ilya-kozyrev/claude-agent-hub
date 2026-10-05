@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Pixel-art illustrations explain worker coordination and hub handoff.** The README shows distinct worker tasks
+  feeding a shared journal; the handoff scene shows OLD HUB → FRESH HUB, with all continuing workers under the fresh hub.
+  Original generation and owner-directed edit prompts, including the historical reference, are recorded beside the PNGs; the precise SVG remains in the reference.
+
+- **A shorter starting page for humans and a task router for agents.** README now gives fit criteria and a small
+  installation/start recipe. The agent guide routes installation assessment, operation and contribution separately;
+  comparison, monitoring, installation and command/configuration detail remain available behind links.
+
 ## 0.8.2 — 2026-10-05
 
 - **The agent-top pane has a button in the prompt footer.** The counts `agents ● 4 ✓ 9 ✗ 0` are now a Button beside the

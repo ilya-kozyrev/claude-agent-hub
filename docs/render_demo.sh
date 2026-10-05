@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerates the README screens from synthetic data: docs/agent-top-once.txt.
+# Regenerates the docs/monitoring.md screens from synthetic data: docs/agent-top-once.txt.
 set -eu
 D="$(cd "$(dirname "$0")" && pwd)"; B="$D/../bin"
 export AGENT_HUB_HOME="$(mktemp -d)" HOME="$(mktemp -d)" AGENT_HUB_TZ=UTC

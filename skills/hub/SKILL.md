@@ -11,6 +11,8 @@ Run the bundled tools through the host's shell tool. Resolve the plugin root fro
 `CLAUDE_PLUGIN_ROOT` (Claude), or this installed skill's location (two directories above `skills/hub`).
 Use that root's `bin/<tool>` when a command is missing or shadowed on PATH. `HUB_BIN` is set in detached workers.
 Template and documentation paths below are relative to this root.
+For installation assessment or task routing, read `<plugin-root>/docs/agents/README.md`;
+this skill owns the stage workflow once the plugin is selected.
 
 Choose the executor engine before choosing a model. Offer the owner one engine choice during initial stage planning:
 Codex, Claude, or a mixed team, with the coordinator's current host as the default. An existing explicit choice
@@ -98,7 +100,7 @@ your own session (`--session`, else the registered hub's and the session you run
 exit 2, listing id, description and age — because they die with you and the successor cannot message them; the ways out
 are under *Choosing how to launch work*.
 
-**Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; README "Autopilot"): the context budget message tells you when, and gives
+**Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; `<plugin-root>/docs/reference.md`, "Autopilot"): the context budget message tells you when, and gives
 the `hub succeed` command with your model, effort, mode and directory filled in. At a quiet point — no agent waiting for your
 reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,
 start the `jwait` it prints using the host wait procedure below. Its start line → tell the owner one line (the successor's
@@ -159,7 +161,7 @@ A brief can only carry decisions that were made. Before proposing a plan for a n
 settle the open decisions with the owner, in this order:
 
 1. `ask search <topic words>` — decisions already on record are settled; do not ask them again.
-2. **Grill the owner** with the `grilling` skill (the recommended companion plugin `mattpocock-skills`, see the README).
+2. **Grill the owner** with the `grilling` skill (the recommended companion plugin `mattpocock-skills`, see `<plugin-root>/docs/install.md#recommended-companion-grilling`).
    It walks the decision tree in rounds: every question numbered, each with your recommended answer; facts you can look
    up yourself go to a sub-agent instead of to the owner. If the skill is not installed, say once how to add it
    (`/plugin marketplace add mattpocock/skills`, then `/plugin install mattpocock-skills@mattpocock`) and grill by hand

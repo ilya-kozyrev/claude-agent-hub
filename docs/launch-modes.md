@@ -22,7 +22,7 @@ who has the credit for it plugs it in as a reviewer skill (`docs/reviewers.md`),
 here. A `claude --bg` session
 works (E14) but is not wired into the hub's tools for executors: it has no stream-json log for `agent-top`, no `EXIT`
 line when it dies, and `--dangerously-skip-permissions` needs a one-time interactive acceptance. It is the right shape
-for one thing — the hub's own successor under autopilot (`hub succeed`, README "Autopilot"): with `--remote-control`
+for one thing — the hub's own successor under autopilot (`hub succeed`, [Autopilot](reference.md#autopilot-the-hub-hands-over-by-itself)): with `--remote-control`
 the owner reaches it from the phone (E20), and its failure modes (E21–E23) each have a fallback.
 
 Claude Code's other parallel mechanisms, and where they sit here:
