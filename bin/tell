@@ -94,7 +94,8 @@ def address_lines(stage: str, role: str, rec: dict) -> list:
              f"  title    \"{rec.get('title') or role}\""]
     worker = codex_sessions.detached(stage, rec)
     if worker:
-        lines.append(f"  send     agent send --stage {shlex.quote(stage)} {shlex.quote(worker['role'])} \"…\"")
+        automatic = "   (tell does this itself)" if kind == "headless" else ""
+        lines.append(f"  send     agent send --stage {shlex.quote(stage)} {shlex.quote(worker['role'])} \"…\"{automatic}")
     elif kind == "headless":
         lines.append(f"  send     agent send --stage {stage} {role} \"…\"   (tell does this itself)")
     elif rec.get("engine") == "codex":

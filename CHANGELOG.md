@@ -4,7 +4,8 @@
 
 - **Codex hubs use registry addresses and warn about a live predecessor.** `hub takeover` checks a detached worker's
   PID/process token (including a worker registered as `hub`) or native runtime status through the existing Codex
-  daemon's read-only proxy; failures are silent and nothing is stopped. The warning gives `agent stop` for a worker
+  daemon's read-only proxy. Native detection is verified only with a fake transport; without a running app-server
+  daemon it stays silent. Failures are silent and nothing is stopped. The warning gives `agent stop` for a worker
   or asks to close the native Codex session. `tell --address` resolves promoted workers to their original role and
   prints `codex queue --thread <UUID> --message "…"` for native targets on CLIs with queue support, without Claude
   name discovery. Codex instructions require `tell` first and direct messages only to the registry address.

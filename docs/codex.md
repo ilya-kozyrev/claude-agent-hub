@@ -101,6 +101,7 @@ matched worker role, including after `hub takeover` registers it as `hub`. Nativ
 `hub takeover` checks detached PID/process-token identity or the existing shared daemon's read-only `thread/read`
 runtime status through `codex app-server proxy`. A missing/older CLI, unavailable daemon or unknown state is silent;
 rollout recency alone is not liveness evidence. The warning never stops a session.
+Native predecessor detection is verified only with a fake transport; it stays silent when no app-server daemon runs.
 
 ## Full access and hook trust
 
