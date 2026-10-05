@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Write to another stage's hub: a journal line addressed by the registry, and the registered direct address.
+
+  tell <target-stage> "text" [--question] [--role hub] [--address]
+
+The target's current holder of the role (default hub) is read from <target-stage>/roles.json — the registry, not a
+session list: a replaced hub can still run under the same display name. Then:
+  1. one line is appended to the target stage's journal, "@hub text" ("@<role> text" for --role; "@hub QUESTION text"
+     with --question), signed with your stage-qualified tag (`[dolya-hub-3]`, as `jlog` does in a foreign journal), so
+     the holder's `jwait --tag hub` hears it and its answer "@dolya-hub-3" reaches your `jwait --tag hub-3`;
+  2. the direct address is printed for the rare case a direct message is needed (the other hub must act before its
+     next wake-up): the full session id, kind and title; for a Claude session the name a cross-session message
+     goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer); for a
+     headless agent the command `agent send --stage <stage> <role> "…"`.
+The journal is the preferred channel between hubs. A direct message goes only to this address, never to a session
+picked by its name in a list.
+--address: print only the direct address, write nothing.
+Hub home: `hub home` shows which and why. Exit: 0 ok, 1 stage or holder not found / write failed, 2 usage (no tag to
+sign with, empty text).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+
+def stages_with(role: str) -> list:
+    """Stages of the hub home whose registry has a live holder of `role`."""
+    names = []
+    try:
+        dirs = sorted(d for d in hc.root().iterdir() if (d / "roles.json").is_file())
+    except OSError:
+        return names
+    for d in dirs:
+        try:
+            if role in hc.roles_load(d.name)["roles"]:
+                names.append(d.name)
+        except (hc.Failure, hc.UsageError):
+            continue
+    return names
+
+
+def holder(stage: str, role: str) -> dict:
+    """The registry record of the live holder of `role` in `stage`; Failure listing the stages that have one."""
+    rec = None
+    if hc.roles_path(stage).is_file():
+        rec = hc.roles_load(stage)["roles"].get(role)
+    if rec:
+        return rec
+    why = f"stage {stage!r} has no registry" if not hc.roles_path(stage).is_file() else f"stage {stage!r} has no {role!r} in its registry"
+    have = ", ".join(stages_with(role)) or "none"
+    raise hc.Failure(f"{why} ({hc.roles_path(stage)}); stages with a {role!r}: {have}")
+
+
+def claude_name(rec: dict) -> str:
+    """The name of the Claude session in `claude agents --json`, matched by session id; "" when it is not there or
+    the CLI does not answer (bounded and silent: the journal line is what matters)."""
+    ids = {i for i in (rec.get("session"), rec.get("cli_session_id")) if i}
+    try:
+        cli = hc.find_claude(persist=False)
+        if cli is None:
+            return ""
+        res = subprocess.run([cli.path, "agents", "--json"], capture_output=True, text=True, timeout=10,
+                             env=hc.child_env(), stdin=subprocess.DEVNULL)
+        rows = json.loads(res.stdout)
+    except (hc.Failure, OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and ids & {r.get("sessionId"), r.get("id")} and r.get("name"):
+            return str(r["name"])
+    return ""
+
+
+def address_lines(stage: str, role: str, rec: dict) -> list:
+    kind = rec.get("kind") or "?"
+    lines = [f"direct address of {role} in {stage} — only if the journal cannot do:",
+             f"  session  {rec.get('session')}",
+             f"  kind     {kind}",
+             f"  title    \"{rec.get('title') or role}\""]
+    if kind == "headless":
+        lines.append(f"  send     agent send --stage {stage} {role} \"…\"")
+    else:
+        name = claude_name(rec)
+        if name:
+            lines.append(f"  name     {name}   (cross-session message to this name)")
+    return lines
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="tell", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("stage", help="the stage whose hub (or --role) is written to")
+    p.add_argument("text", nargs="*", help="line text (newlines are collapsed); not needed with --address")
+    p.add_argument("--question", action="store_true", help="prefix the text with QUESTION (a jwait wake word)")
+    p.add_argument("--role", default="hub", help="role to address (default: hub)")
+    p.add_argument("--address", action="store_true", help="print only the direct address, write nothing")
+    args = p.parse_args(argv)
+    stage = hc.check_stage(args.stage)
+    text = " ".join(args.text).strip()
+    if not args.address and not text:
+        raise hc.UsageError("empty text")
+    rec = holder(stage, args.role)
+    if not args.address:
+        tag = hc.signing_tag(stage)
+        if not tag:
+            raise hc.UsageError("no tag: set $HUB_TAG or register this session (the first hub of a stage: "
+                                "`hub start --stage S --session $CLAUDE_CODE_SESSION_ID`; anyone else: "
+                                "`roles set <role> <session id> --tag …`)")
+        try:
+            line = hc.journal_append(stage, tag, f"@{args.role} " + ("QUESTION " if args.question else "") + text)
+        except OSError as e:
+            raise hc.Failure(f"could not write the journal {hc.journal_path(stage)}: {e}") from None
+        print(line)
+    print("\n".join(address_lines(stage, args.role, rec)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))
