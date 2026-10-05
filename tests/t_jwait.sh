@@ -116,20 +116,21 @@ $B/jwait --file $F --match 'AWAITING ANSWER' --caller p1 --settle 1 --for 4s >/d
 # 12. the default deadline is 2 h: a background Bash task is not guaranteed to live longer
 # 15. stage-qualified address: on stage core-c, --tag hub-30 also hears @core-c-hub-30 (how another stage's hub signs
 # and answers), and nothing that merely looks like it
+mkdir -p $AGENT_HUB_HOME/core-c   # a stage of its own here, whatever exists in the real hub home
 $B/jlog --stage core-c --tag old "baseline line" >/dev/null
-( armed $O/q1.out; $B/jlog --stage core-c --tag dolya-hub-4 "@dolya-hub-30 not ours" >/dev/null; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub-300 not ours" >/dev/null
+( armed $AGENT_HUB_HOME/q1.out; $B/jlog --stage core-c --tag dolya-hub-4 "@dolya-hub-30 not ours" >/dev/null; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub-300 not ours" >/dev/null
   $B/jlog --stage core-c --tag dolya-hub-4 "@xcore-c-hub-30 not ours" >/dev/null; $B/jlog --stage core-c --tag dolya-hub-4 "@hub-300 not ours" >/dev/null ) &
-HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 6s --caller q1 > $O/q1.out 2>&1; rc=$?
+HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 6s --caller q1 > $AGENT_HUB_HOME/q1.out 2>&1; rc=$?
 check $rc 3 "negative: @dolya-hub-30, @core-c-hub-300, @xcore-c-hub-30, @hub-300 do not wake --tag hub-30 on core-c"
-( armed $O/q2.out; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub-30 your answer" >/dev/null ) &
-HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 30s --caller q1 > $O/q2.out 2>&1; rc=$?
+( armed $AGENT_HUB_HOME/q2.out; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub-30 your answer" >/dev/null ) &
+HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 30s --caller q1 > $AGENT_HUB_HOME/q2.out 2>&1; rc=$?
 check $rc 0 "positive: @core-c-hub-30 wakes --tag hub-30 on core-c"
-grep -q 'your answer' $O/q2.out; check $? 0 "…with the line"
-( armed $O/q3.out; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub QUESTION for the hub" >/dev/null ) &
-HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --tag hub --settle 1 --for 30s --caller q1 > $O/q3.out 2>&1; rc=$?
+grep -q 'your answer' $AGENT_HUB_HOME/q2.out; check $? 0 "…with the line"
+( armed $AGENT_HUB_HOME/q3.out; $B/jlog --stage core-c --tag dolya-hub-4 "@core-c-hub QUESTION for the hub" >/dev/null ) &
+HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --tag hub --settle 1 --for 30s --caller q1 > $AGENT_HUB_HOME/q3.out 2>&1; rc=$?
 check $rc 0 "positive: --tag hub wakes on @core-c-hub"
-( armed $O/q4.out; $B/jlog --stage core-c --tag dolya-hub-4 "@hub-30 plain address" >/dev/null ) &
-HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 30s --caller q1 > $O/q4.out 2>&1; rc=$?
+( armed $AGENT_HUB_HOME/q4.out; $B/jlog --stage core-c --tag dolya-hub-4 "@hub-30 plain address" >/dev/null ) &
+HUB_TAG=hub-30 $B/jwait --journal --stage core-c --tag hub-30 --settle 1 --for 30s --caller q1 > $AGENT_HUB_HOME/q4.out 2>&1; rc=$?
 check $rc 0 "control: the plain @hub-30 still wakes"
 secs=$(python3 - "$B" <<'PY'
 import importlib.machinery, importlib.util, sys
