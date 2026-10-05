@@ -25,9 +25,13 @@ Keys: ↑↓ select/scroll · ⏎ open · Esc back · Tab tab · j journal · s 
 r refresh · ? help · q quit.  --read-only disables m and x.
 Logs are read incrementally from the last offset (log.jsonl reaches several MB): only assistant/result lines are
 parsed, a log over $AGENT_TOP_SCAN_MAX bytes (8 MB) is scanned from its tail and its turn count is marked with +.
-Files of agents are never opened for writing.
+The offsets and what was read up to them outlive the process in a cache, <state dir>/agent-top/cache.sqlite (state dir:
+$AGENT_HUB_STATE_DIR, else <hub home>/.state; bin/topcache.py), so a new `--json` (the mod runs one every few seconds)
+reads only what the logs gained since the last one; AGENT_TOP_CACHE=0 reads everything afresh and writes no cache.
+Files of agents are never opened for writing; that cache is the only file agent-top writes.
 Env: AGENT_HUB_HOME (hub home; `hub home` shows which and why), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
-default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB), NO_COLOR.
+default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB),
+AGENT_TOP_CACHE (0: no disk cache), NO_COLOR.
 Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
 """
 from __future__ import annotations
@@ -36,6 +40,8 @@ import argparse
 import curses
 import datetime as dt
 import html
+import importlib.machinery
+import importlib.util
 import json
 import locale
 import os
@@ -54,6 +60,7 @@ import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import codex_limits  # noqa: E402
 import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
+import topcache  # noqa: E402  (the readers' offsets between runs: <state dir>/agent-top/cache.sqlite)
 from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as _line_ts,  # noqa: E402
                        live_sessions, loads as _loads, parse_ts, process_table, read_json)
 
@@ -62,6 +69,7 @@ STALE_S = 300                     # a live agent silent this long is flagged "qu
 RECENT_S = 24 * 3600              # finished agents older than this are hidden without --all / `a`
 SCAN_MAX = int(os.environ.get("AGENT_TOP_SCAN_MAX") or 8 * 1024 * 1024)
 FEED_TAIL_BYTES = 400_000
+FLUSH_S = 2.0                     # a long first read writes the disk cache this often, not only at its end
 FEED_MAX_ITEMS = 4000
 ARCHIVE_RE = re.compile(r"^(?P<role>.+)\.(?:failed-)?\d{8}-\d{6}$")
 _TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"([\w.]+)"')
@@ -623,21 +631,34 @@ def discover_stages(only) -> list:
     return names
 
 
+def load_ask():
+    """bin/ask as a module: `ask summary` and `ask list --open` in-process (a subprocess costs an interpreter start)."""
+    loader = importlib.machinery.SourceFileLoader("ask_register", str(BIN / "ask"))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("ask_register", loader))
+    sys.modules["ask_register"] = mod  # dataclasses look the module up while the class is built
+    loader.exec_module(mod)
+    return mod
+
+
 class External:
     """`ask summary` / `ask list` results, refreshed in a thread so a slow register never freezes the screen."""
     TTL = 20.0
+    _mod = None
 
     def __init__(self):
         self.data, self.at, self.busy = {}, 0.0, False
         self.ok = False  # True only when the last `ask summary` succeeded: {} then means "no registers", not "ask failed"
+        self.thread = None
 
     def poll(self, stages: list, wait: bool = False) -> dict:
+        """Starts a refresh when the last one is older than TTL; `wait` waits for the one in flight (a snapshot
+        starts it early and waits at its end, so the registers are read while the logs are)."""
         if not self.busy and time.monotonic() - self.at > self.TTL:
             self.busy = True
-            t = threading.Thread(target=self._fetch, args=(list(stages),), daemon=True)
-            t.start()
-            if wait:
-                t.join(30)
+            self.thread = threading.Thread(target=self._fetch, args=(list(stages),), daemon=True)
+            self.thread.start()
+        if wait and self.thread is not None:
+            self.thread.join(30)
         return self.data
 
     def _fetch(self, stages: list) -> None:
@@ -661,45 +682,72 @@ class External:
         finally:
             self.at, self.busy = time.monotonic(), False
 
-    @staticmethod
-    def _ask(args: list):
+    @classmethod
+    def _ask(cls, args: list):
+        """stdout of `ask summary` / `ask list --stage S --open`, or None when it fails (an unreadable register)."""
         try:
-            r = subprocess.run([sys.executable, str(BIN / "ask")] + args, capture_output=True, text=True, timeout=20,
-                               env=hc.child_env())
-        except (OSError, subprocess.TimeoutExpired):
+            if cls._mod is None:
+                cls._mod = load_ask()
+            return cls._mod.summary_text() if args == ["summary"] else cls._mod.open_text(args[2])
+        except BaseException:  # noqa: BLE001 — `ask` exits on a bad register; that is "unknown", not a crash
             return None
-        return r.stdout if r.returncode == 0 else None
+
+
+def open_store():
+    """The disk cache of the readers (bin/topcache.py), dropped whenever one of the modules that fill it changes; a
+    store that keeps nothing when the hub home does not exist (agent-top never creates one)."""
+    if not hc.root().is_dir():
+        return topcache.Null()
+    here = Path(__file__).resolve()
+    mods = [here] + [BIN / m for m in ("subagents.py", "codex_rollouts.py", "engines.py", "topcache.py")]
+    return topcache.Store(hc.state_dir() / "agent-top" / "cache.sqlite",
+                          topcache.code_signature(*map(str, mods), extra=f"scan_max={SCAN_MAX}"))
 
 
 class Collector:
     def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
-        self.subs = subagents.Finder(lambda log: self.log_state(log).last_user_ts)
+        self.store = open_store()
+        self.flushed_at = time.monotonic()
+        codex_rollouts.INDEX.store = self.store
+        self.subs = subagents.Finder(lambda log: self.log_state(log).last_user_ts, self.store)
         self.ext = External()
         self.codex_limits = codex_limits.Reader()
         self.feed = None
 
     # -- agents
     def log_state(self, path: Path) -> LogState:
+        """The log's reader: this process's, else resumed from the disk cache, else new; then brought up to date."""
         st = self.logs.get(path)
         if st is None:
             st = self.logs[path] = LogState(path)
+            topcache.load_into(st, self.store.get("log", str(path)), {"rollout": codex_rollouts.Normalizer})
+        before = (st.ino, st.offset)
         st.update()
+        if (st.ino, st.offset) != before:
+            self.store.put("log", str(path), st)
+            if time.monotonic() - self.flushed_at > FLUSH_S:
+                self.store.flush()          # a first run killed by its caller's timeout still leaves what it read
+                self.flushed_at = time.monotonic()
         return st
 
     def snapshot(self, wait_ext: bool = False) -> dict:
         now = time.time()
+        ps = subagents.process_table_start()     # `ps` runs while the registers and the role files are read
         stages = discover_stages(self.stages_arg)
-        table = process_table()
+        self.ext.poll(stages)
         agents, roles_by_stage, rate = [], {}, None
-        live = live_sessions(table)
         for stage in stages:
             try:
-                reg = hc.roles_load(stage)
+                roles_by_stage[stage] = hc.roles_load(stage)["roles"]
             except hc.Failure:
-                reg = {"roles": {}}
-            roles_by_stage[stage] = reg["roles"]
+                roles_by_stage[stage] = {}
+        codex_rollouts.INDEX.update()
+        table = subagents.process_table_finish(ps)
+        live = live_sessions(table)
+        for stage in stages:
+            reg = {"roles": roles_by_stage[stage]}
             base = hc.root() / stage / "agents"
             for mp in sorted(base.glob("*/meta.json")) if base.is_dir() else []:
                 info = self._agent(stage, mp, reg["roles"], table, now)
@@ -714,11 +762,13 @@ class Collector:
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
         locks = self._locks(now)
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
-        return {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
-                "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles,
-                "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
-                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
-                "codex_limits": self.codex_limits.snapshot()}
+        out = {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
+               "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles,
+               "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
+               "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
+               "codex_limits": self.codex_limits.snapshot()}
+        self.store.flush()
+        return out
 
     def _agent(self, stage: str, meta_path: Path, registry: dict, table, now: float):
         meta = read_json(meta_path)
@@ -857,16 +907,23 @@ class Collector:
 
     def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
         lines = self.journal_lines(stage, 0) + self.journal_lines(stage, 1)
+        newest = {}   # base tag -> its newest line: what hc.tag_is(line tag, base) finds first from the end
+        for day_off, hhmm, t, _ in reversed(lines):
+            if not t:
+                continue
+            for c in {t, *t.split()[:1]}:
+                parts = c.split("/")
+                for i in range(1, len(parts) + 1):
+                    newest.setdefault("/".join(parts[:i]), (day_off, hhmm))
         out = []
         for name, rec in roles.items():
             tag = rec.get("tag") or name
             last = None
-            for day_off, hhmm, t, _ in reversed(lines):
-                if hc.tag_is(t, tag):
-                    hh, mm = map(int, hhmm.split(":"))
-                    day = hc.now().date() - dt.timedelta(days=day_off)
-                    last = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
-                    break
+            if tag in newest:
+                day_off, hhmm = newest[tag]
+                hh, mm = map(int, hhmm.split(":"))
+                day = hc.now().date() - dt.timedelta(days=day_off)
+                last = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
             ag = next((a for a in agents if a["stage"] == stage and a["dir_name"] == name), None)
             out.append({"role": name, "kind": rec.get("kind"), "tag": tag, "title": rec.get("title") or "",
                         "pid": rec.get("pid"), "state": ag["state"] if ag else None,

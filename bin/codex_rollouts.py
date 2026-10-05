@@ -14,8 +14,11 @@ import os
 import time
 from pathlib import Path
 
+import topcache
+
 TTL = 30.0
 HEADER_MAX = 256_000
+META_VALUE_MAX = 4000             # a meta value larger than this (base_instructions) is not kept in the disk cache
 
 
 def epoch(raw):
@@ -39,42 +42,90 @@ def home():
 
 
 class Index:
-    """Cache metadata-only discovery, reading at most one bounded header per file."""
+    """Cache metadata-only discovery, reading at most one bounded header per file. With a `store` (agent-top's disk
+    cache) a header already read by an earlier process is not read again: a rollout only grows, so it is kept by path
+    while the inode is the same and the file is not shorter; the meta's large values (base instructions) are not kept."""
 
     def __init__(self):
         self.checked, self.records = None, {}
+        self.store = None
+        self.kids = None
 
     def update(self):
         now = time.monotonic()
         if self.checked is not None and now - self.checked < TTL:
             return self
+        root = home() / "sessions"
+        heads = (self.store.get("rollout-heads", str(root)) if self.store else None) or {}
+        fresh, changed = {}, False
         records = {}
-        for path in sorted((home() / "sessions").glob("**/rollout-*.jsonl")):
+        for path in sorted(root.glob("**/rollout-*.jsonl")):
             try:
-                with path.open("rb") as f:
-                    raw = f.readline(HEADER_MAX + 1)
-                if len(raw) > HEADER_MAX or not raw.endswith(b"\n"):
-                    continue
-                ev = json.loads(raw)
-                meta = ev.get("payload")
-                if ev.get("type") != "session_meta" or not isinstance(meta, dict) or not meta.get("id"):
+                st = path.stat()
+                hit = heads.get(str(path))
+                # a header read before holds while the file is the same one, not shorter, and its first line's ends
+                # are the bytes read (topcache.anchor: two 256-byte reads, not the line); "no header" holds only while
+                # the file is untouched (a first line fixed or rewritten in place is read again)
+                if hit and len(hit) == 5 and hit[0] == st.st_ino and (
+                        st.st_size >= hit[1] and topcache.anchor(path, hit[4][0]) == hit[4][1] if hit[3] is not None
+                        else st.st_mtime_ns == hit[2]):
+                    head, mark = hit[3], hit[4]
+                else:
+                    got, changed = self._head(path), True
+                    if got is False:
+                        continue  # a first line still being written: read it again next time
+                    head, mark = (None, None) if got is None else (got[:2], [got[2], topcache.anchor(path, got[2])])
+                fresh[str(path)] = [st.st_ino, st.st_size, st.st_mtime_ns, head, mark]
+                if head is None:
                     continue
                 # A resumed session may have more than one file. Use its newest
                 # file instead of showing duplicate sessions or duplicate children.
-                sid, mtime = str(meta["id"]), path.stat().st_mtime
+                sid, meta, mtime = head[0], head[1], st.st_mtime
                 if sid not in records or mtime > records[sid][2]:
                     records[sid] = (path, meta, mtime)
-            except (OSError, ValueError, AttributeError):
+            except OSError:
                 continue
+        if self.store and (changed or len(fresh) != len(heads)):
+            self.store.put("rollout-heads", str(root), fresh)
         self.checked, self.records = now, records
         return self
+
+    def _head(self, path):
+        """[session id, meta, length of the line] of a rollout's session_meta line; None when it has none; False when
+        the line is not complete yet."""
+        try:
+            with path.open("rb") as f:
+                raw = f.readline(HEADER_MAX + 1)
+        except OSError:
+            return False
+        if len(raw) > HEADER_MAX:
+            return None
+        if not raw.endswith(b"\n"):
+            return False
+        try:
+            ev = json.loads(raw)
+            meta = ev.get("payload")
+            if ev.get("type") != "session_meta" or not isinstance(meta, dict) or not meta.get("id"):
+                return None
+        except (ValueError, AttributeError):
+            return None
+        if self.store:
+            meta = {k: v for k, v in meta.items() if len(json.dumps(v, default=str)) <= META_VALUE_MAX}
+        return [str(meta["id"]), meta, len(raw)]
 
     def session(self, sid):
         return self.update().records.get(sid)
 
     def children(self, sid):
-        return [(aid, *rec) for aid, rec in self.update().records.items()
-                if (spawn_source(rec[1]) or {}).get("parent_thread_id") == sid]
+        self.update()
+        if self.kids is None or self.kids[0] is not self.records:
+            kids = {}
+            for aid, rec in self.records.items():
+                parent = (spawn_source(rec[1]) or {}).get("parent_thread_id")
+                if parent:
+                    kids.setdefault(parent, []).append((aid, *rec))
+            self.kids = (self.records, kids)   # by parent, built once per discovery (a hundred sessions ask)
+        return list(self.kids[1].get(sid, ()))
 
 
 class Normalizer:

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **The agent-top mod is quick again, and its Feed no longer hangs on "loading the feed…".** `agent-top --json`
+  (the mod runs a new one every few seconds) keeps its log offsets and what it read up to them in a cache,
+  `<state dir>/agent-top/cache.sqlite` (`$AGENT_HUB_STATE_DIR`, else `<hub home>/.state`), so a run reads only what the
+  logs gained since the last one. Rows belong to a generation (a hash of the reader code and the scan cap), a log is
+  resumed only while its first bytes and the bytes before the offset are unchanged, `AGENT_TOP_CACHE=0` reads
+  everything afresh, and the agents' own files are still never written. Owner questions come from `ask` in-process,
+  `ps` runs while the files are read, sub-agent folders come from one listing of the projects folder instead of a glob
+  per session, a finished sub-agent's parent transcript is not read at all, and Codex sub-agents are looked up by
+  parent. On the owner's home: `--json` 1.08 → 0.22 s CPU (1.09 → 0.21 s wall at the same load; 22.6 s wall at load
+  80 before), `--json --all` 1.74 → 0.22 s CPU, one agent's `--feed` 0.31 → 0.18 s CPU. In the mod, each answer is
+  drawn as soon as it comes (the card no longer waits for the list call behind it), a card answer for an agent the
+  person has left is dropped, a failed or timed-out card call shows its reason in the feed area and is retried on the
+  next tick instead of leaving "loading the feed…" for good, the call timeout is 60 s (a first run after an update
+  reads every log once and saves as it goes), and `/agent-top` answers after at most 4 s while the pane fills when the
+  data comes. Tests: the feed's loading → shown / error states and a dropped stale answer in `hooks/agent-top.test.tsx`;
+  `tests/t_agent_top_perf.sh` runs `--json` on a generated 90 MB home and fails when a repeated run costs over 35 %
+  of the first's CPU beyond the fixed cost of a run (0.8.2: 97 %).
+
 ## 0.8.3 — 2026-10-06
 
 - **The autopilot successor starts at the hub's own effort, or not at all.** `hub succeed` used to pass `--effort high`

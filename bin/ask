@@ -586,11 +586,20 @@ def cmd_list(args) -> int:
     return 0
 
 
-def cmd_summary(_args) -> int:
+def summary_text() -> str:
+    """What `ask summary` prints (agent-top calls it in-process)."""
     now = now_local()
-    for stage in all_stages():
-        _, entries = load(stage)
-        print(summary_line(stage, counts(entries, now)))
+    return "".join(summary_line(stage, counts(load(stage)[1], now)) + "\n" for stage in all_stages())
+
+
+def open_text(stage: str) -> str:
+    """What `ask list --stage <stage> --open` prints on stdout (agent-top calls it in-process)."""
+    now = now_local()
+    return "".join(fmt_entry(e, now) + "\n" for e in load(stage)[1] if e.kind_letter == "Q" and e.state == "open")
+
+
+def cmd_summary(_args) -> int:
+    sys.stdout.write(summary_text())
     return 0
 
 

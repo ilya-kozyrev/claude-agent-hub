@@ -50,7 +50,11 @@ Desktop Code tab:
   appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
   session started is never announced. With the pane closed the mod looks every 15 s.
 - **Read-only.** No send, stop or message button. The mod writes nothing: it runs `bin/agent-top --json` and draws the
-  result. Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`.
+  result. Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
+  writes one file, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
+  log offsets of the last run, so the next one reads only what the logs gained. `AGENT_TOP_CACHE=0` turns it off.
+- **When data is slow.** Each answer is drawn when it comes. A card whose call failed or took over 60 s says
+  `feed unavailable: <reason> · retrying` in its feed area, and the next refresh asks again.
 - **Where mods do not draw there is no `/agent-top`:** Codex, VS Code chat, `claude -p`, Remote Control and
   `claude --bg` views, Claude Code older than 2.1.287. Use the console in a shell: `agent-top` (live), `agent-top --once`
   (text picture), `agent-top --json` (scripts). If `bin/agent-top` is missing the mod goes quiet instead of failing.

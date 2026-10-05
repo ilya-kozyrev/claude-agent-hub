@@ -997,3 +997,120 @@ test('the card fits a pane 23, 24 and 25 columns wide: the Feed rows too (time, 
   }
   expect(wide).toEqual([])
 })
+
+// ---------------------------------------------------------------- the card's feed: loading → shown / error (the endless
+// "loading the feed…" of 0.8.2: a failed or slow card call left the feed area saying "loading" for good)
+
+const FEED = [
+  { at: '12:00:01', kind: 'tool', sub: false, tool: 'Bash', text: 'run the tests', detail: 'pytest' },
+  { at: '12:00:02', kind: 'result', sub: false, tool: 'Bash', text: '12 passed', detail: null },
+]
+
+/** The pane's usual stubs; `card` answers every `--agent` call, everything else gets the list of a worker and a reviewer. */
+function stubCardCalls(on: On, card: (argv: readonly string[]) => Promise<ReturnType<typeof ran>> | ReturnType<typeof ran> | { deny: string }): void {
+  const list = snapshot([agent(), agent({ role: 'rev', dir_name: 'rev', state: 'done', alive: false, action: null, result: DONE })])
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  stubPaneRecord(on)
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('process.run', ($, e) => (e.argv.includes('--agent') ? card(e.argv) : ran(list)))
+}
+
+test('the card feed: "loading" only while its call runs, then the rows; a failed call says why there; the next good one shows the rows', async ($, on) => {
+  const clock = mock.clock(on)
+  let mode: 'slow' | 'fail' | 'ok' = 'slow'
+  stubCardCalls(on, async () => {
+    if (mode === 'fail') return ran('', 1, "FAILED: no agent 'worker'\n")
+    if (mode === 'slow') await clock.sleep(5000)
+    return ran(cardJson(agent(), FEED))
+  })
+  await run($, '', 'agent-top')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  await ui.press({ key: 'open:stage-a/worker' })
+  expect(await ui.find({ text: 'loading the feed…' })).toBeDefined() // the call is still running
+  await clock.advance(5000)
+  expect((await ui.find({ key: 'feed:0' }))?.text).toMatch(/run the tests/)
+  expect(await ui.find({ key: 'feed-note' })).toBeUndefined()
+
+  mode = 'fail'
+  await clock.advance(3000) // a refresh of the open card fails: the rows stay, the failure is said under them
+  expect((await ui.find({ key: 'feed:0' }))?.text).toMatch(/run the tests/)
+  expect((await ui.find({ key: 'feed-note' }))?.text).toBe("feed unavailable: FAILED: no agent 'worker' · retrying")
+  expect(await ui.find({ key: 'error' })).toBeUndefined() // the card's own failure, not the pane's error line
+
+  await ui.press({ key: 'back' })
+  await ui.press({ key: 'open:stage-a/worker' }) // opened afresh while the CLI fails: the reason, never "loading"
+  expect(await ui.find({ text: /loading/ })).toBeUndefined()
+  expect((await ui.find({ key: 'feed-note' }))?.text).toBe("feed unavailable: FAILED: no agent 'worker' · retrying")
+
+  mode = 'ok'
+  await clock.advance(3000) // the next tick asks again and the rows come
+  expect((await ui.find({ key: 'feed:1' }))?.text).toMatch(/12 passed/)
+  expect(await ui.find({ key: 'feed-note' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("a card answer that comes after the person opened another agent is dropped: never one agent's feed under another's title", async ($, on) => {
+  const clock = mock.clock(on)
+  let revCalls = 0
+  stubCardCalls(on, async argv => {
+    if (argv.includes('worker')) {
+      await clock.sleep(5000)
+      return ran(cardJson(agent(), [{ at: '12:00:01', kind: 'text', sub: false, tool: null, text: 'WORKER FEED', detail: null }]))
+    }
+    revCalls += 1
+    if (revCalls === 1) return ran('', 1, 'FAILED: hub home is busy\n') // the reviewer's first call fails
+    const rev = agent({ role: 'rev', dir_name: 'rev', state: 'done', alive: false, action: null, result: DONE })
+    return ran(cardJson(rev, [{ at: '12:00:09', kind: 'text', sub: false, tool: null, text: 'REVIEW FEED', detail: null }]))
+  })
+  await run($, '', 'agent-top')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'open:stage-a/worker' }) // its call takes 5 s
+  await ui.press({ key: 'back' })
+  await ui.press({ key: 'open:stage-a/rev' })
+  expect((await ui.find({ key: 'card-title' }))?.text).toMatch(/rev/)
+  expect(await ui.find({ text: 'loading the feed…' })).toBeDefined()
+  await clock.advance(5000) // the worker's answer arrives: dropped; the reviewer's call runs right after it and fails
+  expect((await ui.find({ key: 'card-title' }))?.text).toMatch(/DONE +rev/)
+  expect(await ui.find({ text: /WORKER FEED/ })).toBeUndefined()
+  expect((await ui.find({ key: 'feed-note' }))?.text).toBe('feed unavailable: FAILED: hub home is busy · retrying')
+  await clock.advance(3000)
+  expect((await ui.find({ key: 'feed:0' }))?.text).toMatch(/REVIEW FEED/)
+  await ui.unmount()
+})
+
+test('/agent-top answers without waiting for a slow first snapshot; the pane says "loading" and fills when it comes', async ($, on) => {
+  const clock = mock.clock(on)
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  stubPaneRecord(on)
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('process.run', async () => {
+    await clock.sleep(20000) // a first run after an update reads every log once
+    return ran(snapshot([agent()]))
+  })
+  const opening = run($, '', 'agent-top')
+  await clock.advance(4000)
+  expect((await opening).text).toBe('agent-top pane opened: no data yet')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ text: /loading agents…/ })).toBeDefined()
+  await ui.press({ key: 'view-journal' }) // the pane takes keys while the data loads
+  expect(await ui.find({ text: /^loading…$/ })).toBeDefined()
+  await ui.press({ key: 'view-agents' })
+  await clock.advance(16000)
+  expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a card call the engine kills on its timeout says so in one short line', async ($, on) => {
+  mock.clock(on)
+  stubCardCalls(on, () => ({ deny: 'agent-hub: $.process.run(/very/long/path/bin/agent-top) aborted: still running after 60000 ms' }))
+  await run($, '', 'agent-top')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'open:stage-a/worker' })
+  expect((await ui.find({ key: 'feed-note' }))?.text).toBe('feed unavailable: agent-top gave no answer in 60 s · retrying')
+  await ui.unmount()
+})
