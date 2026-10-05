@@ -93,7 +93,7 @@ folder). An installation made with 0.6 or earlier keeps its files in the legacy 
 ### Start small
 
 You do not need every tool on day one. One hub and a few agents need three: **`agent`** (spawn, status, send, stop),
-**`jlog`** and **`jwait`**. `roles`, `ask`, `lock`, `hub takeover` and `hub handoff` start to matter when you have more
+**`jlog`** and **`jwait`**. `roles`, `ask`, `lock`, `tell` (a line to another stage's hub), `hub takeover` and `hub handoff` start to matter when you have more
 than one interactive session, more than one shift, or a shared resource. The walkthrough below uses them in the order
 they come up; skip what you do not need yet. The night queue and the night nudge are optional modules for macOS with
 Claude Desktop and do not appear here.

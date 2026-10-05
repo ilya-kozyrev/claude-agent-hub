@@ -49,6 +49,7 @@ flowchart LR
 |---|---|
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
+| `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. The journal is the preferred channel; a direct message goes only to this address. |
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
