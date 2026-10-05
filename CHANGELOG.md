@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.3 — 2026-10-06
 
 - **The autopilot successor starts at the hub's own effort, or not at all.** `hub succeed` used to pass `--effort high`
   when neither `--effort` nor `AGENT_HUB_SUCCESSOR_EFFORT` said otherwise, so a hub at `xhigh` handed over to one at
