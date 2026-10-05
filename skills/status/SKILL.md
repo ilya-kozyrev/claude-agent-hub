@@ -5,8 +5,8 @@ description: Answer questions about running agents, tasks or stages, who is wait
 
 # Running work
 
-1. Resolve the plugin root from `PLUGIN_ROOT` (Codex), `CLAUDE_PLUGIN_ROOT` (Claude), or this skill's location
-   (two directories above `skills/status`). Run that root's `bin/agent-top --json` through the host's shell tool;
+1. Resolve the plugin root from `PLUGIN_ROOT` (Codex), `CLAUDE_PLUGIN_ROOT` (Claude), or this skill's canonical location
+   (resolve symlinks first, then go two directories above `skills/status`). Run that root's `bin/agent-top --json` through the host's shell tool;
    an unrelated command may shadow it on PATH. This reads the shared hub home and session logs without changing them.
    Use `--stage <stage>` for a named or clearly implied stage (repeatable), otherwise cover every stage.
    Add `--all` when older finished runs matter; `--agent <role> --feed 10` gives one agent's recent activity.
