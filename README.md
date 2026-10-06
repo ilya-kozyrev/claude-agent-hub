@@ -52,7 +52,9 @@ It runs locally for **one person on one machine**.
    Wait for my approval of the plan. Stop at open PRs with green CI; ask before merging.
    ```
 
-Answer open decisions and approve the plan. Check progress with `/agent-top` in Claude Code,
+The hub preserves your Business DoD across handoffs; a clear request already supplies it.
+[Planning recipe →](skills/hub/SKILL.md#planning-a-stage-agree-the-business-result-before-autonomous-work)
+Answer open decisions and approve the plan when you asked the hub to wait. Check progress with `/agent-top` in Claude Code,
 or ask the session what is running: the `status` skill answers from `agent-top` data. [Use your own terminal →](docs/install.md#what-installing-changes)
 The hub tells you when results need your attention.
 

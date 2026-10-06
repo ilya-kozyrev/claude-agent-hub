@@ -40,10 +40,9 @@ Do these before anything else, in this order:
    `hub` answers with an error such as `invalid choice` or `not a git command`, another `hub` (GitHub CLI) is ahead of
    the plugin's on PATH: run `<plugin-root>/bin/hub start …` and tell the owner in one line.
 2. `ask search <words of the goal>` — decisions already on record are settled.
-3. Grill, record, plan — in this order, details in *Planning a stage*: load the `grilling` skill when it is
-   installed (otherwise grill by hand: rounds of numbered questions, a recommendation each); `ask add` and `ask close`
-   each answer; propose the plan and wait for the owner's yes. Write no code and start no agents before that yes.
-   Skip the grilling only as *Planning a stage* ends: say so in one line.
+3. Establish the Business DoD, then plan and brief (*Planning a stage*). A clear owner request can already
+   supply the agreed result and the owner's yes to the plan; ask only about business-material ambiguity.
+   Honor an explicit request to approve the plan before starting.
 
 A **stage** is one stream of work (a release, a migration, a sprint) with its own directory under the hub home
 (`$AGENT_HUB_HOME`, else a repository's `.agent-hub/config.json` `"project"` / `"user"`, else `~/agent-hub`; `hub home`
@@ -203,41 +202,52 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
   case's specifics (environment, scope, what is touched) and journal the id; if they do not, `--override "why"`.
   Money, migrations and permissions/RBAC are covered only by a permission that names them.
 
-## Planning a stage: grill before you brief
+## Planning a stage: agree the business result before autonomous work
 
-A brief can only carry decisions that were made. Before proposing a plan for a new stage or a new piece of work,
-settle the open decisions with the owner, in this order:
+**Business DoD** is a short, ordinary-language description of the expected user or business result, clear enough
+for the owner to leave the work to autopilot. Usually a short paragraph is enough. Use the owner's useful constraints
+and any detailed specification they supplied; a full scenario, button design, numeric target or fixed schema is not
+required. Detailed UI, scenario and technical design belong to the hub and executor unless supplied by the owner.
+This recipe applies to Claude and Codex, in the console and app.
 
 1. `ask search <topic words>` and `ask allow --list --stage <S>` — decisions and permissions already on record are
-   settled; do not ask them again. When the stage's repository has no standing permission, run the short analysis of
+   settled; do not ask them again. For a successor or executor, preserve the inherited Business DoD and its source.
+   When the stage's repository has no standing permission, run the short analysis of
    `<plugin-root>/skills/setup/SKILL.md` § 5 (what the project merges, deploys and releases; the owner's level) and add
    one grilling round about them; record each answer with `ask allow`.
-2. **Grill the owner** with the `grilling` skill (the recommended companion plugin `mattpocock-skills`, see `<plugin-root>/docs/install.md#recommended-companion-grilling`).
-   It walks the decision tree in rounds: every question numbered, each with your recommended answer; facts you can look
-   up yourself go to a sub-agent instead of to the owner. If the skill is not installed, say once how to add it
-   (`/plugin marketplace add mattpocock/skills`, then `/plugin install mattpocock-skills@mattpocock`) and grill by hand
-   the same way: rounds of numbered questions, a recommendation for each, until nothing is left silently assumed.
-3. Record each answer, so the next hub and every brief inherit it: `ask add … "<question>"` then
-   `ask close <id> --answer "<answer>"`. A matter the owner left to you is `ask decided`.
-4. Only then propose the plan and the briefs, and wait for the owner's yes; their "Owner decisions — do not reopen"
-   section comes from `ask search`, not from memory. Record the approved plan: `ask plan --stage <S> "<the plan in
-   one line>"` (`agent spawn` warns when the stage has none).
+2. If the expected business result is unclear, use the companion `grilling` skill (`mattpocock-skills`, see `<plugin-root>/docs/install.md#recommended-companion-grilling`):
+   rounds of numbered questions, each with a recommended answer. **For this hub workflow, limit its exhaustive
+   decision-tree method to ambiguity whose answer materially changes the business result; stop once that result is
+   clear.** Facts and implementation choices are agent-owned: research them and proceed with work that has no
+   business blocker. If the companion is unavailable, mention its installation instructions once and use
+   the same question method yourself.
+3. Record owner answers with `ask add` then `ask close --answer …`; meaningful unresolved product branches go to
+   the owner and register. Follow the existing register/default policy for blocked work. Agent decisions remain
+   agent-owned; record the hub's choices with `ask decided` so they remain contestable.
+4. Put the agreed Business DoD in the existing plan or brief, with a source link or register reference. A clear owner
+   request can itself be the agreed DoD: restate it briefly and proceed within its authorization, without another
+   interview or approval solely for adding a DoD heading or file. If your proposal materially changes the business
+   scope or result, obtain owner agreement first. Before spawning, have a plan the owner said yes to: a clear,
+   detailed request counts as that yes. Honor an explicit request to approve the plan before starting. Record the
+   approved plan with `ask plan --stage <S> "<plan in one line>"` (`agent spawn` warns when the stage has none).
+5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification
+   and stop/permission conditions separate. Later executors and hub shifts carry the same result through handoffs;
+   they choose details independently and raise only new ambiguity that materially changes the business result.
 
 For an owner who is not technical, one question is mandatory: "How will you open the result, and where should it live?",
 with a recommendation. For something that runs in a browser, recommend a static site (for example GitHub Pages),
-not "run a server on your Mac": a server dies with the laptop and the owner cannot restart it. Hand the result over so
-that the owner does not have to look for it: open it yourself (`open <path>` on macOS) or give a clickable local file or web link.
+not "run a server on your Mac": a server dies with the laptop and the owner cannot restart it. Hand the result over
+with a clickable local file or web link, or open it yourself (`open <path>` on macOS).
 
-Put every question in the owner's words, about the product and what they will see: no canvas, localStorage, branch,
-worktree, commit or push to an owner who is not technical. Purely technical choices (canvas or DOM, localStorage, branch
-names) are yours: decide, and record each with `ask decided`, so it stays contestable.
+Put questions in the owner's words, about the product and what they will see. Purely technical choices (canvas or
+DOM, localStorage, branch names) belong to the hub: decide and record them with `ask decided`.
 
-Ask the owner nothing about process: agents or not, worktrees, commits. Pick the launch by the criteria of "Choosing how
-to launch work". If you decide to write a change yourself, say so in one line with the reason ("one file, nothing to
-wait on: I write it myself") and record it with `ask decided`.
+Completion is judged against the agreed business result. Reports state what users actually received and how that
+matches the result, with executor-owned technical evidence separately. Green CI alone does not prove business
+completion. Existing merge, production, money and external-action permission policies still apply.
 
-Skip the grilling for a task whose decisions are all on record or that the owner specified completely; say so in one
-line.
+Ask the owner nothing about process: agents or not, worktrees, commits. Pick the launch by the criteria of "Choosing
+how to launch work". If you write a change yourself, say why in one line and record it with `ask decided`.
 
 ## Choosing how to launch work
 
@@ -388,8 +398,8 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    *Why:* a search that cannot find anything reads exactly like "there is none".
 8. **Money and anything that leaves the team go to the owner** as `ask add` with a default action, not as the hub's
    decision — unless a standing permission in the owner's own words names them (`ask allow --list`). *Why:* they are the decisions that cannot be undone by the next commit.
-9. **Grill before you brief** (above). *Why:* a brief with a silent assumption produces confident work on the wrong
-   problem.
+9. **Agree the business result before you brief** (above). *Why:* a silent assumption about the result produces
+   confident work on the wrong problem; details the owner left open belong to the hub.
 10. **A change gets the review its class says** (`hub reviewer --for <class>`): `docs` — documentation, or tooling and
     configuration whose own positive and negative controls ran and are shown in the PR — gets no model review; `code`
     gets one review; `risky` (money, migrations, production, permissions) gets the same single review with its brief

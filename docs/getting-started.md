@@ -17,10 +17,11 @@ do the long work. **Agents** are detached Claude Code or Codex sessions that do 
 
 ```mermaid
 flowchart TB
-    s1(["1 · You: open a Claude Code session in your repo and describe the idea"])
-    s2["2 · Hub: grills you on open decisions (grilling skill) — you answer"]
+    s1(["1 · You: open a hub session in your repo and describe the idea"])
+    s2["2 · Hub: clarifies the business result if needed"]
     s3["3 · Hub: proposes a plan and one brief per agent"]
-    s3q{"You: approve?"}
+    s3q{"Agreement needed?"}
+    owner["You: agree the result or review the requested plan"]
     s4["4 · Hub: starts the agents (agent spawn)"]
     s5["5 · Agents: work in their own checkouts · Hub: waits in the background (jwait)"]
     s6["6 · Agent asks a question → Hub brings it to you → you answer → Hub relays it"]
@@ -31,8 +32,10 @@ flowchart TB
     s11["11 · Hub: writes a handoff when its context fills up — the next session takes over"]
 
     s1 --> s2 --> s3 --> s3q
-    s3q -- "change it" --> s3
-    s3q -- "yes" --> s4 --> s5 --> s8 --> s9
+    s3q -- "yes" --> owner
+    owner -- "approved" --> s4
+    owner -- "changes" --> s3
+    s3q -- "already authorized" --> s4 --> s5 --> s8 --> s9
     s5 -. "sometimes" .-> s6 -.-> s5
     s5 -. "any time" .-> s7
     s9 -- "fixes" --> s5
@@ -43,8 +46,8 @@ flowchart TB
     classDef hub fill:#fef3c7,stroke:#b45309,color:#3b2005
     classDef agents fill:#dcfce7,stroke:#15803d,color:#05300f
     classDef mixed fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class s1,s3q,s7,s9,s10 you
-    class s2,s3,s4,s11 hub
+    class s1,owner,s7,s9,s10 you
+    class s2,s3,s3q,s4,s11 hub
     class s5,s8 agents
     class s6 mixed
 ```
@@ -128,45 +131,40 @@ anything before I approve the plan.
   above and the repository has no `.agent-hub/`, the hub offers the `agent-hub:setup` skill first.) A hub works in a
   fresh worktree of the project, never in your main clone: when the chat was opened there, `hub start` creates the
   worktree, prints `MOVE <path>` and exits; the hub moves its session there and runs it again.
-- **You see:** the stage start line (hub tag `hub-1`, "started stage csv-export") and a first round of questions
-  Q1, Q2 …, each with a recommendation. If they are missing, the skill did not load: start the message with
-  `/agent-hub:hub`.
+- **You see:** the stage start line and a short description of the result. Questions appear only if an answer
+  materially changes that result. Use `/agent-hub:hub` to load the workflow reliably.
 - **Wait:** seconds.
-- **Next:** answer its questions.
+- **Next:** clarify the result if needed; otherwise review the plan you explicitly requested.
 
-### 2. Answer the clarifying questions
+### 2. Clarify the business result when needed
 
-The hub first looks for decisions you already made (`ask search csv export`; the register is empty on day one), then
-**grills** you on the rest with the `grilling` skill (install it once — see
-[Recommended companion](install.md#recommended-companion-grilling)): rounds of numbered questions, each with its
-recommended answer, so most answers are "yes" or one sentence. Facts it can find in the code it looks up itself.
+The hub checks existing decisions (`ask search csv export`) and establishes the Business DoD using
+[Planning a stage](../skills/hub/SKILL.md#planning-a-stage-agree-the-business-result-before-autonomous-work).
+For the clear request above, this can simply be: "Users can download the reports table as CSV with the same filters
+as the displayed table." Your supplied button requirement remains part of the brief. This needs no extra interview.
 
-```text
-Hub: Q1 — Which columns go into the file?
-     → Recommended: only the visible ones, in table order.
-     Q2 — New endpoint, or a format option on GET /api/reports (the table's only data source)?
-     → Recommended: a format=csv option on the existing endpoint.
-You: 1 yes. 2 yes.
-```
+For a vague idea, the companion `grilling` skill supplies numbered questions with recommendations, limited to the
+useful business result. For example, "make reports more convenient" may need: "What should users be able to do more
+easily? → Recommendation: download their filtered reports for sharing." Endpoint choice and UI details belong to
+the agents. The hub records your answers in `ask` so successors inherit them, and researches facts itself.
 
-- **Hub:** reads the repo, grills in rounds until nothing is left assumed, and records every answer in the register
-  (`ask add` + `ask close`; it lands in `questions.md`), so no later hub or agent asks it again. Anything you cannot
-  decide now becomes an open question with a default action and a due time.
-- **Wait:** a few minutes of conversation.
-- **Next:** the plan.
+- **You see:** a short, plain expected result, with your useful constraints preserved.
+- **Next:** the hub plans within that authorization. It asks for agreement if it proposes a materially different result.
 
 ### 3. Review the plan and the briefs
 
-The hub proposes the split before it starts anything: which agents (`api`, `ui`, `tests`), what each one owns, which
+The hub plans the split: which agents (`api`, `ui`, `tests`), what each one owns, which
 paths each must not touch, how each one proves it is done, and its stop condition ("open a PR and stop; do not merge").
 
 - **Hub:** drafts one **brief** per agent from the short `templates/brief-executor-template.md`: why, decisions already
-  made (filled from the register), steps with a checkable "done", verification, and where to stop, with a turn limit.
+  made (filled from the register), inherited Business DoD, steps with a checkable "done", technical verification,
+  and where to stop, with a turn limit.
   It shows you the plan, and the brief files are on disk to read.
 - **You see:** a plan of a screen or two.
 - **Wait:** minutes.
 - **Next:** approve, or say what to change. The plugin has no approval button; you approve by saying so in chat, and
-  you told the hub in step 1 to wait.
+  you told the hub in step 1 to wait. Without that instruction, a clear authorized request needs no additional
+  approval just because its result is recorded as a Business DoD.
 
 ```text
 Plan is fine, but tests must not touch the existing fixtures, and ui should reuse our button component.
@@ -203,8 +201,8 @@ Go.
 An agent that needs a decision writes `@hub QUESTION …` and ends its turn with `BLOCKED`. The hub wakes up.
 
 - **Hub:** checks the register first. If you already decided the matter, it applies the answer with `agent send` and
-  never bothers you. If not, it asks you in chat, registers the question (`ask add --default … --due …`) and tells the
-  agent what to assume meanwhile.
+  never bothers you. It settles facts and implementation choices itself. New ambiguity that materially changes the business result goes
+  to you and the register (`ask add --default … --due …`); work without that blocker proceeds.
 - **You see:** one question, with the default action and the deadline.
 - **You do:** answer in a sentence.
 - **Hub, then:** `ask close` with your answer, `agent send <role> "…"` (a finished agent resumes with the message),
@@ -232,7 +230,8 @@ If you do not answer by the due time, the default action is taken and the questi
 When an agent finishes, it writes its report to `coordinator/work/<tag>-REPORT.md`, journals
 `DONE <report path>` and exits. If your briefs said "open a PR and stop", the PRs are open now.
 
-- **Hub:** reads the one-line `DONE`, not the whole log, and tells you what is ready.
+- **Hub:** compares the reported delivered result with the Business DoD and tells you what is ready; technical
+  evidence supports that assessment separately. Green CI alone does not prove the business result.
 - **You see:** "api: PR 41 open, tests green. ui: PR 42 open." with the report paths.
 - **Next:** review.
 
@@ -277,13 +276,14 @@ Context is getting long. Write the handoff.
 ```
 
 - **Hub:** `hub handoff --stage csv-export` writes `HANDOFF-hub-csv-export-<date>.md` with locks, agents and the
-  question register filled in; the hub fills the rest (first steps, queue, risks, worktrees to clean up) and tells you
+  question register filled in; the hub fills the rest (agreed Business DoD/source, first steps, queue, risks, worktrees to clean up) and tells you
   the path. It releases no locks. Agents keep running.
 - **Next session:** open a fresh chat in the repo and say
   `/agent-hub:hub take over stage csv-export from <the handoff path>.` The new hub runs
   `hub takeover --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`, which takes over the locks, registers itself as
   the next hub (`hub-2`: the number is derived from the registry; `--n` overrides it), and prints a digest of the
-  handoff, the register and the live agents.
+  handoff, the register and the live agents. It preserves the agreed result and chooses implementation details
+  independently, without repeating the interview.
 
 ## A sketch of a real session
 
@@ -366,7 +366,8 @@ writes its handoff and waits for you; anything you type to the hub resets that c
 
 ## When you are needed
 
-- **Approve the plan and the briefs**, before any agent starts. This is the cheapest moment to change direction.
+- **Agree a changed business result**, or approve a plan when you explicitly asked the hub to wait. A clear
+  authorized request can already supply the agreed Business DoD.
 - **Answer questions** that touch product, money or anything that leaves your team. The hub brings them one at a time,
   with a default.
 - **Review and merge.** The hub can run the merge, but the decision to merge is yours.
