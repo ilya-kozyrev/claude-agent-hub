@@ -146,4 +146,22 @@ printf -- '- 10:00 [hub-33] old line\n' > $R/stage-b/coordinator/work/journal-$(
 takeover --take-main-merge > $P/r4.out 2>&1
 grep -q 'of stage stage-b: no journal line in the last 7 days' $P/r4.out; check $? 0 "a last line older than 7 days: 'no journal line in the last 7 days'"
 
+# ---- review round 2: a predecessor's main-merge goes with it only when it is surely a hub of this stage
+FXN=$T/fixtures/night-queue.md
+setup $PREV; printf '[]\n' > $R/stage-b/roles.json; takeover > $P/q1.out 2>&1; check $? 0 "takeover, the previous hub holds main-merge, another stage's registry unreadable"
+check "$(holder)" $PREV "…its main-merge is not taken (it may be live elsewhere)"
+grep -q 'left alone; take it with --take-main-merge' $P/q1.out; check $? 0 "…and is reported"
+setup $PREV; printf '[]\n' > $R/stage-b/roles.json; takeover --take-main-merge > $P/q1b.out 2>&1
+check "$(holder)" $NEW "…the explicit flag takes it"
+setup $PREV; printf '[]\n' > $R/stage-b/roles.json; takeover --skip-lock main-merge > $P/q1c.out 2>&1
+check "$(holder)" $PREV "…--skip-lock leaves it"
+# a stale night-queue line naming this stage's merge steward as the coordinator
+nq_steward(){ sed "s/PREV_ID/$STEWARD/" $FXN > $R/stage-a/night-queue.md; }
+setup $STEWARD; addrole stage-a live merge-steward $STEWARD steward-1; nq_steward; takeover > $P/q2.out 2>&1; check $? 0 "takeover, night-queue coordinator is a steward holding main-merge"
+check "$(holder)" $STEWARD "…its main-merge is not taken (its record here is not the hub role)"
+setup $STEWARD; addrole stage-a live merge-steward $STEWARD steward-1; nq_steward; takeover --take-main-merge > $P/q2b.out 2>&1
+check "$(holder)" $NEW "…the explicit flag takes it"
+setup $STEWARD; addrole stage-a live merge-steward $STEWARD steward-1; nq_steward; takeover --skip-lock main-merge > $P/q2c.out 2>&1
+check "$(holder)" $STEWARD "…--skip-lock leaves it"
+
 exit $fail

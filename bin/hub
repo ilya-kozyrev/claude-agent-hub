@@ -376,12 +376,6 @@ def holder_of(sid: str):
     return pool[0][0], pool[0][2], all(h[1] == "hub" for h in pool)
 
 
-def live_elsewhere(sid: str, stage: str) -> bool:
-    """The session has a live role in a stage other than `stage` (whatever it has in `stage`: that is not the
-    previous hub alone any more)."""
-    return any(h[3] and h[0] != stage for h in registry_of(sid)[0])
-
-
 def holder_activity(stage, rec) -> str:
     """How long ago the lock holder's stage journal last heard from it: the latest line signed with its tag."""
     tag = (rec or {}).get("tag") or (rec or {}).get("role")
@@ -845,11 +839,13 @@ def cmd_takeover(a) -> int:
     skip = set(a.skip_lock or [])
     explicit_mm = a.take_main_merge
     take_mm = explicit_mm or hc.truthy(hc.setting("AGENT_HUB_TAKE_MAIN_MERGE"))
-    # a previous hub that now lives in another stage keeps its main-merge: that is a third party's lock
-    moved = {sid for sid in owners if any(r.get("session_id") == sid and r["kind"] == "main-merge" for r in active)
-             and live_elsewhere(sid, stage)}
+    # A predecessor's main-merge goes with it only when this stage's record of that session is role hub and the registry
+    # was read completely and shows it live nowhere else (the resolver of a third party's lock); any other lock of it
+    # is taken as before. What is not taken is looked at below like any foreign lock.
+    unsure = {sid for sid in owners if any(r.get("session_id") == sid and r["kind"] == "main-merge" for r in active)
+              and holder_of(sid)[::2] != (stage, True)}
     to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip
-               and not (r["kind"] == "main-merge" and r.get("session_id") in moved)]
+               and not (r["kind"] == "main-merge" and r.get("session_id") in unsure)]
     kept = [r for r in active if r.get("session_id") in owners and r["kind"] in skip]
     mine = [r for r in active if r.get("session_id") == cli]
     if "main-merge" not in skip:
@@ -864,7 +860,7 @@ def cmd_takeover(a) -> int:
         if take_mm and mm_repo == "*":
             notes.append(f"no repository and no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
         third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
-                 and (r.get("session_id") not in owners or r.get("session_id") in moved) and r.get("session_id") != cli]
+                 and (r.get("session_id") not in owners or r.get("session_id") in unsure) and r.get("session_id") != cli]
         for mm in third:
             holder_stage, holder_rec, is_hub = holder_of(mm.get("session_id") or "")
             same_stage = holder_stage == stage and is_hub and not starting
