@@ -32,6 +32,8 @@ Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone
 tomorrow) or --for 6h; default --for 55m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
 sleeps longer pays for re-writing its whole context at every wake; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
+With --journal it also looks, every 10 s, for a headless agent of the stage whose process is gone without a result
+(killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
 """
 from __future__ import annotations
@@ -39,6 +41,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -50,6 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 
 POLL_S = 1.0
+DEAD_POLL_S = 10.0  # how often --journal looks for a headless agent whose process is gone without a result
 DEFAULT_FOR = hc.DEFAULT_JWAIT_FOR  # the built-in; main() reads hc.jwait_for() ($AGENT_HUB_JWAIT_FOR)
 MAX_OUT_LINES = 200
 MAX_LINE_CHARS = 1200
@@ -142,6 +147,30 @@ class JournalSources:
                                           f"journal {day:%d.%m}", True)
             day += dt.timedelta(days=1)
         return list(self.by_day.values())
+
+
+class DeadAgentWatch:
+    """Observer of the stage's headless agents for `--journal`: an agent killed without a result (kill -9 of its whole
+    process group, so the exit-note wrapper died too) is journaled once as `EXIT <role>: killed (no result)`, which the
+    hub's default match wakes on. The check is `agent`'s own (observe_dead), loaded on the first tick; whatever fails
+    in it is not jwait's failure."""
+
+    def __init__(self, stage: str):
+        self.stage, self.memo, self.next_at, self.mod = stage, {}, 0.0, None
+
+    def tick(self) -> None:
+        if time.monotonic() < self.next_at:
+            return
+        self.next_at = time.monotonic() + DEAD_POLL_S
+        try:
+            if self.mod is None:
+                path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agent")
+                loader = importlib.machinery.SourceFileLoader("agent_cli", path)
+                self.mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_cli", loader))
+                loader.exec_module(self.mod)
+            self.mod.observe_dead(self.stage, self.memo)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def state_path(caller: str) -> Path:
@@ -326,8 +355,11 @@ def main(argv: list) -> int:
         scan()  # the baseline read comes first: the line below means "armed", what is written after it is news
     print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {fmt_deadline(deadline)}", flush=True)
 
+    watch = DeadAgentWatch(stage) if args.journal else None
     try:
         while True:
+            if watch:
+                watch.tick()
             if has_source:
                 scan()
             t = hc.now()

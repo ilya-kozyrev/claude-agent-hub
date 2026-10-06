@@ -392,7 +392,19 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     with open(log, "ab") as out, open(d / "stderr.log", "ab") as err, open(stdin_file, "rb") as inp:
         proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=inp, stdout=out, stderr=err,
                                 env=env, start_new_session=True, close_fds=True)
-    init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine)
+    # The run is on record from the moment it exists: an observer that finds the pid gone then sees this run's pid, not
+    # the previous run's (a resumed agent would otherwise look dead until the init event).
+    before = (meta.get("pid"), list(meta.get("runs") or []))
+    meta["pid"] = proc.pid
+    meta.setdefault("runs", []).append({"pid": proc.pid, "at": hc.now().isoformat(timespec="seconds"),
+                                        "kind": "resume" if resume else "spawn"})
+    save_meta(meta["stage"], meta["role"], meta)
+    try:
+        init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine)
+    except hc.Failure:
+        meta["pid"], meta["runs"] = before[0], before[1]
+        save_meta(meta["stage"], meta["role"], meta)
+        raise
     meta["session_id"] = init["session_id"]
     model = init.get("model")
     if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
@@ -540,9 +552,7 @@ def cmd_spawn(a) -> int:
     except hc.Failure:
         d.rename(d.with_name(f"{a.role}.failed-{time.strftime('%Y%m%d-%H%M%S')}"))
         raise
-    meta["pid"] = pid
-    meta["runs"].append({"pid": pid, "at": hc.now().isoformat(timespec="seconds"), "kind": "spawn"})
-    save_meta(stage, a.role, meta)
+    save_meta(stage, a.role, meta)  # launch recorded the pid and the run; this keeps the init event's session id
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
                        note=f"agent-spawn {model_name(meta)}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
     with hc.roles_lock(stage):
@@ -657,6 +667,88 @@ def pending_unread(meta: dict) -> list:
     return pending
 
 
+OBSERVE_WINDOW_S = 24 * 3600  # a run that died longer ago than this is history, not news
+
+
+def process_gone(meta: dict) -> bool:
+    """Whether the recorded run's process is certainly gone: no such pid, or a pid that now runs another command line.
+    Unlike alive(), a `ps` that shows nothing (a sandbox hiding other processes) is not "gone": the observers below
+    write to the journal once and for all, so they need a certain answer."""
+    pid = meta.get("pid")
+    if not isinstance(pid, int) or not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass
+    try:
+        cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    return bool(cmd.strip()) and (meta.get("process_token") or meta["session_id"]) not in cmd
+
+
+def claim_exit(stage: str, meta: dict) -> bool:
+    """True for the first caller to claim the end of this agent's latest run (atomic: O_CREAT|O_EXCL on a marker under
+    the state dir, never in the agent's own directory), False for every later one. The claim decides who writes the EXIT
+    line, so it is written once however many observers (agent status, jwait, the exit-note wrapper) see the end."""
+    run = (meta.get("runs") or [{}])[-1]
+    key = re.sub(r"[^\w.-]+", "_", f"{meta['role']}.{meta.get('pid')}.{run.get('at', '')}")
+    path = hc.state_dir() / "agent-exits" / stage / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+    except FileExistsError:
+        return False
+    return True
+
+
+def observe_death(stage: str, meta: dict, info: dict, mtime) -> str | None:
+    """An agent whose process is gone without a result of its latest run (kill -9, a crash of the whole group: the
+    exit-note wrapper died with it) is journaled once, by whoever notices first: `EXIT <role>: killed (no result)`,
+    under the agent's tag, the line the hub's default jwait wakes on. Returns the line, or None (nothing to report, or
+    another observer wrote it). Only for a registered role (agent stop retires it) and a recent death."""
+    if info["result"] and not info["running_after_result"]:
+        return None
+    if mtime is None or hc.now().timestamp() - mtime.timestamp() > OBSERVE_WINDOW_S:
+        return None
+    if not process_gone(meta) or not claim_exit(stage, meta):
+        return None
+    last = (info["last_text"] or "").strip().splitlines()
+    return hc.journal_append(stage, meta["tag"], f"EXIT {meta['role']}: killed (no result); turns {turns_text(info)}"
+                             f"{'; last: ' + last[-1][:160] if last else ''} — agent status {meta['role']}")
+
+
+def observe_dead(stage: str, memo: dict | None = None) -> list:
+    """observe_death for every registered headless agent of the stage (jwait's poll). `memo` ({role: (pid, log
+    size)}) keeps a run that was looked at from being read again until its pid or log changes."""
+    memo = {} if memo is None else memo
+    base = hc.root() / stage / "agents"
+    if not base.is_dir():
+        return []
+    registered = hc.roles_load(stage)["roles"]
+    lines = []
+    for mp in sorted(base.glob("*/meta.json")):
+        role = mp.parent.name
+        if role not in registered:
+            continue
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            log = Path(meta["dir"]) / "log.jsonl"
+            st = log.stat()
+        except (OSError, ValueError, KeyError):
+            continue
+        if not isinstance(meta, dict) or not process_gone(meta) or memo.get(role) == (meta.get("pid"), st.st_size):
+            continue
+        memo[role] = (meta.get("pid"), st.st_size)
+        line = observe_death(stage, meta, read_log(log), hc.dt.datetime.fromtimestamp(st.st_mtime, hc.TZ))
+        if line:
+            lines.append(line)
+    return lines
+
+
 def status_line(stage: str, role: str) -> str:
     meta = load_meta(stage, role)
     log = Path(meta["dir"]) / "log.jsonl"
@@ -677,6 +769,8 @@ def status_line(stage: str, role: str) -> str:
         state = "no process, no result (died or killed)"
     if registry is None:
         state += ", role retired"
+    elif not live:
+        observe_death(stage, meta, info, mtime)  # journals EXIT once when the process is gone without a result
     unread = pending_unread(meta) if not live else []
     if unread:
         state += (f"; unread inbox messages {len(unread)} since {unread[0]['at'][11:16]} — "
@@ -740,8 +834,6 @@ def cmd_send(a) -> int:
                  "the brief above: journal, report, inbox.)",
                  resume=True)
     meta["inbox_unread"] = []
-    meta["pid"] = pid
-    meta["runs"].append({"pid": pid, "at": t.isoformat(timespec="seconds"), "kind": "resume"})
     save_meta(stage, a.role, meta)
     with hc.roles_lock(stage):
         data = hc.roles_load(stage)
@@ -759,6 +851,7 @@ def cmd_stop(a) -> int:
     how = "no process was running"
     if alive(meta):
         pgid = meta["pid"]
+        claim_exit(stage, meta)  # a stop is a known end: no observer reports it as "killed"
         try:
             os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
@@ -817,6 +910,8 @@ def cmd_exit_note(a) -> int:
     since = hc.dt.datetime.fromisoformat(runs[-1]["at"]) if runs else hc.now() - hc.dt.timedelta(days=1)
     clean = a.code == 0 and r and not r.get("is_error") and r.get("subtype") == "success"
     if clean and status_seen(stage, meta["tag"], since):
+        return 0
+    if not claim_exit(stage, meta):  # an observer already reported this run's end
         return 0
     why = "no status word in the journal" if clean else (f"{r.get('subtype')}, error" if r.get("is_error") else
                                                           (r.get("subtype") or "no result — died or killed"))
