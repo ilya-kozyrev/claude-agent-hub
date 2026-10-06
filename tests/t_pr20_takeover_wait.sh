@@ -80,6 +80,10 @@ def l1():
         'if sys.argv[1]=="apply": done.touch()\n' +
         'sys.exit(0 if done.exists() else 1)\n')
     step.chmod(0o755)
+    control = subprocess.run([str(step), 'check'], capture_output=True, text=True, timeout=5)
+    assert control.returncode == 1 and json.loads(probe.read_text()) == [
+        {'mode': 'check', 'acquired': True}], 'L1: positive nonblocking probe control failed'
+    probe.unlink()
     result = command('takeover', '--stage', 'stage-a', '--session', new,
                      '--handoff', handoff, '--no-project')
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
@@ -122,6 +126,18 @@ def first_wait_contract(label, text):
 
 def l3_cli():
     _, _, handoff = setup('l3-cli', 'codex')
+    # Even with an empty finite queue, the first digest wait replays a handover event.
+    # Write it before starting jwait: omitting that first wait would leave it unanswered.
+    since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, dt.timezone.utc)
+    hc.journal_append('stage-a', 'fixture-worker', 'BLOCKED @hub inherited during handover')
+    argv = shlex.split(hub['jwait_command']('stage-a', 'hub-2', since))
+    assert '--since' in argv, argv
+    argv[0] = str(root / 'bin/jwait')
+    replay = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+    assert replay.returncode == 0 and 'BLOCKED @hub inherited during handover' in replay.stdout, (
+        'L3: the first digest jwait must actually replay inherited events',
+        replay.returncode, replay.stdout, replay.stderr)
+    print('PASS L3_cli replay: empty finite queue still has an inherited BLOCKED event')
     successor = ap.CodexSuccessor('stage-a', 1, handoff, 'gpt-6.1-sol',
                                   'danger-full-access', tmp, 1, 10, effort='high')
     first_wait_contract('generated CLI brief', successor.brief('fixture').read_text())
@@ -153,6 +169,8 @@ def m3():
 
 cases = {'L1': l1, 'L2': l2, 'L3_cli': l3_cli, 'L3_desktop': l3_desktop,
          'L3_skill': l3_skill, 'M3': m3}
+first_wait_contract('positive wording control',
+                    "Run the digest's first `jwait` once unconditionally. Then wait only while work remains.")
 assert selected in {'all', 'L3', *cases}, f'unknown PR20_CASE: {selected}'
 failed = []
 for name, case in cases.items():
