@@ -114,7 +114,7 @@ assert agents['done']['turns'] == 1, 'items are not user turns'
 assert agents['done']['ctx_tokens'] is None and agents['done']['cost_usd'] is None
 assert agents['done']['model_id'] is None, 'CLI does not report the resolved model'
 assert agents['done']['usage_tokens']['input_tokens'] == 23000
-assert agents['done']['usage_scope'] == 'logged_runs'
+assert agents['done']['usage_scope'] == 'session'
 assert agents['failed']['result']['text'] == 'fixture failure'
 assert agents['done']['result']['text'] == 'DONE: all checks passed'
 assert agents['hub']['kind'] == 'session' and agents['hub']['state'] == 'done'
