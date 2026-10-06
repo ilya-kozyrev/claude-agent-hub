@@ -42,7 +42,7 @@ Usage:
   ask done Q-A-001 --evidence "…" [--at HH:MM]        (the owner's answer was executed; repeat to append)
   ask list [--stage stage-a] [--open | --overdue | --all | --pending [--since YYYY-MM-DD]]
   ask search word [word …] [--stage stage-a] [--all]   (all words, any status, every stage by default)
-  ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision)
+  ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision / permission)
   ask summary
 add / decided / plan / close / done stamp the time themselves (hub time zone, `--at` overrides) and print a ready
 journal line (add / decided / plan print the new id first; `--print-id` prints the id alone, for `ID=$(ask add …)`). Env: AGENT_HUB_HOME (the hub home; `hub home` shows which), AGENT_HUB_TZ, ASK_BY (default author).
@@ -781,11 +781,15 @@ def cmd_digest(args) -> int:
     stages = [args.stage] if args.stage else all_stages()
     if args.stage and not stage_file(args.stage).exists():
         raise SystemExit(f"ask: no register {stage_file(args.stage)}")
+    now = now_local()
     for stage in stages:
         _, entries = load(stage)
         for e in entries:
             if e.state in ("answered", "standing"):
                 print(f"{e.id} {clip(gist(e) or e.title, args.width)}")
+            elif e.kind_letter == "A" and perm_state(e, now) == "allowed":
+                line = f"allowed ({scope_label(e)}): {e.title} — {e.fields.get('words', '')}"
+                print(f"{e.id} {clip(line, args.width)}")
     return 0
 
 
@@ -937,7 +941,7 @@ def main(argv: list[str]) -> int:
     se.add_argument("--stage", help="default: every stage")
     se.add_argument("--all", action="store_true", help=f"no cap (default: {SEARCH_CAP} newest)")
 
-    dg = sub.add_parser("digest", help="one line per owner answer and standing decision — the whole register compactly")
+    dg = sub.add_parser("digest", help="one line per owner answer, standing decision and permission in force — the whole register compactly")
     dg.add_argument("--stage", help="default: every stage")
     dg.add_argument("--width", type=int, default=160, help="characters of the gist per line (default 160)")
 

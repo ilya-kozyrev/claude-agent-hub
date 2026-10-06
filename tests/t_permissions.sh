@@ -27,6 +27,7 @@ $B/ask allow --stage stage-y --words "ok" --scope all --repo shop "x" > /dev/nul
 $B/ask allow --stage stage-y --words "ok" --until tomorrow "x" > /dev/null 2>&1; check $? 1 "negative: unparsable --until"
 $B/ask list --stage stage-y 2>/dev/null | grep -q '^A-'; check $? 1 "a permission is not an unresolved entry of ask list"
 $B/ask search накатывать | grep -q '^A-Y-001'; check $? 0 "ask search finds it by the owner's words"
+$B/ask digest --stage stage-y | grep -q '^A-Y-001 allowed (repo shop): merge after green CI.* — «можно накатывать»'; check $? 0 "ask digest has a line per permission in force"
 
 # ---- scope resolution: the same stage, another stage on the same repository, another repository (DAY-03)
 add --stage stage-y --class merge "Merge PR #5?"; check $? 3 "same stage, same class → refused (exit 3)"
