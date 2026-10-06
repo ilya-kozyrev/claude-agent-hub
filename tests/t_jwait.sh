@@ -143,6 +143,7 @@ check $rc 0 "control: another stage's QUESTION line wakes it"
 ( armed $AGENT_HUB_HOME/r3.out; $B/jlog --stage dolyaq --tag core-c-hub-30 "@hub QUESTION own again" >/dev/null ) &
 HUB_STAGE=core-c HUB_TAG=hub-30 $B/jwait --journal --stage dolyaq --match QUESTION --include-own --settle 1 --for 30s --caller r1 > $AGENT_HUB_HOME/r3.out 2>&1; rc=$?
 check $rc 0 "--include-own keeps the own signature"
+O=$AGENT_HUB_HOME; J=$(journal stage-a)   # the home was renewed above
 # 8. the default --for is 55m (the prompt cache lives 1 h), a setting changes it, a printed command carries it
 hcfor(){ python3 - "$B" <<'PY'
 import sys
@@ -173,7 +174,7 @@ check "$(AGENT_HUB_JWAIT_FOR=0m hcfor 2>/dev/null)" 55m "jwait_for(): a zero dur
 # a real run: the deadline in the start line is now + the configured wait; an explicit --for still wins
 waited(){  # waited <minutes expected> <extra env...> -- <jwait args...>: run jwait, read its deadline, stop it
   local want=$1; shift; local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
-  env "${envs[@]}" $B/jwait "$@" > $O/wd.out 2>&1 & local pid=$!
+  env ${envs[@]+"${envs[@]}"} $B/jwait "$@" > $O/wd.out 2>&1 & local pid=$!
   armed $O/wd.out; kill $pid 2>/dev/null; wait $pid 2>/dev/null
   python3 - "$O/wd.out" "$want" <<'PY'
 import datetime as dt, re, sys
