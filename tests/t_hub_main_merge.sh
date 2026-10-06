@@ -88,4 +88,62 @@ grep -q 'ATTENTION: main-merge (webapp) is taken from Hub core-c #33 .* of stage
 setup $OTHER; takeover --skip-lock main-merge > $P/t5.out 2>&1
 check "$(holder)" $OTHER "takeover --skip-lock main-merge leaves it"
 
+# ---- review round 1: who a lock holder is, exactly
+# addrole <stage> <live|retired> <role> <session> [tag]: one more record in a stage's registry
+addrole(){ python3 - "$R/$1/roles.json" "$2" "$3" "$4" "${5:-x-1}" <<'PY'
+import json, sys
+path, how, role, sid, tag = sys.argv[1:]
+d = json.load(open(path))
+rec = {"session": sid, "cli_session_id": sid, "kind": "headless", "tag": tag, "title": tag}
+if how == "live":
+    d["roles"][role] = rec
+elif role == "-":      # a retired record that lost its role name
+    d["retired"].append(dict(rec, retired_at="2026-09-01T10:00:00+00:00"))
+else:
+    d["retired"].append(dict(rec, role=role, retired_at="2026-09-01T10:00:00+00:00"))
+json.dump(d, open(path, "w"))
+PY
+}
+STEWARD=77777777-aaaa-4aaa-8aaa-777777777777  # a headless agent of stage-a
+# 1. a hub retired here and live elsewhere belongs to the other stage
+setup $OLDER; addrole stage-b live hub $OLDER hub-40; takeover > $P/r1.out 2>&1; check $? 0 "takeover, holder retired in this stage and a live hub of another one"
+check "$(holder)" $OLDER "…is left alone (a live role elsewhere beats a retired record here)"
+grep -q 'left alone; take it with --take-main-merge' $P/r1.out; check $? 0 "…with the hint"
+setup $OLDER; addrole stage-b retired hub $OLDER; takeover > $P/r1b.out 2>&1
+check "$(holder)" $OLDER "a holder retired in two stages is ambiguous: left alone"
+setup $PREV; addrole stage-b live hub $PREV hub-40; takeover > $P/r1c.out 2>&1; check $? 0 "takeover, the previous hub also lives in another stage"
+check "$(holder)" $PREV "…its main-merge stays with it"
+grep -q 'left alone; take it with --take-main-merge' $P/r1c.out; check $? 0 "…and is reported"
+setup $PREV; addrole stage-b live hub $PREV hub-40; takeover --take-main-merge > $P/r1d.out 2>&1
+check "$(holder)" $NEW "…the explicit flag still takes it"
+grep -q 'of stage stage-b: its latest journal line is' $P/r1d.out; check $? 0 "…naming the stage it lives in"
+# 2. only a hub's lock goes with the config flag: a steward of this stage merging is not touched
+setup $STEWARD; addrole stage-a live merge-steward $STEWARD steward-1; takeover > $P/r2.out 2>&1; check $? 0 "takeover, main-merge held by a live agent of this stage"
+check "$(holder)" $STEWARD "…the config flag leaves it"
+setup $STEWARD; addrole stage-a retired merge-steward $STEWARD; takeover > $P/r2b.out 2>&1
+check "$(holder)" $STEWARD "…also a retired agent record"
+setup $STEWARD; addrole stage-a retired - $STEWARD; takeover > $P/r2c.out 2>&1
+check "$(holder)" $STEWARD "…also a retired record without a role name (not a hub)"
+setup $STEWARD; addrole stage-a live merge-steward $STEWARD steward-1; takeover --take-main-merge > $P/r2d.out 2>&1
+check "$(holder)" $NEW "…the explicit flag takes it"
+# 3. an unreadable registry of another stage never aborts, and nothing is taken on what cannot be told
+setup $OLDER; printf '[]\n' > $R/stage-b/roles.json; takeover > $P/r3.out 2>&1; check $? 0 "takeover with another stage's roles.json of the wrong shape"
+check "$(holder)" $OLDER "…the lock of a holder that cannot be placed is left alone"
+setup $OLDER; printf '{"roles": [' > $R/stage-b/roles.json; takeover > $P/r3b.out 2>&1; check $? 0 "takeover with another stage's roles.json that is not JSON"
+check "$(holder)" $OLDER "…the same"
+setup $OLDER; printf '{"roles": [' > $R/stage-b/roles.json; takeover --take-main-merge > $P/r3c.out 2>&1; check $? 0 "…the explicit flag works"
+grep -q 'of stage unknown: no journal line' $P/r3c.out; check $? 0 "…saying the stage is unknown"
+setup none; printf '[]\n' > $R/stage-b/roles.json; start > $P/r3d.out 2>&1; check $? 0 "start with another stage's roles.json of the wrong shape"
+check "$(holder)" $NEW "…takes a free lock"
+if [ "$(id -u)" != 0 ]; then
+  setup $OLDER; chmod 000 $R/stage-b/roles.json; takeover > $P/r3e.out 2>&1; rc=$?; chmod 600 $R/stage-b/roles.json
+  check $rc 0 "takeover with an unreadable roles.json of another stage"; check "$(holder)" $OLDER "…left alone"
+fi
+# 4. a journal older than the window is said so
+setup $OTHER; rm $(journal stage-b)
+python3 -c 'import datetime as d,sys; print(d.datetime.now(d.timezone.utc).date()-d.timedelta(days=8))' > $P/old-day
+printf -- '- 10:00 [hub-33] old line\n' > $R/stage-b/coordinator/work/journal-$(cat $P/old-day).md
+takeover --take-main-merge > $P/r4.out 2>&1
+grep -q 'of stage stage-b: no journal line in the last 7 days' $P/r4.out; check $? 0 "a last line older than 7 days: 'no journal line in the last 7 days'"
+
 exit $fail

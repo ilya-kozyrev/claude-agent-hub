@@ -342,30 +342,53 @@ def previous_hub(stage: str, exclude: tuple = ()) -> dict:
 
 
 def registry_of(sid: str):
-    """(stage, role record) of the session `sid` in the registry of any stage — live roles and retired ones, so an
-    earlier hub still counts —, else (None, None). The role record of the lock holder tells which stage it belongs to."""
+    """([(stage, role, record, live)], complete): every record of the session `sid` in the registry of any stage — live
+    roles and retired ones, so an earlier hub still counts. `complete` is False when some registry could not be read
+    (the answer may be missing a record)."""
     if not sid:
-        return None, None
+        return [], True
     try:
         names = sorted(d.name for d in hc.root().iterdir() if (d / "roles.json").is_file())
     except OSError:
-        return None, None
+        return [], False
+    hits, complete = [], True
     for name in names:
         try:
             data = hc.roles_load(name)
-        except hc.Failure:
-            continue
-        for rec in list(data["roles"].values()) + data["retired"]:
-            if sid in (rec.get("session"), rec.get("cli_session_id")):
-                return name, rec
-    return None, None
+            roles = [(role, rec, True) for role, rec in data["roles"].items()]
+            roles += [(rec.get("role"), rec, False) for rec in data["retired"]]
+            hits += [(name, role, rec, live) for role, rec, live in roles if sid in (rec.get("session"), rec.get("cli_session_id"))]
+        except (hc.Failure, hc.UsageError, OSError, ValueError, AttributeError, TypeError):
+            complete = False
+    return hits, complete
+
+
+def holder_of(sid: str):
+    """(stage, record, is_hub) of the hub or agent a lock belongs to; (None, None, False) when that cannot be told
+    for sure. A live role beats a retired record (a hub retired in stage A and live in stage B belongs to B); more
+    than one stage, or a registry that could not be read, is not told. is_hub: the record is the `hub` role, live or
+    retired."""
+    hits, complete = registry_of(sid)
+    pool = [h for h in hits if h[3]] or hits
+    stages = {h[0] for h in pool}
+    if not complete or len(stages) != 1:
+        return None, None, False
+    return pool[0][0], pool[0][2], all(h[1] == "hub" for h in pool)
+
+
+def live_elsewhere(sid: str, stage: str) -> bool:
+    """The session has a live role in another stage and none in `stage`."""
+    live = {h[0] for h in registry_of(sid)[0] if h[3]}
+    return bool(live) and stage not in live
 
 
 def holder_activity(stage, rec) -> str:
     """How long ago the lock holder's stage journal last heard from it: the latest line signed with its tag."""
     tag = (rec or {}).get("tag") or (rec or {}).get("role")
-    last = hc.last_line_by_tag(stage, tag, days=7) if stage and tag else None
-    return f"its latest journal line is {hc.age(last)} old" if last else "no journal line"
+    if not (stage and tag):
+        return "no journal line"
+    last = hc.last_line_by_tag(stage, tag, days=7)
+    return f"its latest journal line is {hc.age(last)} old" if last else "no journal line in the last 7 days"
 
 
 def nightq_read(stage: str):
@@ -822,24 +845,29 @@ def cmd_takeover(a) -> int:
     skip = set(a.skip_lock or [])
     explicit_mm = a.take_main_merge
     take_mm = explicit_mm or hc.truthy(hc.setting("AGENT_HUB_TAKE_MAIN_MERGE"))
-    to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip]
+    # a previous hub that now lives in another stage keeps its main-merge: that is a third party's lock
+    moved = {sid for sid in owners if any(r.get("session_id") == sid and r["kind"] == "main-merge" for r in active)
+             and live_elsewhere(sid, stage)}
+    to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip
+               and not (r["kind"] == "main-merge" and r.get("session_id") in moved)]
     kept = [r for r in active if r.get("session_id") in owners and r["kind"] in skip]
     mine = [r for r in active if r.get("session_id") == cli]
     if "main-merge" not in skip:
         # Every main-merge lock is looked at, one per repo. The hub's repo (AGENT_HUB_DEFAULT_REPO; "*" = all) is the
         # only one that can be taken, and only on an explicit --take-main-merge, or, with AGENT_HUB_TAKE_MAIN_MERGE=true,
-        # when the holder is an earlier hub of this very stage (a takeover) or nobody holds it; the rest is reported and
-        # left alone. The config flag never takes a lock from another stage's hub, and never on `start`.
+        # when the holder is an earlier `hub` of this very stage (a takeover) or nobody holds it; the rest is reported and
+        # left alone. The config flag never takes a lock from another stage's hub, from an agent of this stage (a merge
+        # steward) or from a holder it cannot place, and never on `start`.
         mm_repo = hc.default_repo() or b.DEFAULT_REPO
         mm_configured = bool(hc.setting("AGENT_HUB_DEFAULT_REPO"))  # the nudge below is for a repository that opted in
         ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
         if take_mm and mm_repo == "*":
             notes.append(f"no repository and no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
         third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
-                 and r.get("session_id") not in owners and r.get("session_id") != cli]
+                 and (r.get("session_id") not in owners or r.get("session_id") in moved) and r.get("session_id") != cli]
         for mm in third:
-            holder_stage, holder_rec = registry_of(mm.get("session_id") or "")
-            same_stage = holder_stage == stage and not starting
+            holder_stage, holder_rec, is_hub = holder_of(mm.get("session_id") or "")
+            same_stage = holder_stage == stage and is_hub and not starting
             in_repo = mm_repo == "*" or repo_of(mm) in (mm_repo, "*")
             if in_repo and (explicit_mm or (take_mm and same_stage)):
                 to_take.append({"kind": "main-merge", "repo": repo_of(mm), "until": mm["until"],
