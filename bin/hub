@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Hub start, takeover and handoff, one command each.
 
-  hub start    --stage stage-a --session <session id> [--name "Hub stage-a #1"] [--take-main-merge] [--dry-run]
-               [--repo PATH | --no-project]
+  hub start    --stage stage-a --session <session id> [--name "Hub stage-a #1"] [--take-main-merge]
+               [--skip-lock RESOURCE ...] [--dry-run] [--repo PATH | --no-project]
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
                [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
                [--repo PATH | --no-project]
@@ -56,10 +56,13 @@ target state is already there is skipped as "already done", so a re-run finishes
      or the `coordinator:` line of night-queue.md (other than the new one); when they disagree it
      says so and takes the locks of all of them. --take-main-merge also takes main-merge of the hub's
      repo (AGENT_HUB_DEFAULT_REPO, else the git repository you run in, else "*") when nobody holds it (until --main-merge-until) or when a third
-     party (e.g. a merge steward) holds it; without the flag, and for other repos, a third-party holder is
-     reported and left alone. AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default.
-     The free lock is never added when a main-merge is already taken over or held (no second, wildcard
-     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock RESOURCE leaves that lock where it
+     party (e.g. a merge steward, a hub of another stage) holds it, and prints an ATTENTION line naming the holder's stage and
+     the age of its latest journal line; without the flag, and for other repos, a third-party holder is reported and left alone.
+     AGENT_HUB_TAKE_MAIN_MERGE=true (repository config) makes the flag the default for a free lock and for a lock held by an
+     earlier hub of this stage (a takeover); a lock held by anyone else, and any held lock on `start`, is left alone
+     whatever the config says. The free lock is never added when a main-merge is already taken over or held (no second, wildcard
+     record); without the flag a free main-merge of the configured hub repo is reported in the digest. --skip-lock RESOURCE
+     (also on `start`) leaves that lock where it
      is (a sub-agent of the old hub still works under it).
   2. night-queue.md: `coordinator: <new session id>` (the night nudge addresses it) and `updated:`
      (single-line edits, atomic write). Skipped when the stage has no night queue.
@@ -336,6 +339,50 @@ def previous_hub(stage: str, exclude: tuple = ()) -> dict:
         if src in c:
             return c[src]
     return {"local": "", "cli": "", "name": "", "tag": ""}
+
+
+def registry_of(sid: str):
+    """([(stage, role, record, live)], complete): every record of the session `sid` in the registry of any stage — live
+    roles and retired ones, so an earlier hub still counts. `complete` is False when some registry could not be read
+    (the answer may be missing a record)."""
+    if not sid:
+        return [], True
+    try:
+        names = sorted(d.name for d in hc.root().iterdir() if (d / "roles.json").is_file())
+    except OSError:
+        return [], False
+    hits, complete = [], True
+    for name in names:
+        try:
+            data = hc.roles_load(name)
+            roles = [(role, rec, True) for role, rec in data["roles"].items()]
+            roles += [(rec.get("role"), rec, False) for rec in data["retired"]]
+            hits += [(name, role, rec, live) for role, rec, live in roles if sid in (rec.get("session"), rec.get("cli_session_id"))]
+        except (hc.Failure, hc.UsageError, OSError, ValueError, AttributeError, TypeError):
+            complete = False
+    return hits, complete
+
+
+def holder_of(sid: str):
+    """(stage, record, is_hub) of the hub or agent a lock belongs to; (None, None, False) when that cannot be told
+    for sure. A live role beats a retired record (a hub retired in stage A and live in stage B belongs to B); more
+    than one stage, or a registry that could not be read, is not told. is_hub: the record is the `hub` role, live or
+    retired."""
+    hits, complete = registry_of(sid)
+    pool = [h for h in hits if h[3]] or hits
+    stages = {h[0] for h in pool}
+    if not complete or len(stages) != 1:
+        return None, None, False
+    return pool[0][0], pool[0][2], all(h[1] == "hub" for h in pool)
+
+
+def holder_activity(stage, rec) -> str:
+    """How long ago the lock holder's stage journal last heard from it: the latest line signed with its tag."""
+    tag = (rec or {}).get("tag") or (rec or {}).get("role")
+    if not (stage and tag):
+        return "no journal line"
+    last = hc.last_line_by_tag(stage, tag, days=7)
+    return f"its latest journal line is {hc.age(last)} old" if last else "no journal line in the last 7 days"
 
 
 def nightq_read(stage: str):
@@ -728,7 +775,7 @@ def cmd_start(a) -> int:
         return code
     if not a.dry_run:
         hc.work_dir(stage).mkdir(parents=True, exist_ok=True)
-    a.handoff, a.skip_lock, a.start, a.auto_handoff = None, None, True, False
+    a.handoff, a.start, a.auto_handoff = None, True, False
     for warning in environment_warnings(persist=not a.dry_run):
         print(f"ATTENTION: {warning}")
     return cmd_takeover(a)
@@ -790,29 +837,45 @@ def cmd_takeover(a) -> int:
         return r.get("repo") or b.DEFAULT_REPO
 
     skip = set(a.skip_lock or [])
-    take_mm = a.take_main_merge or hc.truthy(hc.setting("AGENT_HUB_TAKE_MAIN_MERGE"))
-    to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip]
+    explicit_mm = a.take_main_merge
+    take_mm = explicit_mm or hc.truthy(hc.setting("AGENT_HUB_TAKE_MAIN_MERGE"))
+    # A predecessor's main-merge goes with it only when this stage's record of that session is role hub and the registry
+    # was read completely and shows it live nowhere else (the resolver of a third party's lock); any other lock of it
+    # is taken as before. What is not taken is looked at below like any foreign lock.
+    unsure = {sid for sid in owners if any(r.get("session_id") == sid and r["kind"] == "main-merge" for r in active)
+              and holder_of(sid)[::2] != (stage, True)}
+    to_take = [r for r in active if r.get("session_id") in owners and r["kind"] not in skip
+               and not (r["kind"] == "main-merge" and r.get("session_id") in unsure)]
     kept = [r for r in active if r.get("session_id") in owners and r["kind"] in skip]
     mine = [r for r in active if r.get("session_id") == cli]
     if "main-merge" not in skip:
-        # Every main-merge lock is looked at, one per repo. --take-main-merge takes those of the hub's repo
-        # (AGENT_HUB_DEFAULT_REPO; "*" = all) and the repo's free lock; the rest is reported and left alone.
+        # Every main-merge lock is looked at, one per repo. The hub's repo (AGENT_HUB_DEFAULT_REPO; "*" = all) is the
+        # only one that can be taken, and only on an explicit --take-main-merge, or, with AGENT_HUB_TAKE_MAIN_MERGE=true,
+        # when the holder is an earlier `hub` of this very stage (a takeover) or nobody holds it; the rest is reported and
+        # left alone. The config flag never takes a lock from another stage's hub, from an agent of this stage (a merge
+        # steward) or from a holder it cannot place, and never on `start`.
         mm_repo = hc.default_repo() or b.DEFAULT_REPO
         mm_configured = bool(hc.setting("AGENT_HUB_DEFAULT_REPO"))  # the nudge below is for a repository that opted in
         ours = {repo_of(r) for r in to_take + mine if r["kind"] == "main-merge"}
         if take_mm and mm_repo == "*":
             notes.append(f"no repository and no AGENT_HUB_DEFAULT_REPO here ({os.getcwd()}): main-merge is looked at for every repo")
         third = [r for r in active if r["kind"] == "main-merge" and repo_of(r) not in ours
-                 and r.get("session_id") not in owners and r.get("session_id") != cli]
+                 and (r.get("session_id") not in owners or r.get("session_id") in unsure) and r.get("session_id") != cli]
         for mm in third:
-            if take_mm and (mm_repo == "*" or repo_of(mm) in (mm_repo, "*")):
+            holder_stage, holder_rec, is_hub = holder_of(mm.get("session_id") or "")
+            same_stage = holder_stage == stage and is_hub and not starting
+            in_repo = mm_repo == "*" or repo_of(mm) in (mm_repo, "*")
+            if in_repo and (explicit_mm or (take_mm and same_stage)):
                 to_take.append({"kind": "main-merge", "repo": repo_of(mm), "until": mm["until"],
                                 "why": mm.get("why") or "stage hub", "_from": mm.get("owner_name")})
+                if explicit_mm:
+                    notes.append(f"main-merge ({repo_of(mm)}) is taken from {mm.get('owner_name')} "
+                                 f"[{(mm.get('session_id') or '-')[:8]}] of stage {holder_stage or 'unknown'}: "
+                                 f"{holder_activity(holder_stage, holder_rec)}")
             else:
                 notes.append(f"main-merge ({repo_of(mm)}) is held by {mm.get('owner_name')} "
                              f"[{(mm.get('session_id') or '-')[:8]}] until {mm['until'][:16]}: "
-                             f"{(mm.get('why') or '')[:60]} — left alone"
-                             + ("" if take_mm else "; take it with --take-main-merge"))
+                             f"{(mm.get('why') or '')[:60]} — left alone; take it with --take-main-merge")
         # The hub repo's free main-merge. Never when a main-merge is already ours (taken over from the previous
         # hub or held): a second record, and a wildcard one above all, would lock merges in other repositories.
         held_here = any(repo_of(r) in (mm_repo, "*") for r in active if r["kind"] == "main-merge")
@@ -1263,6 +1326,7 @@ def main(argv: list) -> int:
     st.add_argument("--name", help="title (default: \"Hub <stage> #1\")")
     st.add_argument("--main-merge-until", default="+30d", help="main-merge expiry with --take-main-merge")
     st.add_argument("--take-main-merge", action="store_true", help="also take main-merge of this repository")
+    st.add_argument("--skip-lock", action="append", metavar="RESOURCE", help="leave this lock where it is (repeatable)")
     st.add_argument("--dry-run", action="store_true")
     st.add_argument("--repo", metavar="PATH", help="the project's repository (any path inside it) when the working "
                                                    "directory is not in one; default: the stage's recorded project")
