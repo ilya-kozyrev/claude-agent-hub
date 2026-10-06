@@ -600,11 +600,18 @@ def applicable(stage: str, repo: Repo | None, now: dt.datetime) -> list[Entry]:
     return sorted(hits, key=entry_when, reverse=True)
 
 
+def unplaceable(e: Entry) -> bool:
+    """An entry whose scope does not say where it applies (an unknown scope, scope repo without a repo-id): an invalid
+    one like that is shown wherever invalid entries are, never hidden by a filter."""
+    scope = e.fields.get("scope", "")
+    return scope not in SCOPES or (scope == "repo" and e.fields.get("repo-id", "") in NO_VALUE + ("*",))
+
+
 def invalid_near(stage: str, repos: list) -> list[Entry]:
-    """Invalid permissions that would be about this stage or these repositories (or whose scope cannot be read)."""
+    """Invalid permissions that would be about this stage or these repositories, or that do not say where they apply."""
     now = now_local()
     return [e for e in permissions() if perm_state(e, now) == "invalid" and (
-        e.fields.get("scope") not in SCOPES or any(applies(e, stage, r) for r in repos))]
+        unplaceable(e) or any(applies(e, stage, r) for r in repos))]
 
 
 def perm_source(e: Entry) -> str:
@@ -773,7 +780,7 @@ def cmd_allow_list(args) -> int:
         state = perm_state(e, now)
         if not args.all and state not in ("allowed", "invalid"):
             continue
-        if filtered and not (state == "invalid" and e.fields.get("scope") not in SCOPES) and not any(
+        if filtered and not (state == "invalid" and unplaceable(e)) and not any(
                 applies(e, args.stage or "", r) for r in (repos or [None])):
             continue
         print(fmt_perm(e, now))

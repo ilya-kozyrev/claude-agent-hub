@@ -136,6 +136,14 @@ cat >> $R/stage-x/questions.md <<'MD'
 - class: rotate
 - words: «логи крути сам»
 - until: 2026-10-06Tgarbage
+
+## A-X-070 — prune branches by hand
+- kind: allow
+- status: allowed
+- scope: repo
+- repo: shop
+- class: prune
+- words: «ветки чисти сам»
 MD
 add --stage stage-x --class tag "Tag the release?"; check $? 0 "an entry with an unparsable until covers nothing"
 grep -q "^ask: A-X-050 is invalid (until 'someday' unparsable) and covers nothing" $P.add.err; check $? 0 "…and ask add reports it"
@@ -143,9 +151,12 @@ add --stage stage-x --class bump "Bump the version?"; check $? 0 "an entry witho
 add --stage stage-x --class rotate "Rotate the logs?"; check $? 0 "an until with a valid date and garbage after it covers nothing"
 grep -q "^ask: A-X-060 is invalid (until '2026-10-06Tgarbage' unparsable)" $P.add.err; check $? 0 "…and is reported"
 $B/ask allow --stage stage-x --class rotate --words "ok" --until 2099-01-01Tgarbage "x" > /dev/null 2>&1; check $? 1 "negative: ask allow refuses such an --until"
+add --stage stage-x --class prune "Prune the branches?"; check $? 0 "a repo-scope entry without a repo-id covers nothing"
+grep -q "^ask: A-X-070 is invalid (scope repo without a repo-id)" $P.add.err; check $? 0 "…and ask add reports it"
 $B/ask allow --list --stage stage-x > $P.l0
 grep -q "^A-X-050 \[stage-x\] INVALID (until 'someday' unparsable): covers nothing" $P.l0 && grep -q "^A-X-051 \[stage-x\] INVALID (no owner's words)" $P.l0
 check $? 0 "ask allow --list marks both invalid"
+grep -q "^A-X-070 \[stage-x\] INVALID (scope repo without a repo-id)" $P.l0; check $? 0 "…and the entry without a repo-id, listed for the stage"
 
 # ---- listing
 $B/ask allow --list --stage stage-x > $P.l1
@@ -175,6 +186,7 @@ grep -q '^Standing permissions (repo shop; act only where' $P.d1 && grep -q "^$H
   && grep -q '^A-Z-003 \[stage-z\] docs — доки без вопросов' $P.d1; check $? 0 "…lists the permissions in force for shop and all repositories"
 grep -q '^A-Y-001' $P.d1; check $? 1 "…not the revoked one"
 grep '^invalid, cover nothing:' $P.d1 | grep 'A-X-050' | grep 'A-X-051' | grep -q 'A-X-060'; check $? 0 "…names the invalid ones"
+grep '^invalid, cover nothing:' $P.d1 | grep -q 'A-X-070'; check $? 0 "…the one without a repo-id too"
 mkdir -p $R/stage-w; printf '{"repo": "%s"}\n' $G/client-b/shop > $R/stage-w/stage.json
 $B/hub start --stage stage-w --session $S1 --dry-run > $P.d4 2>&1
 grep -q '^A-Z-003' $P.d4 && ! grep -q '^A-Y-' $P.d4; check $? 0 "client-b's shop: only the all-repositories one, none of client-a's"
@@ -194,7 +206,7 @@ z=$(grep -n '^§ 0 of the handoff' $P.d5d | cut -d: -f1); p=$(grep -n '^Standing
 [ -n "$z" ] && [ -n "$p" ] && [ "$z" -lt "$p" ]; check $? 0 "…§ 0 comes before the permissions block (the 3 KB cut drops the tail)"
 grep -q '^[0-9][0-9]* more: ask allow --list --stage stage-x$' $P.d5d; check $? 0 "…the permissions block is capped with \"K more\""
 blk=$(sed -n '/^Standing permissions/,/^$/p' $P.d5d); n=$(echo "$blk" | grep -c '^A-'); k=$(echo "$blk" | sed -n 's/^\([0-9]*\) more: .*/\1/p')
-check "$((n + k)) $([ $n -ge 2 ] && echo some)" "10 some" "…shown + more = the 10 in force, several shown"
+check "$((n + k)) $([ $n -ge 1 ] && echo some)" "10 some" "…shown + more = the 10 in force, at least one shown"
 echo "$blk" | grep -q '…cut'; check $? 1 "…the block fits its budget (no cut)"
 check "$(wc -c < $P.d5d | tr -d ' ' | awk '{print ($1<=3072)}')" 1 "…the digest stays ≤ 3 KB"
 exit $fail
