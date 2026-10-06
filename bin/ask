@@ -609,28 +609,34 @@ def fmt_perm(e: Entry, now: dt.datetime) -> str:
 
 # ---- "covered"
 
-def requirements(klass: str, text: str) -> list[str]:
-    """What a permission set must name for the question to be covered: each class keyword (a sensitive one as its
-    class), plus every sensitive class whose stem occurs in the question's text."""
-    out = []
+def requirements(klass: str, text: str) -> list[tuple[str, str]]:
+    """What a permission set must name for the question to be covered: ("keyword", k) for every class keyword, as
+    written — a sensitive one too (`rbac-read` does not cover `rbac-write`) — and, on top, ("class", c) for every
+    sensitive class whose stem occurs in the question's class or text."""
+    out: list[tuple[str, str]] = []
     for k in keywords(klass):
-        need = sensitive_of(k) or k
-        if need not in out:
-            out.append(need)
-    for word in re.findall(r"\w+", one_line(text).casefold()):
+        if ("keyword", k) not in out:
+            out.append(("keyword", k))
+    for word in keywords(klass) + re.findall(r"\w+", one_line(text).casefold()):
         cls = sensitive_of(word)
-        if cls and cls not in out:
-            out.append(cls)
+        if cls and ("class", cls) not in out:
+            out.append(("class", cls))
     return out
 
 
-def names(e: Entry, need: str) -> bool:
-    """Whether permission `e`'s class covers requirement `need`: the keyword itself, or for a sensitive class a keyword
-    that names it."""
+def names(e: Entry, need: tuple[str, str]) -> bool:
+    """Whether permission `e`'s class covers requirement `need`: a keyword by the same keyword; a sensitive class by a
+    keyword of that class."""
+    kind, value = need
     theirs = keywords(e.fields.get("class", ""))
-    if need in sensitive_classes():
-        return any(sensitive_of(k) == need for k in theirs)
-    return need in theirs
+    if kind == "class":
+        return any(sensitive_of(k) == value for k in theirs)
+    return value in theirs
+
+
+def need_label(need: tuple[str, str]) -> str:
+    kind, value = need
+    return f"{value} (a sensitive class)" if kind == "class" else value
 
 
 def coverage(stage: str, repos: list, klass: str, text: str) -> tuple[list[Entry], list[str], list[Entry]]:
@@ -648,7 +654,7 @@ def coverage(stage: str, repos: list, klass: str, text: str) -> tuple[list[Entry
         for need in needs:
             hit = next((e for e in perms if names(e, need)), None)
             if hit is None:
-                gaps.append(f"{need} on {repo.name if repo else 'this stage'}")
+                gaps.append(f"{need_label(need)} on {repo.name if repo else 'this stage'}")
             elif hit not in used:
                 used.append(hit)
     asked = keywords(klass)

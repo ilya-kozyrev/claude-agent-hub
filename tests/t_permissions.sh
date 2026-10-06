@@ -67,8 +67,17 @@ add --stage stage-x --class release "Release with the new billing flow?"; check 
 add --stage stage-x --repo $A --repo $G/site --class release "Release shop and site?"; check $? 0 "two repositories, one without the permission → not covered"
 grep -q '^ask: not covered: release on site' $P.add.err; check $? 0 "…the gap is named (site has merge, not release)"
 add --stage stage-x --repo $A --repo $G/site --class merge "Merge shop and site?"; check $? 3 "two repositories, both with a merge permission → refused"
-allow --stage stage-y --class "deploy, migrations" --words "«миграции на стейдже сами»" "deploy with migrations"
+allow --stage stage-y --class "deploy, migration" --words "«миграции на стейдже сами»" "deploy with migrations"
 add --stage stage-x --class "deploy, migration" "Deploy and migrate?"; check $? 3 "a permission that names the migration class covers it"
+allow --stage stage-y --class rbac-read --words "«читать роли можно»" "read RBAC settings"
+add --stage stage-x --class rbac-write "Change the RBAC roles?"; check $? 0 "rbac-read does not cover rbac-write (a sensitive keyword is not reduced to its class)"
+grep -q '^ask: not covered: rbac-write on shop' $P.add.err; check $? 0 "…the missing keyword is named"
+allow --stage stage-y --class migration-schema --words "«схему мигрируй сам»" "schema migrations"
+add --stage stage-x --class migration-data "Run the data migration?"; check $? 0 "migration-schema does not cover migration-data"
+add --stage stage-x --class migration-schema "Run the schema migration?"; check $? 3 "…the same keyword covers"
+allow --stage stage-y --class release-notes --words "«заметки пиши сам»" "release notes"
+add --stage stage-x --class release-notes "Publish the release notes, and the billing change?"; check $? 0 "a covered keyword plus money in the text: still not covered"
+for id in $($B/ask allow --list --stage stage-y | grep -E '^A-Y-[0-9]+ .* — (read RBAC|schema migr|release notes)' | cut -d' ' -f1); do $B/ask revoke $id > /dev/null; done
 
 # ---- a question no permission covers; a weak match warns and passes
 add --stage stage-x --class hotfix "Ship a hotfix?"; check $? 0 "another class → passes"
