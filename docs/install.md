@@ -31,7 +31,7 @@ After Claude installation, follow the activation instruction in the install summ
 > successor inherits the mode (`AGENT_HUB_SUCCESSOR_PERMISSION_MODE`); bypass needs its disclaimer accepted once in a
 > terminal (`claude --dangerously-skip-permissions`), otherwise the successor falls back to `auto`.
 
-**Codex:** follow [Install in Codex](codex.md#install-in-codex) for its commands and prerequisites, then
+**Codex:** follow [Install in Codex](codex.md#install-in-codex) for its commands and prerequisites (to move to a new version, [Update to a new version](codex.md#update-to-a-new-version): the update removes the older cache directories that live sessions still use), then
 [Full access and hook trust](codex.md#full-access-and-hook-trust) before launching workers. That page owns
 Codex permission mappings, detached defaults and restricted reviewer settings. Full access and hook trust
 are separate controls.

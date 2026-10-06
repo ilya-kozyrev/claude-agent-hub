@@ -24,7 +24,9 @@
   `$CLAUDE_CODE_SESSION_ID` under the same `local_…` id) `jlog`, `jwait` and `agent send` still resolve the caller to the
   hub's tag through `$CLAUDE_CODE_HOST_SESSION_ID` — only when Desktop's record of that session names this CLI session —
   and refresh the registry's CLI id, so the hub's own `agent send "… report DONE"` echo is signed with its tag and no
-  longer wakes it. `docs/reference.md` shows how a project separates a CI retry from a deploy in `lock-rules.json`. Tests:
+  longer wakes it. `docs/reference.md` shows how a project separates a CI retry from a deploy in `lock-rules.json`, and
+  `docs/codex.md` gets an update procedure that keeps the older plugin cache directories, which `codex plugin add` deletes
+  and live Codex sessions still need for their hooks. Tests:
   `t_agent_ended.sh`, `t_handoff_todo.sh` and `t_caller_host.sh` fail on 0.8.6's code; `t_lock_retry_doc.sh` runs the
   example of `docs/reference.md` itself.
 
