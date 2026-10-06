@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Codex hubs are notify-only in 0.9.1: the watchdog notifies the owner.** The queue path is inert until a host producer lands (nothing records `host: codex-app` yet); `watchdog_codex.py` reads runtime state and rollout activity, keeps Desktop, terminal, unknown and notLoaded threads notify-only, and never runs native `exec resume`; Codex API-error detection remains disabled (R4 is Claude-only in 0.9.1), with positive and negative controls for queue decoding, unknown timeout outcomes, hanging proxies and missing CLIs in `t_watchdog_codex.sh`.
+- **Codex handoffs resolve `--session self`, and runtime versions identify the tools actually in use.** Handoff drafts use the wait procedure printed in the takeover digest, which follows the reader's host; status and takeover warn about a newer cache for that engine. Reviewers use no judgement-helper team below the configurable 300 changed-line threshold; bounded extraction stays available. Controls: `tests/t_codex_parity.sh` (both hosts, fake caches, registry identity and threshold layers).
 - **The hub agrees a Business DoD before autonomous work and preserves it across handoffs.** Clear requests supply the agreed result and plan authorization; questions address ambiguity that changes that result. Standing permissions and explicit plan approvals still apply. Briefs, handoffs and night queues inherit the result; technical checks remain the executor's responsibility. Controls: `tests/t_hub.sh`, `tests/t_ask_nightq.sh`, `tests/t_codex_agent.sh`.
 
 ## 0.9.0 — 2026-10-06

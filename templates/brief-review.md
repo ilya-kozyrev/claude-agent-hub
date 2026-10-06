@@ -19,6 +19,14 @@ one line per file or area that matters. Name the decisions the owner already too
 - Tests the author ran: `<command>` → exit `<code>` (one line per command, exit codes read from files, not pipes);
   what a green run proves, and what it does not. Do not rerun them unless a finding needs it.
 
+## Helper budget
+- Changed lines (additions + deletions): `<sum from git diff --numstat <base>..<head>; report binary files separately>`.
+- Judgement-helper threshold: `<hub reviewer helper_threshold; AGENT_HUB_REVIEW_HELPER_LINES from config/env, default 300>`.
+  Below that threshold, the reviewer does the review itself and starts no helper review team. At or above it, helpers
+  need a named missed-defect risk, disjoint scopes and explicit call budgets; keep one final reviewer verdict.
+  Mechanical extraction helpers are allowed at any size with exact paths, checkable evidence and a bounded call budget.
+  A small delta does not justify repeatedly loading the full conversation into a review team.
+
 ## Look hardest at
 <The two to five places where a mistake costs the most or the author is least sure: a migration, a permission check,
 money arithmetic, a retry loop, a rename that missed a caller. For a change of class `risky` (money, migrations,

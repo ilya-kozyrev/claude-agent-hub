@@ -872,6 +872,7 @@ def status_line(stage: str, role: str) -> str:
 
 
 def cmd_status(a) -> int:
+    print(hc.plugin_runtime_line())
     stage = hc.check_stage(a.stage or hc.default_stage())
     if a.role:
         print(status_line(stage, a.role))

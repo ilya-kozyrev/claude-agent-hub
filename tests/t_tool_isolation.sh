@@ -72,7 +72,7 @@ CC=$P/cfg; mkdir -p $CC/plugins/cache/mk/agent-hub/99.0.0/bin $CC/plugins/market
 for t in hub jlog; do printf '#!/bin/sh\necho installed %s\n' $t > $CC/plugins/cache/mk/agent-hub/99.0.0/bin/$t; chmod +x $CC/plugins/cache/mk/agent-hub/99.0.0/bin/$t; done
 printf '#!/bin/sh\n' > $CC/plugins/marketplaces/self/bin/lock; chmod +x $CC/plugins/marketplaces/self/bin/lock
 (CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/agent-hub/99.0.0/bin:$CC/plugins/marketplaces/self/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d5.out 2>&1
-grep -q 'ATTENTION' $P/d5.out; check $? 1 "a command inside an installed plugin's cache or marketplace bin/ is the plugin's own"
+grep -q "not the plugin's own tool" $P/d5.out; check $? 1 "a command inside an installed plugin's cache or marketplace bin/ is the plugin's own"
 (CLAUDE_CONFIG_DIR=$P/elsewhere PATH="$CC/plugins/cache/mk/agent-hub/99.0.0/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d6.out 2>&1
 grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/agent-hub/99.0.0/bin/hub" $P/d6.out; check $? 0 "negative: the same directory is foreign when it is not under an installed plugin location"
 mkdir -p $CC/plugins/cache/mk/agent-hub/0.0.1/bin $CC/plugins/marketplaces/old/bin $CC/plugins/marketplaces/old/.claude-plugin
