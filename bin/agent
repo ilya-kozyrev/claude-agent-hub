@@ -9,7 +9,8 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
               [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
               [--permission-mode MODE]
   agent status [R] [--stage S] [--all]
-  agent send R "msg" [--stage S] [--resume-anyway]
+  agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
+                                                      is the message, a word starting with `-` included)
   agent stop R [--stage S]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
