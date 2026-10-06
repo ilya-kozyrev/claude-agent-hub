@@ -168,6 +168,14 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
 
 Wake up — handle the block — start the next `jwait`. Journal waits and alarms use `jwait`; keep one waiter and continue it through the shell harness.
 
+**With the watchdog on** (the takeover digest says so; `docs/monitoring.md`): a hub that sleeps without a waiter is fine, the
+watchdog wakes it when lines addressed to it have waited 15 min — but keep one `jwait` anyway, it is the faster path. A
+wake arrives as a message that starts `[agent-hub watchdog] <stage>: N journal lines addressed to you have waited since
+HH:MM …`: run the digest `jwait` with `--since HH:MM`, handle what it shows, keep one waiter. An idle `claude --bg` hub is
+woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
+you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
+"…" [--for 8h]`, and `watchdog quiet --stage <S> --clear` when you are back.
+
 ## Talking
 
 - `jlog "text"` — a journal line with your tag (`--tag`, `$HUB_TAG` or the registry). The journal is append-only:
@@ -415,8 +423,9 @@ These are the defaults of the plugin's author, each paid for by an incident or a
 ## Optional modules
 
 - **Night queue** (`<stage>/night-queue.md`, `nightq`, `templates/night-queue-template.md`): work allowed while the
-  owner is away, with a permission matrix; an optional Claude Desktop scheduled task (`templates/night-nudge-task.md`)
-  wakes a silent Claude hub. The queue files work with either engine; this Desktop scheduled nudge stays Claude-only.
+  owner is away, with a permission matrix; open items inside `AGENT_HUB_NIGHT` count as waiting work for the watchdog,
+  which wakes a silent hub that can be woken (otherwise it notifies the owner). The queue files work with either engine;
+  the Claude Desktop scheduled task `templates/night-nudge-task.md` is deprecated in favour of the watchdog.
   Codex autopilot creates a detached Codex successor, without a Claude Remote Control phone link.
 - **Send budget** (`roles sent|budget|reset`, `AGENT_HUB_SEND_CAP`): Claude Desktop pauses a session's outgoing
   cross-session messages after 10 sends without the user typing in it. After every send — `roles sent <from> <to>`;

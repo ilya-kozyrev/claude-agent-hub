@@ -62,10 +62,16 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    directory trust prompt; Codex uses `codex login status` and the hook setup in `docs/codex.md`.
    Codex successors are detached sessions reached through `agent send`, not Claude Remote Control. *Recommended:* on if the user wants to leave stages running and both
    checks pass; off otherwise (say which check failed and the command that fixes it).
+9. Watchdog — a job every 5 minutes (`watchdog`, launchd on macOS, cron elsewhere; no daemon, no model) that writes
+   `EXIT … killed (no result)` for agents that died, and wakes a hub that sleeps without a waiter while lines addressed
+   to it have waited 15 minutes (or a night-queue item waits inside `AGENT_HUB_NIGHT`). It wakes a headless hub and an
+   idle `claude --bg` hub; a Desktop or terminal hub, and a Codex hub in this release, get a notification instead. It never
+   starts a successor. `AGENT_HUB_WATCHDOG` lives in the hub home's `config.json`. *Recommended:* on if autopilot is on
+   or you leave stages running while you are away; off otherwise.
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
-what the user should confirm. Autopilot stays off in that case: nobody asked for background sessions, and the user's
-settings are not edited (question 7): list the edit for the user to confirm.
+what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or
+a scheduled job, and the user's settings are not edited (question 7): list the edit for the user to confirm.
 
 ## 3. Write
 
@@ -92,6 +98,23 @@ regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_M
 
 For question 8, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's `config.json` (the hub home is where `hub home`
 points; create the file as `{}` first, keep its other keys) — a repository's `config.json` cannot turn it on.
+
+For question 9, on yes (the hub home's settings are hub-wide; a repository's `config.json` cannot set them):
+1. `watchdog install` — writes the job (`<hub home>/.state/watchdog/run.sh`, a launchd plist or one crontab line) and
+   sets `"AGENT_HUB_WATCHDOG": true` in the hub home's `config.json`; `watchdog status` shows it.
+2. Ask for a remote channel: none, or a phone push. For an ntfy topic of the person's own, show the edit first, then add
+   to the hub home's `config.json` (keep its other keys):
+   `"AGENT_HUB_NOTIFY_CMD": ["curl", "-fsS", "-d", "{message}", "https://ntfy.sh/<topic>"]`. The command runs without a
+   shell; `{message}` is the stage name, minutes and counts only.
+3. `watchdog notify-test` sends `agent-hub: test notification` through every channel; ask the person whether it
+   arrived (on macOS the local one is sent with `osascript` and may need the notification permission).
+4. `watchdog run --dry-run` prints what the watchdog would do now and writes nothing; show it.
+5. If `~/.claude/scheduled-tasks/night-nudge` exists, tell the person that the watchdog replaces that Desktop task and
+   they may delete it. List it, never delete it.
+
+With `--defaults` or headless nothing is installed: list `watchdog install`, the `AGENT_HUB_NOTIFY_CMD` edit,
+`watchdog notify-test` and `watchdog run --dry-run` for the person to run. After a plugin update the person runs
+`watchdog install` again (the job points at the plugin version that was installed).
 
 ### Native Codex worker definitions
 

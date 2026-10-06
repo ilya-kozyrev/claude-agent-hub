@@ -50,15 +50,16 @@ flowchart LR
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
-| `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. |
+| `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. With `--journal` it marks itself in `<hub home>/.jwait-state/<caller>.armed.json` while it waits (pid, stage, tags, deadline), so the watchdog can tell a hub that waits from one that sleeps; it removes the file when it ends, also on SIGTERM and SIGHUP. |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
-| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. `hub handoff --finish` refuses a draft whose § 0–2 still hold `TODO` (`--allow-todo` overrides), `hub succeed` makes the same check, and `takeover` warns about such a handoff. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). |
+| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. `hub handoff --finish` refuses a draft whose § 0–2 still hold `TODO` (`--allow-todo` overrides), `hub succeed` makes the same check, and `takeover` warns about such a handoff. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). `takeover` also records where the hub runs as `host:` in the stage's `hub` record of `roles.json` (`desktop`, `detached`, `bg` or `term`; left out for a Codex hub and when it cannot be told), and its digest prints the watchdog line: an active do-not-wake marker, and that the watchdog is on. |
 | `hub rename` | `hub rename --stage OLD --to NEW [--dry-run]`: rename a stage none of whose agents is alive (otherwise exit 2, the live ones listed): its directory, the names and paths in its json files, the question register's heading and the board's lock notes that name it. |
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
-| `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
+| `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
+| `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
 | `agent-top` | Live console of all agents (curses), `--once` text, `--json`. |
 
 More diagrams and the file formats: [docs/architecture.md](architecture.md).
@@ -68,8 +69,8 @@ More diagrams and the file formats: [docs/architecture.md](architecture.md).
 You do not need all of it. One hub and a few agents need three tools: `agent` (spawn, status, send, stop), `jlog` and
 `jwait`, plus `hub start` once per stage, which registers your session as `hub-1` and so gives `jlog` its journal tag.
 `roles`, `ask`, `lock`, `hub takeover` and `hub handoff` matter once you have more than one interactive session, more
-than one shift, or a shared resource; leave them until then. The night queue, the night nudge and the send budget are
-optional modules for macOS with Claude Desktop.
+than one shift, or a shared resource; leave them until then. The night queue and the watchdog are optional; the send
+budget is an optional module for macOS with Claude Desktop.
 
 ## Quickstart
 
@@ -302,13 +303,16 @@ defect covers nothing and is shown as `INVALID` by
 ├── lock-rules.json                   optional: shared resources and the commands that touch them
 ├── hub-rules.md, HUB-NOTES.md        optional: your rules and notes for every hub (see Configuration layers)
 ├── .jwait-state/<caller>.json        what each jwait caller has already seen
+├── .jwait-state/<caller>.armed.json  a running journal jwait: pid, stage, tags, deadline (removed when it ends)
 ├── .state/                           context-budget warnings, delegation levels (agent discipline)
+├── .state/watchdog/                  state.json, lock, log.md, run.sh (the job's shim), job.log (watchdog)
 └── <stage>/                          one directory per stream of work
     ├── stage.json                    the stage's project (main clone) for the next hub, written by start/takeover
-    ├── roles.json                    role → full session id, kind, tag; send counts
+    ├── roles.json                    role → full session id, kind, tag; send counts; `host:` of the hub (takeover)
+    ├── do-not-wake.json              optional: watchdog quiet — who, when, until, reason
     ├── questions.md                  owner-question register (ask)
     ├── auto-handoff.json             autopilot: automatic handoffs in a row, the successor last started
-    ├── night-queue.md, night-log.md  optional night queue (nightq; macOS + Claude Desktop)
+    ├── night-queue.md, night-log.md  optional night queue (nightq)
     ├── handoff-facts.sh              optional: prints environment rows for hub handoff (also brief-footer.md, takeover.sh)
     ├── agents/<role>/                one headless agent
     │   ├── brief.md                  copy of the brief it was started with
@@ -410,7 +414,15 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_REVIEW_MODEL`, `AGENT_HUB_REVIEW_EFFORT` | `opus`, `high` | Model and effort of an `agent` reviewer that names none. Pick a model other than your executors' (the reviewer is not the author). |
 | `AGENT_HUB_BG_WAIT_CEILING_MS` | `0` | How long an agent's run, after its turn ends, waits for its background sub-agents before the CLI kills them (passed as `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; `0` = until they finish, the CLI's own default is 10 min). |
 | `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal (Claude Desktop only). Hub-wide. |
-| `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`. Hub-wide. |
+| `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`; the watchdog wakes a silent hub for open night-queue items inside it. Hub-wide. |
+| `AGENT_HUB_WATCHDOG` | off | The watchdog acts only when on (`true`/`on`); `watchdog install` sets it on, `uninstall` off, and an installed job with it off exits 0. Hub-wide. |
+| `AGENT_HUB_WATCHDOG_EVERY` | `5m` | Interval of the job (1 min to 24 h; cron: 1-59 min or whole hours). Read by `install`: change it, then run `install` again. Hub-wide. |
+| `AGENT_HUB_WATCHDOG_WAKE_AFTER` | `15m` | How long lines wait, the hub is silent, or an API-error turn lies before a wake; the first step of the backoff. Hub-wide. |
+| `AGENT_HUB_WATCHDOG_BACKOFF_MAX` | `4h` | Cap of the wake and notification backoff (15, 30, 60, 120, 240 min). Hub-wide. |
+| `AGENT_HUB_WATCHDOG_NIGHT_QUEUE` | `on` | Open night-queue items inside `AGENT_HUB_NIGHT` count as waiting work. Hub-wide. |
+| `AGENT_HUB_WATCHDOG_API_ERROR` | `on` | R4: wake a Claude hub whose last turn ended on an API error. Hub-wide. |
+| `AGENT_HUB_NOTIFY_LOCAL` | `on` | Local notification of the watchdog (`osascript` on macOS, `notify-send` elsewhere when present). Hub-wide. |
+| `AGENT_HUB_NOTIFY_CMD` | none | Remote notification: a JSON list of strings, run without a shell, `{message}` replaced by the text (stage name, minutes, counts, event word only), e.g. `["curl","-fsS","-d","{message}","https://ntfy.sh/<topic>"]`. Empty = no remote channel. Hub-wide. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
@@ -704,6 +716,26 @@ sessions run at a high effort: the smallest model free at any type, every other 
 worker with an explicit model, one mid-size model only at high or xhigh, forks denied, level 0 closing `Agent` and
 `Workflow`.
 
+## Watchdog
+
+```text
+watchdog run [--dry-run] [--stage S] [--json]      one tick; --dry-run prints [plan] lines and writes nothing
+watchdog install | uninstall [--scheduler launchd|cron]   the job (default: launchd on macOS, cron elsewhere)
+watchdog status [--scheduler launchd|cron]         the job, the last tick, each stage's episode, markers, channels
+watchdog notify-test                               agent-hub: test notification through every channel
+watchdog quiet [--stage S] --reason "…" [--until ISO|HH:MM | --for 8h]    pause the wake-ups of a stage
+watchdog quiet --stage S --clear                   lift the pause; `watchdog quiet` alone lists every marker
+```
+
+Exit codes: 0 ok (also when another tick is running, and when the watchdog is off and `run` has nothing to do), 1 a
+failure (`notify-test`: no channel, or one failed), 2 a usage error. `quiet --reason` and `quiet --clear` without `--stage` act on `$HUB_STAGE`, else `default`.
+The rules, the hosts it can wake, the safety rules and what leaves the machine are in
+[docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken); the settings are in
+[Configuration](#configuration), all hub-wide (hub home `config.json` or the environment, never a repository's).
+Files: `<stage>/do-not-wake.json`; `<state dir>/watchdog/{state.json,lock,log.md,run.sh,job.log}` (`<hub home>/.state`
+or `$AGENT_HUB_STATE_DIR`); `<hub home>/.jwait-state/<caller>.armed.json`; `host:` in a `hub` record of `roles.json`.
+`AGENT_HUB_WATCHDOG_NOW=<ISO time>` replaces the clock of one tick and is for tests only.
+
 ## Limitations
 
 Codex-specific setup, trust requirements and platform differences are in [Codex support](codex.md).
@@ -731,9 +763,10 @@ The Claude-specific facilities below apply when the selected host/engine is Clau
   `lock-rules.json` lists. A command run outside enabled, trusted host hooks, or one no rule matches, is not stopped.
 - The turn limit of a brief is an instruction to the agent, not something agent-hub enforces. Cost and plan limits are
   Claude Code's, shared with your interactive session.
-- Optional modules need macOS and Claude Desktop: the night nudge (waking a silent hub at night needs Claude Desktop's
-  scheduled tasks; see [templates/night-nudge-task.md](../templates/night-nudge-task.md)), the send budget, roles of kind
-  `desktop` and `hub takeover --session local_…` (they read Claude Desktop's session metadata). Terminal sessions work
+- Night support is the [watchdog](#watchdog): it works for every engine and host it can wake (a headless hub, an idle
+  `claude --bg` hub) and notifies for the rest; the Desktop scheduled task
+  [templates/night-nudge-task.md](../templates/night-nudge-task.md) is deprecated. The send budget, roles of kind
+  `desktop` and `hub takeover --session local_…` still need macOS and Claude Desktop (they read its session metadata). Terminal sessions work
   as kind `cli`. Interactive terminal, `claude -p` and `claude --bg` sessions receive cross-session messages while
   their process is alive, and nothing once it is gone; for a headless agent prefer `agent send` (it resumes a finished
   session and leaves a journal line) — see [docs/launch-modes.md](launch-modes.md).

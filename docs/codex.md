@@ -191,8 +191,9 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   in Git, it starts from the main checkout in a fresh named worktree so archiving the old coordinator cannot remove its directory.
   Outside Git it keeps the supplied directory.
   The Claude Desktop/Remote Control phone workflow stays Claude-specific.
-- Night queue files and permissions work with both engines. The optional Claude Desktop scheduled nudge and
-  Claude outgoing-message budget remain platform-specific; they are not installed as Codex scheduled tasks.
+- Night queue files and permissions work with both engines. The watchdog (`watchdog install`) counts open night-queue
+  items as waiting work; a Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). The Claude Desktop scheduled nudge is
+  deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 
 Only commands observed by enabled, trusted hooks can be guarded. External terminal commands and commands that
 match no configured rule remain outside the lock board's enforcement. The files remain local to one person and machine.
