@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 — 2026-10-06
+
 - **`hub start` now insists on a stage name that says what the work is, and the goal travels with the hub.** A stage
   called `hub-09` showed as "Hub hub-09 #1" and signed `hub-09-hub-1` in other journals; nothing said what it did.
   `hub start` exits 2 for a name made only of generic words (hub, stage, wave, wp, task, work, test, tmp, new, default,
@@ -42,6 +44,24 @@
   (`refuse`, "pass --model") or warned about (`warn`); `hub succeed` passes its own reason, so `AGENT_HUB_REASON_POLICY=refuse` does not stop the autopilot chain.
   Tests: `t_spawn_policy.sh` (many of its checks fail without the change), `t_autopilot.sh`, `t_codex_autopilot.sh`.
 
+- **A hub no longer asks the owner again for what the owner already allowed, even in another stage.** `ask allow`
+  records a standing permission (`A-<prefix>-NNN`: the class of action, keywords, the owner's words, scope, optional
+  `--until`) bound to the repository the action touches; `ask allow --list` and `ask revoke` manage them, and every
+  stage's register is read. `ask add --class … [--repo …]` refuses a question a permission in force covers (exit 3,
+  "covered by A-… (<source>)") unless `--override "why"` is given, and warns on a keyword found only in the text. The
+  `hub start` / `hub takeover` digest lists the permissions for the stage's repository from every stage, or says there
+  are none. A question is covered only when every class keyword it names, as written, (and, on top, money,
+  migrations or permissions/RBAC mentioned anywhere in it, `AGENT_HUB_SENSITIVE_CLASSES`) is covered on every
+  repository it touches, and the refusal prints the owner's words in full; a repository is its normalized `origin`
+  URL with an explicit port and IPv6 brackets, else its main clone's path, so two checkouts named `shop` stay apart; an entry without
+  the owner's words, with an `until` that is not exactly a date or date and time, or without a `repo-id` covers
+  nothing and is listed as `INVALID`. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
+  them before a merge, deploy or release question and forbids invented gates. Design: `docs/standing-permissions.md`.
+  Tests: `tests/t_permissions.sh` (same stage, another stage on the same repository, another repository's stage
+  naming `--repo`, two repositories of one name, every class and every repository, sensitive classes, invalid entries,
+  scopes, expiry, revocation, refusal and override, the digest after § 0 with "K more"; 86 of its 97 checks fail on
+  0.8.6).
+
 ## 0.8.6 — 2026-10-06
 
 - **A hub's wait is now shorter than the prompt cache's life, and the plugin's own service lines no longer wake it.**
@@ -79,24 +99,6 @@
   `tests/t_prompt_argv.sh` (`ps -ww` shows no prompt text and `pkill -f` leaves the agent alive, both engines, spawn
   and resume), `tests/t_agent_dead.sh` (three concurrent observers write one line; the wrapper's own EXIT is not
   doubled; a result written just before the exit is not "killed"), `tests/t_agent_send_race.sh`; all fail on 0.8.4.
-
-- **A hub no longer asks the owner again for what the owner already allowed, even in another stage.** `ask allow`
-  records a standing permission (`A-<prefix>-NNN`: the class of action, keywords, the owner's words, scope, optional
-  `--until`) bound to the repository the action touches; `ask allow --list` and `ask revoke` manage them, and every
-  stage's register is read. `ask add --class … [--repo …]` refuses a question a permission in force covers (exit 3,
-  "covered by A-… (<source>)") unless `--override "why"` is given, and warns on a keyword found only in the text. The
-  `hub start` / `hub takeover` digest lists the permissions for the stage's repository from every stage, or says there
-  are none. A question is covered only when every class keyword it names, as written, (and, on top, money,
-  migrations or permissions/RBAC mentioned anywhere in it, `AGENT_HUB_SENSITIVE_CLASSES`) is covered on every
-  repository it touches, and the refusal prints the owner's words in full; a repository is its normalized `origin`
-  URL with an explicit port and IPv6 brackets, else its main clone's path, so two checkouts named `shop` stay apart; an entry without
-  the owner's words, with an `until` that is not exactly a date or date and time, or without a `repo-id` covers
-  nothing and is listed as `INVALID`. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
-  them before a merge, deploy or release question and forbids invented gates. Design: `docs/standing-permissions.md`.
-  Tests: `tests/t_permissions.sh` (same stage, another stage on the same repository, another repository's stage
-  naming `--repo`, two repositories of one name, every class and every repository, sensitive classes, invalid entries,
-  scopes, expiry, revocation, refusal and override, the digest after § 0 with "K more"; 86 of its 97 checks fail on
-  0.8.6).
 
 ## 0.8.5 — 2026-10-06
 

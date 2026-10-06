@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "0.8.6",
+  "version": "0.9.0",
   "description": "Run a hub session that spawns and steers detached Claude Code and Codex agents: briefs, a shared journal, inboxes, an owner-question register, a lock board, handoffs, and the agent-top console.",
   "author": {
     "name": "Ilya Kozyrev",
