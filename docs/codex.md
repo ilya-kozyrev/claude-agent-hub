@@ -47,6 +47,32 @@ Codex's SessionStart hook selects the Codex engine for that session. In a plain 
 untrusted, pass `--engine codex` or set `AGENT_HUB_ENGINE=codex`. In a plain terminal with no configured engine or detected Codex host, the default is `claude`.
 Use the installed plugin's `bin/` directory explicitly if a command is absent or shadowed on PATH.
 
+### Update to a new version
+
+`codex plugin add` for a new version deletes every older version directory under the plugin cache,
+`~/.codex/plugins/cache/<marketplace>/agent-hub/` (`$CODEX_HOME` moves it; the marketplace here is `agent-hub-codex`).
+A Codex session that is still running on an older version loses its hooks the moment its directory is gone: the lock
+guard and the other hooks stop applying to it. Before updating, copy the version directories aside; right after the
+`add`, put back every one that vanished and check with `diff -rq` against the copy:
+
+```sh
+CACHE="${CODEX_HOME:-$HOME/.codex}/plugins/cache/agent-hub-codex/agent-hub"
+SAVE="$(mktemp -d)"
+cp -a "$CACHE/." "$SAVE/"                      # every version directory installed now
+
+git -C /absolute/path/to/claude-agent-hub pull
+codex plugin add agent-hub@agent-hub-codex
+
+for dir in "$SAVE"/*/; do                      # put back each one the add removed
+  v="$(basename "$dir")"
+  [ -d "$CACHE/$v" ] || cp -a "$dir" "$CACHE/$v"
+done
+diff -rq "$SAVE" "$CACHE"                      # only the new version may be listed ("Only in …"), nothing else
+```
+
+Restart the Codex chat to load the new version. Remove an older version directory yourself once no session or
+background worker runs on it.
+
 ### Terminal monitor and older installations
 
 Plugin installation does not replace personal commands or wrappers in `~/.local/bin`, or upgrade an already

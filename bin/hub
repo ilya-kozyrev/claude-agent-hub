@@ -8,7 +8,8 @@
                [--name "Hub stage-a #17"] [--goal "…"] [--skip-lock RESOURCE ...] [--take-main-merge]
                [--main-merge-until +30d] [--repo PATH | --no-project]
   hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
-  hub succeed  --stage stage-a --handoff PATH [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
+  hub handoff  --stage stage-a --finish [--handoff PATH] [--allow-todo]
+  hub succeed  --stage stage-a --handoff PATH [--allow-todo] [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
   hub succeed  --stage stage-a --replace [--force] [--handoff PATH] [--dry-run]
   hub rename   --stage OLD --to NEW [--dry-run]
@@ -108,6 +109,10 @@ own session — --session, else the registered hub's, and the session running th
 sub-agent dies with its parent session and the successor cannot message it. If any is live it lists them (id,
 description, age) and the three ways out, and exits 2; with --allow-live-subagents it writes the draft with the list in
 its TODO section.
+handoff --finish is the last step of writing one: it checks the draft (--handoff, else the stage's latest) and refuses
+(exit 2, the lines listed) while § 0–2 — the successor's first steps, the state, the queue — still hold TODO;
+--allow-todo lets it through and says what stays open. `hub succeed --handoff` makes the same check before it starts
+a successor, and `hub takeover` warns (ATTENTION) when the handoff it reads still has TODO in § 0–2.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
@@ -295,6 +300,42 @@ def latest(pattern: str, stage: str):
 def section(text: str, number: int) -> str:
     m = re.search(rf"^## {number}\..*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     return m.group(0).strip() if m else ""
+
+
+def open_todos(text: str) -> list:
+    """[(line number, line)] of the lines in § 0–2 of a handoff that still say TODO (what `hub handoff` writes where the
+    hub must). The successor reads those sections first; § 3–6 are optional modules and loose ends. A TODO inside an
+    HTML comment (the template's hints) is not one."""
+    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.DOTALL)  # keeps the line numbers
+    found, current = [], None
+    for lineno, line in enumerate(text.splitlines(), 1):
+        m = re.match(r"## (\d+)\.", line)
+        if m:
+            current = int(m.group(1))
+        if current is not None and current <= 2 and re.search(r"\bTODO\b", line):
+            found.append((lineno, line.strip()))
+    return found
+
+
+def todo_report(todos: list, width: int = 110) -> str:
+    return "\n".join(f"  line {n}: {ln[:width]}{'…' if len(ln) > width else ''}" for n, ln in todos[:12]) + (
+        f"\n  … and {len(todos) - 12} more" if len(todos) > 12 else "")
+
+
+def check_handoff_todos(handoff, allow: bool) -> None:
+    """Refuse (a usage error, exit 2) a handoff whose § 0–2 still hold TODO, unless `allow`, which says what stays open."""
+    try:
+        todos = open_todos(Path(handoff).read_text(encoding="utf-8"))
+    except OSError as e:
+        raise hc.Failure(f"cannot read the handoff {handoff}: {e}") from None
+    if not todos:
+        return
+    if allow:
+        print(f"ATTENTION: --allow-todo: {len(todos)} TODO line(s) in § 0–2 of {handoff} stay open — the successor "
+              f"will rebuild that state from the journal:\n{todo_report(todos)}", file=sys.stderr)
+        return
+    raise hc.UsageError(f"{handoff}: § 0–2 still hold {len(todos)} TODO line(s) — the successor starts from them, so "
+                        f"fill them in (or pass --allow-todo):\n{todo_report(todos)}")
 
 
 def find_local_by_cli(cli_sid: str):
@@ -928,6 +969,11 @@ def cmd_takeover(a) -> int:
         notes.append("left with the previous hub (--skip-lock): " + ", ".join(r["kind"] for r in kept))
 
     warns = []
+    todos = open_todos(handoff.read_text(encoding="utf-8")) if handoff else []
+    if todos:
+        warns.append(f"the handoff {handoff.name} still has {len(todos)} TODO line(s) in § 0–2 (its author did not finish "
+                     f"it): rebuild that state from the journal, `ask list` and `lock list` before trusting it — first "
+                     f"at line {todos[0][0]}: {todos[0][1][:90]}")
     plan = Plan(a.dry_run)
     print(f"{name}: {session} (sid {cli[:8]}, {kind}) " + (f"starts stage {stage}" if first else
           (retake.replace("re-took", "re-takes", 1) if retake else f"takes over from \"{prev_label}\"")
@@ -1080,8 +1126,24 @@ def subagent_rows(subs: list, session: str = "") -> list:
     return rows
 
 
+def cmd_handoff_finish(a, stage: str) -> int:
+    """`hub handoff --finish`: the draft is ready to hand over only when § 0–2 hold no TODO (A-03)."""
+    path = Path(a.handoff).expanduser() if a.handoff else latest("HANDOFF-hub-*.md", stage)
+    if path is None or not path.is_file():
+        raise hc.UsageError(f"no handoff to finish: {path or 'none in ' + str(coordinator_dir(stage))} — write one with "
+                            f"`hub handoff --stage {stage}` or pass --handoff PATH")
+    check_handoff_todos(path, a.allow_todo)
+    rest = len(re.findall(r"\bTODO\b", re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)))
+    print(f"handoff ready: {path}" + (f" ({rest} TODO left outside § 0–2)" if rest else ""))
+    return 0
+
+
 def cmd_handoff(a) -> int:
     stage = hc.check_stage(a.stage)
+    if a.finish:
+        return cmd_handoff_finish(a, stage)
+    if a.handoff or a.allow_todo:
+        raise hc.UsageError("--handoff and --allow-todo go with --finish")
     n = a.n or handoff_number(stage)
     tag = f"hub-{n}"
     name, succ = hub_name(stage, n), hub_name(stage, n + 1)
@@ -1262,6 +1324,8 @@ def cmd_succeed(a) -> int:
         handoff = Path(a.handoff).expanduser().resolve()
         if not handoff.is_file():
             raise hc.UsageError(f"--handoff {handoff}: no such file")
+        if not a.replace:  # a replacement restarts the handoff the first successor was started from
+            check_handoff_todos(handoff, a.allow_todo)
     cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
     if a.replace:
         # the registered hub is the successor by now: the numbers come from the record, not from the registry
@@ -1514,8 +1578,13 @@ def main(argv: list) -> int:
     h.add_argument("--session", help="the hub's session whose sub-agents are checked (default: the registered hub's)")
     h.add_argument("--allow-live-subagents", action="store_true",
                    help="write the draft although sub-agents of the hub still run; the list goes into its TODO")
+    h.add_argument("--finish", action="store_true",
+                   help="do not write a draft: check the filled one (--handoff, else the latest) and refuse while § 0–2 hold TODO")
+    h.add_argument("--handoff", help="with --finish: the handoff to check (default: the latest HANDOFF-hub-*.md)")
+    h.add_argument("--allow-todo", action="store_true", help="with --finish: accept a handoff with TODO left in § 0–2")
     sc = sub.add_parser("succeed", parents=[stage_opt], help="start the successor of an automatic handoff (autopilot)")
     sc.add_argument("--handoff", help="the filled handoff draft")
+    sc.add_argument("--allow-todo", action="store_true", help="start the successor although § 0–2 of the handoff still hold TODO")
     sc.add_argument("--model", help="the successor's model (default: AGENT_HUB_SUCCESSOR_MODEL, else the hub's own)")
     sc.add_argument("--effort", choices=tuple(dict.fromkeys(hc.EFFORTS + engines.CODEX_EFFORTS)),
                     help="the successor's effort (default: AGENT_HUB_SUCCESSOR_EFFORT, else this hub's own effort, read "

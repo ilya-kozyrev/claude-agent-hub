@@ -6,7 +6,8 @@
 Writes "- HH:MM [tag] text" (hub time zone) to
 <hub home>/<stage>/coordinator/work/journal-YYYY-MM-DD.md and prints the line.
 Tag: --tag (written as given), else $HUB_TAG, else this session's tag in the role registry
-(`roles`, matched by $CLAUDE_CODE_SESSION_ID), else an error. Written to another stage than the caller's own
+(`roles`, matched by $CLAUDE_CODE_SESSION_ID, or — a Desktop session whose CLI restarted — by the `local_…` id in
+$CLAUDE_CODE_HOST_SESSION_ID that Desktop's record confirms), else an error. Written to another stage than the caller's own
 ($HUB_STAGE, else the registry that lists this session), a derived tag is signed with the caller's stage:
 `[core-c-hub-30]` in the Dolya journal, so an `@core-c-hub-30` answer is heard by `jwait --tag hub-30` there.
 Stage: --stage, else $HUB_STAGE, else "default". Hub home: `hub home` shows which and why.

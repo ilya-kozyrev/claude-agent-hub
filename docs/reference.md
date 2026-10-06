@@ -54,7 +54,7 @@ flowchart LR
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
-| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). |
+| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. `hub handoff --finish` refuses a draft whose § 0–2 still hold `TODO` (`--allow-todo` overrides), `hub succeed` makes the same check, and `takeover` warns about such a handoff. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). |
 | `hub rename` | `hub rename --stage OLD --to NEW [--dry-run]`: rename a stage none of whose agents is alive (otherwise exit 2, the live ones listed): its directory, the names and paths in its json files, the question register's heading and the board's lock notes that name it. |
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
@@ -95,7 +95,7 @@ agent-top                                     # live console; agent-top --once f
 agent send builder "after the tests pass, open the PR"
 
 # 5. wait for its status line without polling (run in the background from Claude)
-jwait --journal --tag hub-1 --tag hub --match '\b(DONE|BLOCKED|EXIT|QUESTION)\b' --for 55m
+jwait --journal --tag hub-1 --tag hub --match '\b(DONE|BLOCKED|EXIT|ENDED|REVIEWED|QUESTION)\b' --for 55m
 
 # 6. stop it
 agent stop builder
@@ -202,8 +202,14 @@ sequenceDiagram
     H->>A: agent stop builder (SIGTERM → SIGKILL, role retired)
 ```
 
-If a run crashes or ends without a status word, a small wrapper journals `EXIT <role>: …` under the agent's tag, so
-the hub's `jwait` wakes anyway. When the process is killed together with the wrapper (`kill -9` of its group), the first
+When a run ends, a small wrapper checks the journal and writes one line under the agent's tag unless the agent wrote a
+status word itself, so the hub's `jwait` wakes anyway. A run that ended normally (code 0, a successful result) with no
+status word of its own is `ENDED <role>: …` — `REVIEWED <role>: …` for a review role, one whose name or tag has the word
+`review`/`reviewer` in it (`review-pr34`, `desktop-review`) and which often cannot journal at all. Both are neutral: the agent
+stopped, nothing looks wrong, and the hub reads the last text of the run with `agent status`. `EXIT <role>: …` is for
+an abnormal end: a non-zero code, an error result, no result. `PROGRESS …` lines are not status words (the brief footer
+tells agents to put milestones in the report or in such a line), so they neither wake the hub nor stand in for the
+final status. When the process is killed together with the wrapper (`kill -9` of its group), the first
 observer — `agent status` or the poll of `jwait --journal` (every 10 s) — journals `EXIT <role>: killed (no result)`
 once per run (marker under `<state dir>/agent-exits/<stage>/`); `agent stop`, a registered role only, and a death
 within the last day are the bounds. The brief and every message reach the CLI on stdin (`prompt-<run>.txt` in the agent's
@@ -346,7 +352,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 |---|---|---|
 | `AGENT_HUB_HOME` | `~/agent-hub` | The hub home above. The environment (any path), or a repository's `.agent-hub/config.json` with `"project"` or `"user"` only; the hub home's `config.json` cannot set it. [Where the hub's files live](#where-the-hubs-files-live). |
 | `HUB_STAGE` | `default` | Stage when `--stage` is not given (environment only). |
-| `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically; environment only). |
+| `HUB_TAG` | from `roles` | Journal tag of the caller (set for agents automatically; environment only). Without it the tag is the registry entry of this session's id; for a Claude Desktop session whose CLI restarted (a new `$CLAUDE_CODE_SESSION_ID` under the same `local_…` id) it is found through `$CLAUDE_CODE_HOST_SESSION_ID`, provided Desktop's own record of that session names this CLI session, and the registry's CLI id is refreshed. |
 | `AGENT_HUB_TZ` | local zone | IANA time zone of journal times and deadlines. Hub-wide. |
 | `AGENT_HUB_MODEL_MAP` | none | Opt-in pin of aliases to model ids (without it an alias follows the CLI, which resolves it to its latest model), e.g. `sonnet=claude-sonnet-…,opus=claude-opus-…` (in JSON also `{"sonnet": "…"}`). A model id may use letters, digits and `. _ : @ [ ] / -` only (a Bedrock id or an ARN is fine); a pair outside that is reported and left out. |
 | `AGENT_HUB_DEFAULT_EFFORT` | `high` | Effort for `agent spawn` without `--effort` (haiku gets none). |
@@ -367,7 +373,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`. Hub-wide. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
-| `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
+| `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
 | `AGENT_HUB_JWAIT_FOR` | `55m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `55m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `55m`). The default stays inside the one-hour prompt cache, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
@@ -430,6 +436,25 @@ apply to commands run anywhere, so keep there the rules that must hold outside a
 `-R group/repo` from your home directory), as a regular file rather than a symlink into a checkout whose branch can
 change. Add `# lock-ok: <reason>` to a command to pass it deliberately. A lock guards one repository (`--repo`, default
 `*`), so a rule known in every repository still only stops commands aimed at the locked one.
+
+**A CI retry is not a deploy.** The hook sees only the words of one command, so it can tell a retry of a test job from a
+retry of a deploy job only when the command names the job. Write the rules on the forms that name the deploy, and leave
+the forms that carry no name out:
+
+```json
+{"resources": {"deploy-window": "a production rollout is in progress"},
+ "rules": [{"match": "\\bmake deploy-prod\\b", "kinds": ["deploy-window"], "action": "production deploy"},
+           {"match": "\\bglab ci (run|trigger|retry)\\b.*\\bdeploy[:a-z0-9_-]*", "kinds": ["deploy-window"],
+            "action": "run or retry a deploy job"}]}
+```
+
+With this file `glab ci retry deploy:prod` is refused while another session holds `deploy-window`, and
+`glab ci retry test-shard-3` is not (try both: `lock rules check "glab ci retry test-shard-3" --expect-none`). A retry
+by job id (`glab api -X POST projects/<p>/jobs/434654/retry`) names nothing, so no such rule can be correct: either
+leave it unguarded, as above, or add a rule for it and let the agent that retries a test job pass the command with
+`# lock-ok: job 434654 is test-shard-3, not a deploy` after looking the name up (`glab ci get` / the pipeline page). The
+reason stays in the transcript. Do not widen a deploy rule to every retry: a flaky shard then waits for the
+release.
 
 `lock take <resource>` refuses a name nobody configured where you run it and lists the known ones (a name already on the
 board stays takeable, for a handover); `lock release` accepts any name. The rules have their own commands:

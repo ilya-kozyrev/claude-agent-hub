@@ -123,6 +123,8 @@ other end: questions asked in chat are read by no one. The brief above is your c
 - Talk to the hub only through the journal: `{jlog} "…"` (your tag is already in $HUB_TAG; run it by this
   path, $HUB_BIN is the plugin's bin/: another `jlog` earlier on PATH writes to a journal the hub does not read). Write only on events: MERGED / STOP /
   DONE / BLOCKED / a question. One line = status word, path, one sentence. The full report goes to `{report}`.
+  A status word means "I have stopped, look now"; progress and milestones go to the report, or into a line that starts
+  with PROGRESS and contains no status word.
 - A question to the hub: `{jlog} "@hub QUESTION …"`, then end your turn with the word BLOCKED and the report
   path. The answer arrives as a new message in this same session (the hub runs `agent send {role} "…"`,
   which resumes the session).
@@ -975,12 +977,26 @@ def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
     return False
 
 
+REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE)
+
+
+def is_review_role(meta: dict) -> bool:
+    """A review role by its name or tag: `review-pr34`, `desktop-review`, `reviewer2` (the plugin's own reviewers are
+    `review-<name>`), not `preview` or `reviewfix`. Such an agent often cannot journal at all (a read-only sandbox)."""
+    return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
+
+
 def cmd_exit_note(a) -> int:
-    """Called by the launch shell after claude exits: journal EXIT unless the run ended cleanly with a status word."""
+    """Called by the launch shell after claude exits (either engine). A run that ended cleanly (code 0, a successful
+    result) with a status word of its own in the journal needs no line. One that ended cleanly without one is journaled
+    as the neutral `ENDED <role>` (`REVIEWED <role>` for a review role): the agent stopped and the hub wakes on it, but
+    nothing looks wrong. EXIT stays for an abnormal end (a code, an error result, no result)."""
     stage = hc.check_stage(a.stage or hc.default_stage())
     meta = load_meta(stage, a.role)
     info = read_log(Path(meta["dir"]) / "log.jsonl")
-    r = info["result"] or {}
+    # a result of an earlier run is not this run's: an init (or a Codex turn start) after the last result means the
+    # run that just exited produced none (a resumed run that died, or was stopped, before its first answer)
+    r = {} if info["running_after_result"] else (info["result"] or {})
     runs = meta.get("runs") or []
     since = hc.dt.datetime.fromisoformat(runs[-1]["at"]) if runs else hc.now() - hc.dt.timedelta(days=1)
     clean = a.code == 0 and r and not r.get("is_error") and r.get("subtype") == "success"
@@ -991,10 +1007,13 @@ def cmd_exit_note(a) -> int:
             return 0
     except OSError:
         pass  # an unwritable state dir must not cost the EXIT line
-    why = "no status word in the journal" if clean else (f"{r.get('subtype')}, error" if r.get("is_error") else
-                                                          (r.get("subtype") or "no result — died or killed"))
+    if clean:
+        word, why = ("REVIEWED" if is_review_role(meta) else "ENDED"), "finished, no status word in the journal"
+    else:
+        word, why = "EXIT", (f"{r.get('subtype')}, error" if r.get("is_error") else
+                             (r.get("subtype") or "no result — died or killed"))
     last = (info["last_text"] or "").strip().splitlines()
-    print(hc.journal_append(stage, meta["tag"], f"EXIT {a.role}: {why}; code {a.code}, turns {turns_text(info)}"
+    print(hc.journal_append(stage, meta["tag"], f"{word} {a.role}: {why}; code {a.code}, turns {turns_text(info)}"
                             f"{'; last: ' + last[-1][:160] if last else ''} — agent status {a.role}"))
     return 0
 

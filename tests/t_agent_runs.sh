@@ -36,7 +36,7 @@ $B/agent status turns | grep -q '; turns 5; last:'; check $? 0 "one run: status 
 FAKE_TURNS=2 $B/agent send turns "go on" > /dev/null; check $? 0 "resume it for 3 more turns"
 wait_dead turns
 $B/agent status turns | grep -q '; turns 3 (total 8); last:'; check $? 0 "status: turns 3 (total 8)"
-grep -q 'EXIT turns: .*turns 3 (total 8)' $(journal stage-a); check $? 0 "the EXIT line says the same"
+grep -q 'ENDED turns: .*turns 3 (total 8)' $(journal stage-a); check $? 0 "the ENDED line says the same"
 $B/agent-top --json --stage stage-a > $P/top.json 2>&1
 python3 -c 'import json,sys; a={x["role"]:x for x in json.load(open(sys.argv[1]))["agents"]}["turns"]; assert (a["run_turns"], a["turns"])==(3, 8), a' $P/top.json; check $? 0 "agent-top --json: run_turns 3, turns 8"
 $B/agent-top --once --stage stage-a --width 120 > $P/top.out 2>&1

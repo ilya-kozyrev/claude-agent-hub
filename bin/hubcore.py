@@ -58,9 +58,12 @@ PROJECT_KEYS += ("AGENT_HUB_ENGINE", "CODEX_BIN", "AGENT_HUB_CODEX_MODEL_MAP", "
                  "AGENT_HUB_CODEX_PERMISSION_MODE", "AGENT_HUB_CODEX_HOOK_TRUST")
 # Yes/no settings: a JSON boolean is accepted for them (read with truthy()).
 BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
-# Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending.
-# $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
-STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
+# Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending. EXIT, ENDED and
+# REVIEWED are the words `agent` itself writes when a run ends (EXIT: abnormally or killed; ENDED: normally, with a
+# result but no status word of the agent's own; REVIEWED: the same for a review role), so they never count as the
+# agent's own status. $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
+STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER"
+AGENT_END_WORDS = ("EXIT", "ENDED", "REVIEWED")
 # How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
 # The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
 DEFAULT_JWAIT_FOR = "55m"
@@ -924,7 +927,7 @@ def __getattr__(name: str):
 
 def status_pattern(exit_word: bool = True) -> str:
     """STATUS_WORDS plus $AGENT_HUB_JWAIT_MATCH (hub-wide), if set and a valid regex. exit_word=False leaves out
-    EXIT (the line `agent` itself writes when a run ends without a status word)."""
+    the words `agent` itself writes when a run ends (AGENT_END_WORDS): EXIT, ENDED, REVIEWED."""
     extra = (setting("AGENT_HUB_JWAIT_MATCH") or "").strip()
     if extra:
         try:
@@ -932,7 +935,10 @@ def status_pattern(exit_word: bool = True) -> str:
         except re.error as e:
             _warn(f"AGENT_HUB_JWAIT_MATCH is not a valid regex ({e}); ignored")
             extra = ""
-    base = STATUS_WORDS if exit_word else STATUS_WORDS.replace("|EXIT", "")
+    base = STATUS_WORDS
+    if not exit_word:
+        for word in AGENT_END_WORDS:
+            base = base.replace(f"|{word}", "")
     return f"{base}|{extra}" if extra else base
 
 
@@ -1482,12 +1488,49 @@ def session_id() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or os.environ.get("AGENT_SESSION_ID", "").strip()
 
 
+def role_for_caller(stage: str) -> Optional[tuple]:
+    """(role, record) of the calling session in the registry of `stage`: by its session id (role_for_session), else
+    for a Claude Desktop session whose CLI restarted (a new $CLAUDE_CODE_SESSION_ID under the same `local_…` id) by the
+    Desktop id the host exposes in $CLAUDE_CODE_HOST_SESSION_ID — and only when Desktop's own record of that session
+    names this very CLI session. The variable alone proves nothing: every child of a session inherits it, a headless
+    agent and a `claude --bg` session started by a daemon included, and Desktop's record of the id names the one CLI
+    session that is current. A hit refreshes the record's cli_session_id (best effort), so the next call finds it by
+    the first rule."""
+    sid = session_id()
+    hit = role_for_session(stage, sid)
+    if hit or not sid or sid != os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip():
+        return hit
+    host = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "").strip()
+    if not host.startswith("local_"):
+        return None
+    for name, rec in roles_load(stage)["roles"].items():
+        if rec.get("session") == host:  # the registry first: Desktop's metadata is only read for a candidate
+            if (desktop_session(host) or {}).get("cliSessionId") != sid:
+                return None
+            try:
+                with roles_lock(stage):
+                    # what was read before the lock is stale by now if a `roles set` or another restart ran while we waited
+                    # for it: the registration and Desktop's binding are checked again, and a caller that no longer
+                    # matches neither writes nor gets the candidate's tag
+                    data = roles_load(stage)
+                    now = data["roles"].get(name) or {}
+                    if now.get("session") != host or (desktop_session(host) or {}).get("cliSessionId") != sid:
+                        return role_for_session(stage, sid)
+                    data["roles"][name]["cli_session_id"] = sid
+                    roles_save(stage, data)
+                    rec = data["roles"][name]
+            except (OSError, Failure):
+                pass  # a read-only home still gets its tag, only the refresh is skipped
+            return name, rec
+    return None
+
+
 def caller_tag(stage: str) -> Optional[str]:
-    """HUB_TAG, else the registry tag of this session ($CLAUDE_CODE_SESSION_ID)."""
+    """HUB_TAG, else the registry tag of this session (role_for_caller)."""
     if os.environ.get("HUB_TAG"):
         return os.environ["HUB_TAG"].strip()
     try:
-        hit = role_for_session(stage, session_id())
+        hit = role_for_caller(stage)
     except Failure:
         return None
     if hit:
@@ -1496,9 +1539,9 @@ def caller_tag(stage: str) -> Optional[str]:
 
 
 def registered_tag(stage: str) -> Optional[str]:
-    """The tag this session ($CLAUDE_CODE_SESSION_ID) has in the registry of `stage`, else None."""
+    """The tag this session has in the registry of `stage` (role_for_caller), else None."""
     try:
-        hit = role_for_session(stage, session_id())
+        hit = role_for_caller(stage)
     except (Failure, UsageError):
         return None
     return (hit[1].get("tag") or hit[0]) if hit else None
