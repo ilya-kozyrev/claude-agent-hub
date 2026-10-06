@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The hub agrees a Business DoD before autonomous work and preserves it across handoffs.** Clear requests supply the agreed result and plan authorization; questions address ambiguity that changes that result. Standing permissions and explicit plan approvals still apply. Briefs, handoffs and night queues inherit the result; technical checks remain the executor's responsibility. Controls: `tests/t_hub.sh`, `tests/t_ask_nightq.sh`, `tests/t_codex_agent.sh`.
+
 ## 0.9.0 — 2026-10-06
 
 - **`hub start` now insists on a stage name that says what the work is, and the goal travels with the hub.** A stage
