@@ -135,9 +135,19 @@ why, and wait for them ("cannot determine the effort" means your own effort is u
 --replace` — it stops that successor (not while it is busy, unless `--force`) and starts a new one from the same handoff
 with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
 yourself, never from a sub-agent.
-A session whose first prompt carries `[agent-hub auto-handoff k/N]` is an automatic successor: run the takeover
-command the prompt gives, then work the handoff's queue. The owner may be away: questions go to `ask add` with a
-default, and you hand over the same way when your own budget says so.
+
+For **Codex Desktop**, --surface auto selects a native request only in an actual app hub (both app markers,
+no detached worker role); --surface cli explicitly keeps CLI. Immediately follow
+[the native launch procedure](../../docs/codex.md#desktop-autopilot): list_projects, desktop-request, create_thread,
+desktop-bind; desktop-fail records failures. Keep the predecessor active until desktop-status --verified succeeds
+after actual takeover; a clientThreadId is not a real session. Uncertain results retain the same request without a
+hidden CLI fallback. On ALARM, tell the owner one line: request unconfirmed and the handoff path; the owner confirms
+the thread or takes over by hand, then stop. Native APIs cannot set Full Access. CLI replacement uses --surface cli.
+
+An automatic successor prompt carries `[agent-hub auto-handoff k/N]`: run its takeover command, then run the digest's
+first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
+checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
+Questions go to `ask add` with a default; hand over again when the budget requires it.
 
 ## Waiting
 
@@ -423,7 +433,7 @@ These are the defaults of the plugin's author, each paid for by an incident or a
 - **Night queue** (`<stage>/night-queue.md`, `nightq`, `templates/night-queue-template.md`): work allowed while the
   owner is away, with a permission matrix; an optional Claude Desktop scheduled task (`templates/night-nudge-task.md`)
   wakes a silent Claude hub. The queue files work with either engine; this Desktop scheduled nudge stays Claude-only.
-  Codex autopilot creates a detached Codex successor, without a Claude Remote Control phone link.
+  Codex autopilot selects the desktop request or detached CLI surface as described above.
 - **Send budget** (`roles sent|budget|reset`, `AGENT_HUB_SEND_CAP`): Claude Desktop pauses a session's outgoing
   cross-session messages after 10 sends without the user typing in it. After every send — `roles sent <from> <to>`;
   at budget 0 write `jlog "@<tag> …"` instead. Terminal sessions do not need it.

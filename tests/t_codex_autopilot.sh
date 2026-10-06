@@ -13,7 +13,7 @@ import hubcore as hc
 fake = tmp / 'codex'
 fake.write_text('''#!/usr/bin/env python3
 import json,os,sys,time
-with open(os.environ['FAKE_CODEX_LOG'],'a') as f: f.write(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','AGENT_SESSION_ID']}})+'\\n')
+with open(os.environ['FAKE_CODEX_LOG'],'a') as f: f.write(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','AGENT_SESSION_ID','CODEX_INTERNAL_ORIGINATOR_OVERRIDE','CODEX_APP_TOOLS_PIPE_PATH']}})+'\\n')
 print(json.dumps({'type':'thread.started','thread_id':'22222222-2222-4222-8222-222222222222'}),flush=True)
 print(json.dumps({'type':'turn.started'}),flush=True)
 time.sleep(60)
@@ -54,8 +54,9 @@ def stop(role="hub-2"):
     subprocess.run([str(root/'bin/agent'),'stop',role,'--stage','stage-a'], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 home,handoff,cwd = setup('inherit')
+os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
-    rc,out=succeed(handoff,cwd)
+    rc,out=succeed(handoff,cwd,surface='cli')
     assert rc == 0 and 'Codex shell execution harness' in out
     meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
     assert meta['engine']=='codex' and meta['model']=='fixture-codex-model' and meta['sandbox']=='workspace-write'
@@ -76,6 +77,11 @@ try:
     assert meta['sandbox_policy']['writable_roots']==[str(tmp/'allowed')]
     assert '--dangerously-bypass-approvals-and-sandbox' not in argv
     assert calls()[-1]['env']['CODEX_THREAD_ID'] is None
+    assert calls()[-1]['env']['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'] is None
+    assert calls()[-1]['env']['CODEX_APP_TOOLS_PIPE_PATH'] is None
+    brief=(home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
+    assert 'finite handoff queue' in brief and '--for 9m' not in brief
+    os.environ.pop('CODEX_INTERNAL_ORIGINATOR_OVERRIDE');os.environ.pop('CODEX_APP_TOOLS_PIPE_PATH')
     assert state(home)['pending']['engine']=='codex' and state(home)['chain']==1
     assert 'becomes never' in out and 'Remote Control' not in (home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
     before=len(calls())
@@ -169,8 +175,10 @@ print('PASS representative dry run writes no reservation or brief')
 
 ap.codex_rollouts.INDEX.records={};ap.codex_rollouts.INDEX.checked=time.monotonic()
 home,handoff,cwd=setup('default')
+os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
-    rc,out=succeed(handoff,cwd)
+    rc,out=succeed(handoff,cwd,headless=True)
+    os.environ.pop('CODEX_INTERNAL_ORIGINATOR_OVERRIDE');os.environ.pop('CODEX_APP_TOOLS_PIPE_PATH')
     assert rc==0
     argv=calls()[-1]['argv']
     assert '-m' not in argv and '--dangerously-bypass-approvals-and-sandbox' in argv
