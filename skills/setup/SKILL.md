@@ -142,8 +142,9 @@ too, as one grilling round.
    ask allow --stage <S> --repo <repository> --class "merge" --words "«…their reply…»" --source "setup, <date>" \
        "merge a PR after green CI and one review"
    ```
-   `--class` is a few comma-separated keywords; questions about the same class are asked with `ask add --class` and
-   the same keywords, so say them in the report. `ask allow --list --repo <repository>` must show every entry.
+   `--class` is a few comma-separated keywords, as specific as the words (`deploy-staging` when the yes was about
+   staging); questions about the same class are asked with `ask add --class` and the same keywords, so say them in
+   the report. Money, migrations and permissions/RBAC need a permission that names them in `--class`. `ask allow --list --repo <repository>` must show every entry.
 
 `--defaults` (or headless, nobody to answer): record no permission — a permission needs the person's words. List the
 proposed ones, with the `ask allow` lines, in the report for the person to confirm.

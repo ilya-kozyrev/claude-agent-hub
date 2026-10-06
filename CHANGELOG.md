@@ -86,11 +86,15 @@
   stage's register is read. `ask add --class … [--repo …]` refuses a question a permission in force covers (exit 3,
   "covered by A-… (<source>)") unless `--override "why"` is given, and warns on a keyword found only in the text. The
   `hub start` / `hub takeover` digest lists the permissions for the stage's repository from every stage, or says there
-  are none. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
+  are none. A question is covered only when every class it names (and money, migrations or permissions/RBAC
+  mentioned anywhere in it, `AGENT_HUB_SENSITIVE_CLASSES`) is covered on every repository it touches; a repository is
+  its normalized `origin` URL, else its main clone's path, so two checkouts named `shop` stay apart; an entry without
+  the owner's words or with an unparsable `until` covers nothing and is listed as `INVALID`. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
   them before a merge, deploy or release question and forbids invented gates. Design: `docs/standing-permissions.md`.
   Tests: `tests/t_permissions.sh` (same stage, another stage on the same repository, another repository's stage
-  naming `--repo`, scopes stage and all, expiry, revocation, refusal and override, the digest; 41 of its 50 checks fail
-  on 0.8.5).
+  naming `--repo`, two repositories of one name, every class and every repository, sensitive classes, invalid entries,
+  scopes, expiry, revocation, refusal and override, the digest after § 0 with "K more"; 63 of its 74 checks fail on
+  0.8.6).
 
 ## 0.8.5 — 2026-10-06
 

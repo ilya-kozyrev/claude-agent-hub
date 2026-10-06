@@ -256,17 +256,22 @@ staging" — is recorded once and read by the hubs of every stage:
 ask allow --stage web --class "merge, release" --words "«merge them, no need to ask»" --source "chat 06.10" \
     "merge a PR after green CI and one review; cut the release"     # → A-WEB-001, bound to the stage's repository
 ask allow --list --stage web          # in force for web and its repository, recorded in any stage (--all: revoked too)
-ask add --stage api --repo webapp --class release "Release webapp?"   # exit 3: covered by A-WEB-001 (chat 06.10)
+ask add --stage api --repo ~/src/webapp --class release "Release webapp?"   # exit 3: covered by A-WEB-001 (chat 06.10)
 ask revoke A-WEB-001 --reason "…"
 ```
 
 A permission is bound to the repository the action touches (`--scope repo`, the default: the stage's recorded
-repository, or `--repo`), to one stage (`--scope stage`) or to every repository (`--scope all`); it lasts until
-revoked unless `--until` ends it. `ask add` refuses a question whose `--class` shares a keyword with a permission in
-force for its `--repo` (the repository the action touches; default the stage's) and prints `covered by A-… (<source>)`;
-`--override "why"` adds it anyway and records why. A permission keyword found only in the question's text gives a
-warning, not a refusal. The `hub start` / `hub takeover` digest lists the permissions in force for the stage, or says
-in one line that there are none. Record format, storage and matching rules: [Standing permissions](standing-permissions.md).
+repository, or `--repo` — a path, a remote URL or an unambiguous short name; the repository is identified by its
+normalized `origin` URL, else its main clone's path), to one stage (`--scope stage`) or to every repository (`--scope
+all`); it lasts until revoked unless `--until` ends it. `ask add` refuses a question (exit 3, `covered by A-…
+(<source>)` and the owner's words) only when every `--class` keyword is covered on every `--repo` it names (default
+the stage's repository); money, migrations and permissions/RBAC — named in the class or the text — are covered only by
+a permission whose class names them (`AGENT_HUB_SENSITIVE_CLASSES`). Act under a permission only where the owner's
+words cover the case (staging is not production); otherwise `--override "why"` adds the question and records why. A
+partly covered question is added with what is not covered; a keyword found only in the text gives a warning. An
+entry with no owner's words, an unparsable `until` or another defect covers nothing and is shown as `INVALID` by
+`ask allow --list`. The `hub start` / `hub takeover` digest lists the permissions in force for the stage after § 0
+(what does not fit is `K more`), or says in one line that there are none. Record format, storage and matching rules: [Standing permissions](standing-permissions.md).
 `skills/setup` proposes them after reading the project and the person; it ships no fixed list.
 
 ## Team use
@@ -404,6 +409,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
 | `AGENT_HUB_JWAIT_FOR` | `55m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `55m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `55m`). The default stays inside the one-hour prompt cache, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
+| `AGENT_HUB_SENSITIVE_CLASSES` | money, migration, permissions | Classes of action a standing permission covers only when its own class names them: a JSON object `{"class": ["stem", …]}`; a stem in a question's text or class makes the class a requirement ([Standing permissions](standing-permissions.md)). Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
 
 ### Configuration layers

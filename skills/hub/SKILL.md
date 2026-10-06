@@ -196,9 +196,12 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
 - Standing permissions (`<plugin-root>/docs/standing-permissions.md`): `ask allow --list --stage <S>` — what the owner
   already allowed for this stage's repository, recorded in any stage (the start/takeover digest lists them); `ask allow
   --stage <S> --class "<keywords>" --words "<the owner's words>" "<the class of action>"` — record one (`--repo` when
-  the action touches another repository; `--scope stage|all`; `--until`); `ask revoke <A-id>`. Ask with `ask add
-  --repo <the repository the action touches> --class <keywords>`: a question a permission covers is refused (exit 3) —
-  act under it and journal its id; `--override "why"` only when it really does not cover the case.
+  the action touches another repository — its path or remote URL; `--scope stage|all`; `--until`); `ask revoke
+  <A-id>`. Use specific keywords (`deploy-staging`, not `deploy`, when the words are about staging). Ask with `ask add
+  --repo <each repository the action touches> --class <every class of the action>`: a question the permissions cover
+  on every repository is refused (exit 3) and prints the owner's words — act under them only if they cover this
+  case's specifics (environment, scope, what is touched) and journal the id; if they do not, `--override "why"`.
+  Money, migrations and permissions/RBAC are covered only by a permission that names them.
 
 ## Planning a stage: grill before you brief
 
@@ -396,7 +399,7 @@ These are the defaults of the plugin's author, each paid for by an incident or a
     the way it was written and returns a confident summary, which reads like agreement.
 12. **A question's due time is no reason to hold ready work while the owner is reachable, and never invent a gate the
     owner did not set** ("after 10:00", "after the owner looks"). Before asking about a merge, deploy or release, check
-    `ask allow --list --stage <S>`: a permission in force is the answer. *Why:* finished work waited overnight for a
+    `ask allow --list --stage <S>`: a permission in force whose words cover the case is the answer. *Why:* finished work waited overnight for a
     per-item "ok" the owner had already given, and for a time nobody had named.
 
 ## Optional modules
