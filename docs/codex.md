@@ -231,6 +231,9 @@ The current **app agent** executes this procedure automatically after preparing 
    runs its brief's `hub takeover --session self --auto-handoff --desktop-request <token>` from its actual cwd.
    Its own CODEX_THREAD_ID, main project, persisted rollout settings and stage-home write access are validated
    before role/lock migration. Takeover reconciles actual identity/cwd and retains the original chain count.
+   If takeover prints `MOVE <path>`, run the printed command from that fresh worktree, keeping the same
+   thread and request. The verified cwd is where takeover completes; a native local thread does not waive
+   the hub location rule.
    Confirm `hub desktop-status --stage <S> --request <token> --verified` (exit 0) before stopping the predecessor.
    Status shows requested and observed model/effort/sandbox/approval separately. Report preservation only from
    observed data. Bind/takeover can arrive in either order; repeats retain the same identity/count. A later hub

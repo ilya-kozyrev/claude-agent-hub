@@ -216,7 +216,7 @@ for owner_change in ('desktop-taken-over','manual-later-hub'):
             assert state(stage)['pending']['taken_over'] and roles(stage)['session']==real
             if owner_change=='manual-later-hub':
                 env['CODEX_THREAD_ID']=other
-                hub('takeover','--stage','stage-a','--session','self','--n','9','--handoff',handoff)
+                hub('takeover','--stage','stage-a','--session','self','--n','9','--handoff',handoff,cwd=actual)
                 assert roles(stage)['session']==other and state(stage)['pending'] is None
             inserted.append(((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes()))
         with original_lock(name):
