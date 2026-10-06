@@ -7,7 +7,13 @@ $FAKE_WD_ROWS (a JSON file, default none)  the rows `agents --json` prints; `sto
 FAKE_WD_AGENTS=fail                        `agents --json` exits 1
 FAKE_WD_STOP=fail                          `stop` exits 1
 FAKE_WD_RESUME=fail                        `--bg --resume` exits 1 ("Error: resume failed")
+FAKE_WD_STOP=copy-fail                     `stop` of a copy (id cc…) exits 1; any other stop works
+FAKE_WD_STOP=copy-ghost                    `stop` of a copy exits 0 but the copy stays listed
+FAKE_WD_KIND=interactive FAKE_WD_KIND_FROM=2  from the 2nd `agents --json` call on, every row says that kind (the owner
+                                           opened the session in a terminal meanwhile)
 FAKE_WD_RESUME=copy                        `--bg --resume` always starts a copy (a new row, a different session id)
+FAKE_WD_RESUME=stranger                    `--bg --resume` continues the same id, and an unrelated session (feedface) appears
+                                           at the same time without any "copy" message
 default                                    behaves like the real CLI (2.1.289, probed): a session that is still listed, or
                                            a call with any flag besides the prompt, starts a copy; otherwise the same id
                                            continues and a row for it appears
@@ -43,12 +49,23 @@ if cmd == "agents":
     if os.environ.get("FAKE_WD_AGENTS") == "fail":
         sys.stderr.write("fake claude: agents failed\n")
         sys.exit(1)
-    print(json.dumps(rows()))
+    out = rows()
+    kind, calls = os.environ.get("FAKE_WD_KIND"), 0
+    if kind:
+        with open(os.environ.get("FAKE_WD_LOG", "wd-claude.log"), encoding="utf-8") as fh:
+            calls = sum(1 for line in fh if json.loads(line)["argv"][:1] == ["agents"])
+        if calls >= int(os.environ.get("FAKE_WD_KIND_FROM", "1")):
+            out = [dict(r, kind=kind) for r in out]
+    print(json.dumps(out))
 elif cmd == "stop":
-    if os.environ.get("FAKE_WD_STOP") == "fail":
+    target = argv[1] if len(argv) > 1 else ""
+    mode = os.environ.get("FAKE_WD_STOP", "")
+    if mode == "fail" or (mode == "copy-fail" and target.startswith("cc")):
         sys.stderr.write("fake claude: stop failed\n")
         sys.exit(1)
-    target = argv[1] if len(argv) > 1 else ""
+    if mode == "copy-ghost" and target.startswith("cc"):
+        print(f"stopped {target}")
+        sys.exit(0)
     save([r for r in rows() if target not in (r.get("id"), r.get("sessionId"))])
     print(f"stopped {target}")
 elif cmd == "--bg" and "--resume" in argv:
@@ -60,6 +77,9 @@ elif cmd == "--bg" and "--resume" in argv:
     if mode == "fail":
         sys.stderr.write("Error: resume failed\n")
         sys.exit(1)
+    if mode == "stranger":
+        save(rows() + [{"id": "feedface", "sessionId": "feedface-0000-4000-8000-000000000000", "kind": "background",
+                        "status": "idle", "state": "done", "pid": 2, "cwd": os.getcwd(), "name": "owner's agent"}])
     if mode == "copy" or listed or flags:
         new = "cc" + sid[2:8]
         why = (f"session {sid[:8]} is already running in the background, so this started a copy as {new}." if listed

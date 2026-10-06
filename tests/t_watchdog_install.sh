@@ -34,7 +34,8 @@ cat > "$FAKE_DIR/crontab" <<'SH'
 # -l prints the file (exit 1 "no crontab for x" while it is empty); - replaces it from stdin
 echo "$*" >> "$FAKE_DIR/crontab.log"
 case "$1" in
-  -l) if [ -s "$FAKE_DIR/crontab.txt" ]; then cat "$FAKE_DIR/crontab.txt"; exit 0; fi
+  -l) if [ "${FAKE_CRONTAB_FAIL:-}" = read ]; then echo "crontab: cannot read the spool: Permission denied" >&2; exit 1; fi
+      if [ -s "$FAKE_DIR/crontab.txt" ]; then cat "$FAKE_DIR/crontab.txt"; exit 0; fi
       echo "crontab: no crontab for $(id -un)" >&2; exit 1 ;;
   -) cat > "$FAKE_DIR/crontab.txt"; cat "$FAKE_DIR/crontab.txt" >> "$FAKE_DIR/crontab-stdin.log"; exit 0 ;;
 esac
@@ -225,6 +226,30 @@ check "$(grep -c . $CT)" 1 "…exactly one line"
 has 'no crontab'; check $? 1 "…and the fake's 'no crontab' message did not leak out"
 wd uninstall --scheduler cron; check $RC 0 "uninstall of the only line exits 0"
 [ -s $CT ]; check $? 1 "…the crontab is empty again"
+# a crontab that cannot be read is not an empty crontab: install and uninstall leave it alone (exit 1 without "no crontab")
+reset_fakes
+printf '%s\n' "$FOREIGN" > $CT
+new_home; CF=$AGENT_HUB_HOME
+FAKE_CRONTAB_FAIL=read wd install --scheduler cron; check $RC 1 "negative: install with an unreadable crontab exits 1"
+has 'crontab -l failed'; check $? 0 "…and says crontab -l failed"
+check "$(cat $CT)" "$FOREIGN" "…the crontab is untouched (the foreign lines are not replaced by the own line)"
+grep -q '^-$' $FAKE_DIR/crontab.log; check $? 1 "…and crontab - was never called"
+wd install --scheduler cron; check $RC 0 "control: the same install with a readable crontab exits 0"
+FAKE_CRONTAB_FAIL=read wd uninstall --scheduler cron; check $RC 1 "negative: uninstall with an unreadable crontab exits 1"
+check "$(grep -c 'agent-hub-watchdog' $CT)" 1 "…the own line is still there and the foreign lines too ($(grep -c . $CT) lines)"
+check "$(grep -c . $CT)" 4 "…nothing was dropped"
+wd uninstall --scheduler cron; check $RC 0 "control: uninstall with a readable crontab exits 0"
+check "$(cat $CT)" "$FOREIGN" "…only the own line went"
+
+# a % in the hub home: cron would cut the command at it, so it is written as \%, and the line is still found as the home's own
+reset_fakes
+PH=$P/h%d; mkdir -p "$PH"; export AGENT_HUB_HOME=$PH
+wd install --scheduler cron; check $RC 0 "install for a home with % in its path exits 0"
+grep -q '[^\\]%' $CT; check $? 1 "negative: no unescaped % in the crontab line"
+grep -q 'h\\%d' $CT; check $? 0 "…the % is written as \\%"
+wd install --scheduler cron; check "$(grep -c 'agent-hub-watchdog' $CT)" 1 "…a second install replaces the line (still found as own)"
+wd status --scheduler cron; has '^job: installed (cron)'; check $? 0 "…status finds it"
+wd uninstall --scheduler cron; check "$(grep -c . $CT)" 0 "…and uninstall removes it"
 
 # ================================================================ notify-test
 reset_fakes

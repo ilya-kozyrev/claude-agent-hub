@@ -129,8 +129,8 @@ grep -q "wake" "$R/notify.log"; check $? 1 "R3 negative: and no notification was
 mk_dhub sdw; FX jline sdw 20 "[exec-1] DONE waiting for the live waiter"
 "$B/jwait" --journal --stage sdw --caller hub-3 --settle 1 --for 120s > "$R/waiter.out" 2>&1 & WAITER=$!
 armed "$R/waiter.out"; check $? 0 "jwait armed (the hub's own waiter)"
-test -f "$R/.jwait-state/hub-3.armed.json"; check $? 0 "jwait --journal writes <caller>.armed.json while it waits"
-python3 - "$R/.jwait-state/hub-3.armed.json" "$WAITER" <<'PY'
+test -f "$R/.jwait-state/sdw/hub-3.armed.json"; check $? 0 "jwait --journal writes <stage>/<caller>.armed.json while it waits"
+python3 - "$R/.jwait-state/sdw/hub-3.armed.json" "$WAITER" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); assert d["pid"] == int(sys.argv[2]) and d["stage"] == "sdw" and d["caller"] == "hub-3", d
 PY
@@ -139,20 +139,21 @@ tick > /dev/null; check "$(runs sdw)" 1 "R3 negative: a live jwait of the hub (p
 grep -q "\[watchdog\] hub-3's jwait does not match 1 lines addressed to it" "$(J sdw)"; check $? 0 "R3: lines waiting under a live waiter are recorded once as a mismatch"
 tick > /dev/null; check "$(count "jwait does not match" "$(J sdw)")" 1 "R3: …and only once"
 kill -TERM $WAITER; wait $WAITER 2>/dev/null; WAITER=
-test -f "$R/.jwait-state/hub-3.armed.json"; check $? 1 "jwait: the armed file is gone after SIGTERM"
+test -f "$R/.jwait-state/sdw/hub-3.armed.json"; check $? 1 "jwait: the armed file is gone after SIGTERM"
 # an armed file whose pid is dead (what SIGKILL leaves behind): ignored, deleted, the hub woken
-python3 - "$R/.jwait-state/hub-3.armed.json" <<'PY'
+mkdir -p "$R/.jwait-state/sdw"
+python3 - "$R/.jwait-state/sdw/hub-3.armed.json" <<'PY'
 import datetime as dt, json, subprocess, sys
 p = subprocess.Popen(["true"]); p.wait()
 json.dump({"pid": p.pid, "stage": "sdw", "caller": "hub-3", "tags": [], "deadline": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)).isoformat()},
           open(sys.argv[1], "w"))
 PY
 tick > /dev/null; check "$(runs sdw)" 2 "R3: a stale armed file (dead pid) → the hub is woken"
-test -f "$R/.jwait-state/hub-3.armed.json"; check $? 1 "…and the stale file is deleted"
+test -f "$R/.jwait-state/sdw/hub-3.armed.json"; check $? 1 "…and the stale file is deleted"
 # an armed file whose pid is alive but is not a jwait (pid reuse) is stale too; an executor's live waiter is not the hub's
 mk_dhub sdx; FX jline sdx 20 "[exec-1] DONE nobody waits"
 python3 -c "import time; time.sleep(120)" & SL=$!
-python3 - "$R/.jwait-state/hub-3.armed.json" "$SL" <<'PY'
+mkdir -p "$R/.jwait-state/sdx"; python3 - "$R/.jwait-state/sdx/hub-3.armed.json" "$SL" <<'PY'
 import datetime as dt, json, sys
 json.dump({"pid": int(sys.argv[2]), "stage": "sdx", "caller": "hub-3", "tags": [], "deadline": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)).isoformat()},
           open(sys.argv[1], "w"))
@@ -161,6 +162,20 @@ PY
 armed "$R/waiter2.out"
 tick > /dev/null; check "$(runs sdx)" 2 "R3: a live pid that is not a jwait, and an executor's own live jwait, do not hold the hub back"
 kill $SL 2>/dev/null; kill -TERM $WAITER 2>/dev/null; wait $WAITER 2>/dev/null; WAITER=
+# two stages whose hubs are both `hub-3`: each waiter is seen under its own stage (one file per stage and caller)
+mk_dhub sh2a; FX jline sh2a 20 "[exec-1] DONE a line for stage a"
+mk_dhub sh2b; FX jline sh2b 20 "[exec-1] DONE a line for stage b"
+"$B/jwait" --journal --stage sh2a --caller hub-3 --settle 1 --for 120s > "$R/wa.out" 2>&1 & WA=$!
+"$B/jwait" --journal --stage sh2b --caller hub-3 --settle 1 --for 120s > "$R/wb.out" 2>&1 & WAITER=$!
+armed "$R/wa.out"; armed "$R/wb.out"
+test -f "$R/.jwait-state/sh2a/hub-3.armed.json" -a -f "$R/.jwait-state/sh2b/hub-3.armed.json"; check $? 0 "H2: two stages, both callers hub-3: each waiter has its own armed file"
+TS=sh2a; tick > /dev/null; check "$(runs sh2a)" 1 "H2: the first stage's hub is not woken (its waiter is visible)"
+TS=sh2b; tick > /dev/null; check "$(runs sh2b)" 1 "H2: the second stage's hub is not woken either"
+kill -TERM $WA; wait $WA 2>/dev/null
+test -f "$R/.jwait-state/sh2b/hub-3.armed.json"; check $? 0 "H2: the first waiter ending leaves the second stage's armed file"
+TS=sh2a; tick > /dev/null; check "$(runs sh2a)" 2 "H2: …and the first stage's hub, now without a waiter, is woken"
+TS=sh2b; tick > /dev/null; check "$(runs sh2b)" 1 "H2: …while the second stage's hub still is not"
+kill -TERM $WAITER 2>/dev/null; wait $WAITER 2>/dev/null; WAITER=
 
 # ---------------------------------------------------------------- R3 claude --bg
 U(){ printf '%08d-0000-4000-8000-%012d' "$1" "$1"; }                    # a distinct session id per scenario
@@ -218,6 +233,34 @@ B18=$(U 18); mk_bhub sbstop $B18; FX jline sbstop 16 "[exec-1] DONE a line is wa
 reset_log; FAKE_WD_STOP=fail WD run --stage "$TS" > "$R/tick.out" 2>&1
 check "$(resumed)" 0 "R3 claude-bg: claude stop fails → no resume"
 grep -q "agent-hub: sbstop — wake failed" "$R/notify.log"; check $? 0 "…the owner is notified"
+# H1: a session that appears during the resume without the CLI naming it as a copy is not tied to this call: never stopped
+B21=$(U 21); mk_bhub sbstr $B21; FX jline sbstr 16 "[exec-1] DONE a line is waiting"
+reset_log; : > "$R/notify.log"; FAKE_WD_RESUME=stranger WD run --stage "$TS" > "$R/tick.out" 2>&1
+check "$(calls | grep -c '^stop feedface')" 0 "H1 negative: an unrelated new session during the resume is not stopped"
+check "$(stopped)" 1 "H1: …only the hub itself was stopped (before the resume)"
+python3 - "$FAKE_WD_ROWS" <<'PY'
+import json, sys
+ids = [r["id"] for r in json.load(open(sys.argv[1]))]
+assert "feedface" in ids, ids
+PY
+check $? 0 "H1: …and it is still listed"
+grep -q "wake of hub-4 failed (.*a new session appeared during the resume, not stopped" "$(J sbstr)"; check $? 0 "H1: the journal says a new session appeared, not stopped"
+grep -q "agent-hub: sbstr — wake failed" "$R/notify.log"; check $? 0 "H1: …and the owner is notified"
+# M1: the session turned interactive (opened in a terminal) after the first look: not stopped, not resumed
+B22=$(U 22); mk_bhub sbkind $B22; FX jline sbkind 16 "[exec-1] DONE a line is waiting"
+reset_log; : > "$R/notify.log"; FAKE_WD_KIND=interactive FAKE_WD_KIND_FROM=2 WD run --stage "$TS" > "$R/tick.out" 2>&1
+check "$(( $(resumed) + $(stopped) ))" 0 "M1 negative: the fresh row says interactive/idle → no stop, no resume"
+grep -q "interactive/idle now: not woken" "$(J sbkind)"; check $? 0 "M1: …the journal says so"
+# M2: the copy's `claude stop` fails, or exits 0 and leaves the copy listed: the result says the cleanup failed
+B23=$(U 23); mk_bhub sbcf $B23; FX jline sbcf 16 "[exec-1] DONE a line is waiting"
+reset_log; : > "$R/notify.log"; FAKE_WD_RESUME=copy FAKE_WD_STOP=copy-fail WD run --stage "$TS" > "$R/tick.out" 2>&1
+grep -q "the cleanup failed (claude stop exit 1" "$(J sbcf)"; check $? 0 "M2: a failing stop of the copy → the journal says the cleanup failed"
+grep -q "the copy was stopped" "$(J sbcf)"; check $? 1 "M2 negative: …and does not claim the copy was stopped"
+grep -q "agent-hub: sbcf — wake failed" "$R/notify.log"; check $? 0 "M2: …the owner is notified"
+B24=$(U 24); mk_bhub sbcg $B24; FX jline sbcg 16 "[exec-1] DONE a line is waiting"
+reset_log; FAKE_WD_RESUME=copy FAKE_WD_STOP=copy-ghost WD run --stage "$TS" > "$R/tick.out" 2>&1
+grep -q "the cleanup failed (it is still listed" "$(J sbcg)"; check $? 0 "M2: a stop that exits 0 but leaves the copy listed → the cleanup failed too"
+grep -q "the copy was stopped" "$(J sbcg)"; check $? 1 "M2 negative: …not claimed as stopped"
 # a hub that is not listed (its process is gone) but was started in the background: resumed without a stop
 B19=$(U 19); mk_bhub sbgone $B19; FX jline sbgone 16 "[exec-1] DONE a line is waiting"; FX rows "$FAKE_WD_ROWS"
 reset_log; tick > /dev/null
@@ -260,6 +303,15 @@ neg_r4 sr4young 43 "10 error" "the error is only 10 min old"
 neg_r4 sr4off 44 "16 error" "AGENT_HUB_WATCHDOG_API_ERROR=off" AGENT_HUB_WATCHDOG_API_ERROR=off
 neg_r4 sr4ok 45 "20 ok" "a normal last turn and nothing waiting"
 
+
+# H3: a live own jwait holds R4 back as well (its completion wakes the hub; stop + resume would kill it)
+R4W=$(U 46); mk_bhub sr4w $R4W; FX transcript $R4W 16 error
+"$B/jwait" --journal --stage sr4w --caller hub-4 --settle 1 --for 120s > "$R/waiter3.out" 2>&1 & WAITER=$!
+armed "$R/waiter3.out"; reset_log; tick > /dev/null
+check "$(( $(resumed) + $(stopped) ))" 0 "H3 negative: an API-error turn 16 min old and a live own jwait → no stop, no resume"
+kill -TERM $WAITER; wait $WAITER 2>/dev/null; WAITER=
+reset_log; tick > /dev/null
+check "$(resumed)" 1 "H3 control: the waiter gone → the same hub is woken"
 
 # ---------------------------------------------------------------- R3 night: an open night-queue item inside AGENT_HUB_NIGHT
 NIGHT=2026-10-07T02:00:00; DAY=2026-10-07T12:00:00
@@ -461,12 +513,50 @@ check $? 0 "jwait.hub_filter: the digest jwait's tags and pattern; the hub's own
 grep -q -- "--tag hub-1 --tag hub --match" "$R/take1.out"; check $? 0 "jwait.hub_filter: …the same tags that hub takeover prints in its first jwait command"
 mkdir -p "$R/sj/coordinator/work"
 "$B/jwait" --journal --stage sj --caller hub-9 --settle 1 --for 3s > "$R/j1.out" 2>&1; check $? 3 "jwait: the deadline passes (exit 3)"
-test -f "$R/.jwait-state/hub-9.armed.json"; check $? 1 "jwait: the armed file is gone after exit 3"
+test -f "$R/.jwait-state/sj/hub-9.armed.json"; check $? 1 "jwait: the armed file is gone after exit 3"
 "$B/jwait" --journal --stage sj --caller hub-9 --settle 1 --for 60s > "$R/j2.out" 2>&1 & JW=$!
 armed "$R/j2.out"; "$B/jlog" --stage sj --tag exec-1 "DONE the thing" > /dev/null; wait $JW; check $? 0 "jwait: a line is delivered (exit 0)"
-test -f "$R/.jwait-state/hub-9.armed.json"; check $? 1 "jwait: the armed file is gone after exit 0"
+test -f "$R/.jwait-state/sj/hub-9.armed.json"; check $? 1 "jwait: the armed file is gone after exit 0"
 "$B/jwait" --until "$(utc_hms 2)" --note "alarm only" > "$R/j3.out" 2>&1; check $? 3 "jwait: a pure alarm (no journal) exits 3"
-test -f "$R/.jwait-state/anon.armed.json"; check $? 1 "jwait negative: a pure alarm writes no armed file"
+find "$R/.jwait-state" -name '*anon*.armed.json' 2>/dev/null | grep -q .; check $? 1 "jwait negative: a pure alarm writes no armed file"
+
+# M3: the backoff never overflows (attempt 100: 15 min * 2**99 would not fit a timedelta)
+B81=$(U 81); mk_bhub sm3 $B81; FX jline sm3 16 "[exec-1] DONE a line is waiting"
+reset_log; tick > /dev/null; check "$(resumed)" 1 "M3: first wake"
+python3 - "$R/.state/watchdog/state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); ep = d["stages"]["sm3"]["hub"]["episode"]
+ep["attempts"] = 99; ep["next_try_at"] = None; ep["result"] = "notified"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+reset_log; check "$(tick)" 0 "M3: attempt 100 — the tick exits 0"
+check "$(resumed)" 1 "M3: …and the hub is woken (no OverflowError)"
+check "$(state_val stages sm3 hub episode attempts)" 100 "M3: …the attempt counter moved to 100"
+python3 - "$R/.state/watchdog/state.json" <<'PY'
+import datetime as dt, json, sys
+ep = json.load(open(sys.argv[1]))["stages"]["sm3"]["hub"]["episode"]
+gap = dt.datetime.fromisoformat(ep["next_try_at"]) - dt.datetime.fromisoformat(ep["acted_at"])
+assert gap == dt.timedelta(hours=4), gap
+PY
+check $? 0 "M3: …and the next try is the backoff cap (4 h) away"
+
+# M4: a damaged state file is normalised, with a warning; the tick goes on
+B82=$(U 82); mk_bhub sm4 $B82; FX jline sm4 16 "[exec-1] DONE a line is waiting"
+echo '{"stages": null}' > "$R/.state/watchdog/state.json"
+reset_log; check "$(tick)" 0 "M4: {\"stages\": null} — the tick exits 0"
+check "$(resumed)" 1 "M4: …and the stage is still handled (the hub woken)"
+grep -q "state.json .stages. is not an object" "$R/tick.out"; check $? 0 "M4: …a warning on stderr"
+python3 - "$R/.state/watchdog/state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); assert isinstance(d["stages"], dict) and all(isinstance(v, dict) for v in d["stages"].values()), d
+PY
+check $? 0 "M4: …and the saved state is a dict of dicts"
+echo '{"stages": {"sm4": 5}}' > "$R/.state/watchdog/state.json"
+reset_log; check "$(tick)" 0 "M4: a stage entry that is not an object — the tick exits 0"
+check "$(resumed)" 1 "M4: …the hub is woken"
+grep -q "entry of stage sm4 is not an object" "$R/tick.out"; check $? 0 "M4: …with a warning"
+echo '[1, 2]' > "$R/.state/watchdog/state.json"
+check "$(tick)" 0 "M4: a state that is not even an object — the tick exits 0"
 
 # ---------------------------------------------------------------- never a successor, and one broken stage does not stop the rest
 mkdir -p "$R/sbad"; echo '{' > "$R/sbad/roles.json"
