@@ -1148,8 +1148,9 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         number = hc.hub_number(current.get("tag"))
         if (not current or current.get("session") != predecessor.get("session")
                 or current.get("cli_session_id") != predecessor.get("cli_session_id")
-                or number is not None and number != n
-                or caller_sid and caller_sid not in (current.get("session"), current.get("cli_session_id"))):
+                or number is not None and number != (succ if replace else n)
+                or caller_sid and caller_sid not in (
+                    (retry.get("author"),) if replace else (current.get("session"), current.get("cli_session_id")))):
             raise hc.Failure("the registered predecessor changed before reservation; no successor launched")
         if blocking(pend, succ) and not dry_run:
             raise hc.Failure(f"a successor hub-{succ} is already {'being started' if pend.get('kind') in IN_PROGRESS else 'started'} "

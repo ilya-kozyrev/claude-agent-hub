@@ -49,8 +49,17 @@ def request(req, path=link, pid='saved-project', ok=True):
     return hub('desktop-request','--stage','stage-a','--request',req,'--project-id',pid,'--project-path',path,ok=ok)
 def bind(req, *args, ok=True): return hub('desktop-bind','--stage','stage-a','--request',req,*args,ok=ok)
 def takeover(handoff, req, ok=True, **kwargs):
-    return hub('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,
-               '--desktop-request',req,ok=ok,**kwargs)
+    args=('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,
+          '--desktop-request',req)
+    r=hub(*args,ok=False,**kwargs) if ok and kwargs.get('cwd')==repo else hub(*args,ok=ok,**kwargs)
+    if ok and r.returncode==4:
+        assert not state(handoff.parent)['pending'].get('taken_over') or roles(handoff.parent)['session']==real
+        move=pathlib.Path(next(line[5:] for line in r.stdout.splitlines() if line.startswith('MOVE ')))
+        kwargs['cwd']=move
+        r=hub(*args,ok=True,**kwargs)
+    elif ok:
+        assert r.returncode==0, (r.returncode,r.stdout,r.stderr)
+    return r
 
 home,stage,handoff=setup('desktop')
 r=prepare(handoff)
@@ -111,7 +120,7 @@ assert roles(stage)['session']==old and not state(stage)['pending'].get('taken_o
 rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
 takeover(handoff,req,cwd=repo); p=state(stage)['pending']
 assert roles(stage)['session']==real and roles(stage)['surface']=='desktop'
-assert p['id']==real and p['cwd']==str(repo.resolve()) and p['project_id']=='saved-project'
+assert p['id']==real and pathlib.Path(p['cwd']).parent==repo.resolve()/'.claude/worktrees' and p['project_id']=='saved-project'
 assert p['observed']['model']=='observed-model' and p['observed']['effort']=='medium'
 assert p['requested']['model']=='gpt-6.1-sol' and p['requested']['sandbox_policy']['type']=='danger-full-access'
 assert p['observed']['sandbox_policy']['type']=='danger-full-access' and p['taken_over'] and state(stage)['chain']==1
