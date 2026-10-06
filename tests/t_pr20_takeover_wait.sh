@@ -61,6 +61,57 @@ def command(*args):
                           capture_output=True, text=True, timeout=15)
 
 def l1():
+    # Positive scope controls: shortening the mutex must still serialize role/state publication.
+    scope_home, _, scope_handoff = setup('l1-scope')
+    observed = []
+    def require_locked(label):
+        with open(scope_home / '.auto-handoff-stage-a.lock', 'a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                observed.append(label)
+            else:
+                raise AssertionError(f'L1: {label} must hold the state mutex')
+    original_takeover = ap.on_takeover
+    original_loader = hub['main'].__globals__['load_script']
+    def on_takeover(*args, **kwargs):
+        require_locked('on_takeover')
+        return original_takeover(*args, **kwargs)
+    def loader(name):
+        module = original_loader(name)
+        if name == 'roles':
+            original_set = module.set_role
+            def set_role(*args, **kwargs):
+                require_locked('role update')
+                return original_set(*args, **kwargs)
+            module.set_role = set_role
+        return module
+    ap.on_takeover = on_takeover
+    hub['main'].__globals__['load_script'] = loader
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert hub['main'](['takeover', '--stage', 'stage-a', '--session', new,
+                                '--handoff', str(scope_handoff), '--no-project']) == 0
+    finally:
+        ap.on_takeover = original_takeover
+        hub['main'].__globals__['load_script'] = original_loader
+    assert observed == ['role update', 'on_takeover'], observed
+    original_preflight = ap.desktop_preflight
+    def preflight(*args, **kwargs):
+        require_locked('Desktop preflight')
+        raise hc.Failure('scope-control-stop-before-mutation')
+    ap.desktop_preflight = preflight
+    try:
+        try:
+            hub['main'](['takeover', '--stage', 'stage-a', '--session', new, '--auto-handoff',
+                         '--handoff', str(scope_handoff), '--desktop-request', 'fixture-request'])
+        except hc.Failure as error:
+            assert str(error) == 'scope-control-stop-before-mutation', error
+        else:
+            raise AssertionError('L1: Desktop preflight seam was not called')
+    finally:
+        ap.desktop_preflight = original_preflight
+    assert observed[-1] == 'Desktop preflight', observed
     home, stage, handoff = setup('l1')
     probe = stage / 'mutex-probe.json'
     # The actual most-specific config layer must run check/apply/check outside the state mutex.
