@@ -398,8 +398,8 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    *Why:* a search that cannot find anything reads exactly like "there is none".
 8. **Money and anything that leaves the team go to the owner** as `ask add` with a default action, not as the hub's
    decision — unless a standing permission in the owner's own words names them (`ask allow --list`). *Why:* they are the decisions that cannot be undone by the next commit.
-9. **Grill before you brief** (above). *Why:* a brief with a silent assumption produces confident work on the wrong
-   problem.
+9. **Agree the business result before you brief** (above). *Why:* a silent assumption about the result produces
+   confident work on the wrong problem; details the owner left open belong to the hub.
 10. **A change gets the review its class says** (`hub reviewer --for <class>`): `docs` — documentation, or tooling and
     configuration whose own positive and negative controls ran and are shown in the PR — gets no model review; `code`
     gets one review; `risky` (money, migrations, production, permissions) gets the same single review with its brief
