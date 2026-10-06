@@ -50,7 +50,7 @@ flowchart LR
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
-| `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. With `--journal` it marks itself in `<hub home>/.jwait-state/<caller>.armed.json` while it waits (pid, stage, tags, deadline), so the watchdog can tell a hub that waits from one that sleeps; it removes the file when it ends, also on SIGTERM and SIGHUP. |
+| `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. With `--journal` it marks itself in `<hub home>/.jwait-state/<stage>/<caller>.armed.json` while it waits (pid, stage, tags, deadline), so the watchdog can tell a hub that waits from one that sleeps; it removes the file when it ends, also on SIGTERM and SIGHUP. |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. `ask inbox [--since T] [--stage S] [--json] [--if-quiet]` is the owner's digest across all stages: per stage what finished since the owner's last answer, which questions wait (overdue first), which decisions the hubs took, live and blocked agents; under 2 000 characters, read-only. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
@@ -314,7 +314,7 @@ defect covers nothing and is shown as `INVALID` by
 ├── lock-rules.json                   optional: shared resources and the commands that touch them
 ├── hub-rules.md, HUB-NOTES.md        optional: your rules and notes for every hub (see Configuration layers)
 ├── .jwait-state/<caller>.json        what each jwait caller has already seen
-├── .jwait-state/<caller>.armed.json  a running journal jwait: pid, stage, tags, deadline (removed when it ends)
+├── .jwait-state/<stage>/<caller>.armed.json  a running journal jwait: pid, stage, tags, deadline (removed when it ends)
 ├── .state/                           context-budget warnings, delegation levels (agent discipline)
 ├── .state/watchdog/                  state.json, lock, log.md, run.sh (the job's shim), job.log (watchdog)
 └── <stage>/                          one directory per stream of work
@@ -745,7 +745,7 @@ The rules, the hosts it can wake, the safety rules and what leaves the machine a
 [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken); the settings are in
 [Configuration](#configuration), all hub-wide (hub home `config.json` or the environment, never a repository's).
 Files: `<stage>/do-not-wake.json`; `<state dir>/watchdog/{state.json,lock,log.md,run.sh,job.log}` (`<hub home>/.state`
-or `$AGENT_HUB_STATE_DIR`); `<hub home>/.jwait-state/<caller>.armed.json`; `host:` in a `hub` record of `roles.json`.
+or `$AGENT_HUB_STATE_DIR`); `<hub home>/.jwait-state/<stage>/<caller>.armed.json`; `host:` in a `hub` record of `roles.json`.
 `AGENT_HUB_WATCHDOG_NOW=<ISO time>` replaces the clock of one tick and is for tests only.
 
 ## Limitations

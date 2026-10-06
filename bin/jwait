@@ -32,7 +32,7 @@ Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone
 tomorrow) or --for 6h; default --for 55m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
 sleeps longer pays for re-writing its whole context at every wake; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
-With --journal it marks itself in <root>/.jwait-state/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
+With --journal it marks itself in <root>/.jwait-state/<stage>/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
 waiter is not woken).
 With --journal it also looks, every 10 s, for a headless agent of the stage whose process is gone without a result
 (killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
@@ -177,9 +177,12 @@ class DeadAgentWatch:
             pass
 
 
+def safe_name(name: str) -> str:
+    return re.sub(r"[^\w.-]+", "_", name, flags=re.UNICODE).strip("_") or "anon"
+
+
 def state_path(caller: str) -> Path:
-    safe = re.sub(r"[^\w.-]+", "_", caller, flags=re.UNICODE).strip("_") or "anon"
-    return hc.root() / ".jwait-state" / f"{safe}.json"
+    return hc.root() / ".jwait-state" / f"{safe_name(caller)}.json"
 
 
 def load_state(caller: str) -> dict:
@@ -242,29 +245,29 @@ def hub_filter(stage: str, tag: str) -> Filter:
     return flt
 
 
-# A running journal waiter marks itself in <root>/.jwait-state/<caller>.armed.json, so that the watchdog can tell a hub
+# A running journal waiter marks itself in <root>/.jwait-state/<stage>/<caller>.armed.json (two stages may both have a
+# `hub-1`, so the stage is part of the key), so that the watchdog can tell a hub
 # that waits from one that sleeps without a waiter. It is removed when jwait ends, also on SIGTERM / SIGHUP; a file that
 # a SIGKILL left behind fails the pid check of armed_live().
 ARMED_GRACE_S = 120  # a waiter may overrun its deadline by the settle time of a last batch
 
 
-def armed_path(caller: str) -> Path:
-    path = state_path(caller)
-    return path.with_name(path.stem + ".armed.json")
+def armed_path(caller: str, stage: str) -> Path:
+    return hc.root() / ".jwait-state" / safe_name(stage) / f"{safe_name(caller)}.armed.json"
 
 
 def write_armed(caller: str, stage: str, tags: list, deadline: dt.datetime) -> None:
     rec = {"pid": os.getpid(), "caller": caller, "stage": stage, "tags": tags, "host_session": hc.session_id(),
            "started": hc.now().isoformat(timespec="seconds"), "deadline": deadline.isoformat(timespec="seconds")}
     try:
-        hc.atomic_write(armed_path(caller), json.dumps(rec, ensure_ascii=False) + "\n")
+        hc.atomic_write(armed_path(caller, stage), json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError:
         pass  # a read-only home: the waiter works, the watchdog just cannot see it
 
 
-def clear_armed(caller: str) -> None:
+def clear_armed(caller: str, stage: str) -> None:
     """Remove this process's own armed file (another jwait of the same caller may have replaced it since)."""
-    path = armed_path(caller)
+    path = armed_path(caller, stage)
     try:
         if json.loads(path.read_text(encoding="utf-8")).get("pid") == os.getpid():
             path.unlink()
@@ -292,7 +295,7 @@ def armed_live(caller: str, stage: str, at=None, reap: bool = True):
     """The armed record of `caller`'s journal waiter on `stage` when that waiter lives (its pid runs a jwait and its
     deadline has not passed), else None. A stale file (dead pid, a pid that now runs something else, a passed
     deadline) is removed when `reap`; a process table that cannot be read counts as alive (never wake blind)."""
-    path = armed_path(caller)
+    path = armed_path(caller, stage)
     try:
         rec = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -473,7 +476,7 @@ def main(argv: list) -> int:
         return 130
     finally:
         if args.journal:
-            clear_armed(caller)
+            clear_armed(caller, stage)
 
 
 def fmt_deadline(t) -> str:

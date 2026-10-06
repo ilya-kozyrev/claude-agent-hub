@@ -172,14 +172,25 @@ def wd_dir() -> Path:
 
 
 def load_state() -> dict:
+    """The saved state, normalised: `stages` is a dict of dicts. Anything else (a hand-edited or damaged file) is reset
+    with a warning, so one bad value cannot make every later tick fail on it."""
     try:
         data = json.loads((wd_dir() / "state.json").read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            data.setdefault("stages", {})
-            return data
     except (OSError, ValueError):
-        pass
-    return {"stages": {}}
+        return {"stages": {}}
+    if not isinstance(data, dict):
+        print("watchdog: state.json is not a JSON object: state reset", file=sys.stderr)
+        return {"stages": {}}
+    stages = data.get("stages")
+    if not isinstance(stages, dict):
+        if stages is not None or "stages" in data:
+            print("watchdog: state.json `stages` is not an object: stages reset", file=sys.stderr)
+        stages = {}
+    for name in [k for k, v in stages.items() if not isinstance(v, dict)]:
+        print(f"watchdog: state.json entry of stage {name} is not an object: reset", file=sys.stderr)
+        stages[name] = {}
+    data["stages"] = stages
+    return data
 
 
 def save_state(state: dict) -> None:
@@ -704,8 +715,9 @@ def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
         return {"ok": False, "how": how, "detail": "`claude agents --json` failed: not resuming blind"}
     row = running_row(rows, o["sid"])
     if row is not None:
-        if row.get("status") != "idle":
-            return {"ok": False, "how": how, "detail": f"the hub is {row.get('status')} now: not woken"}
+        if row.get("status") != "idle" or row.get("kind") != "background":
+            # a session the owner opened in a terminal meanwhile is interactive: stopping it would end their window
+            return {"ok": False, "how": how, "detail": f"the hub is {row.get('kind')}/{row.get('status')} now: not woken"}
         stop = run([cli.path, "stop", row.get("id") or sid8], 30, cwd)
         if stop.returncode != 0:
             return {"ok": False, "how": how, "detail": f"claude stop exit {stop.returncode}: {first_line(stop.stderr or stop.stdout)}"}
@@ -716,12 +728,22 @@ def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
     res = run([cli.path, "--bg", "--resume", o["sid"], text], 90, cwd)
     out = autopilot.clean((res.stdout or "") + "\n" + (res.stderr or ""))
     after = autopilot.list_agents(cli.path, cwd) or []
-    copies = {started_copy(out)} - {None} | {r.get("id") for r in after
-                                              if r.get("id") not in before and r.get("sessionId") not in (None, o["sid"])}
-    if copies or re.search(r"\bcopy\b", out, re.I):
-        for cid in copies:
-            run([cli.path, "stop", cid], 30, cwd)
-        return {"ok": False, "how": how, "detail": "the CLI started a copy of the session" + ("; the copy was stopped" if copies else "")}
+    copy = started_copy(out)  # the only session tied to this resume call: the one the CLI itself named
+    if copy:
+        stop = run([cli.path, "stop", copy], 30, cwd)
+        left = autopilot.list_agents(cli.path, cwd)
+        listed = left is None or any(copy in (r.get("id"), r.get("sessionId")) for r in left)
+        if stop.returncode == 0 and not listed:
+            return {"ok": False, "how": how, "detail": f"the CLI started a copy of the session ({copy}); the copy was stopped"}
+        why = (f"claude stop exit {stop.returncode}: {first_line(stop.stderr or stop.stdout)}" if stop.returncode
+               else "it is still listed by `claude agents`" if left is not None else "`claude agents --json` failed")
+        return {"ok": False, "how": how, "detail": f"the CLI started a copy of the session ({copy}) and the cleanup failed "
+                                                   f"({why}): stop it by hand with `claude stop {copy}`"}
+    fresh = [r.get("id") for r in after if r.get("id") not in before and r.get("sessionId") not in (None, o["sid"])]
+    if fresh or re.search(r"\bcopy\b", out, re.I):
+        # never stop a session that cannot be tied to this call: it may be an agent the owner started meanwhile
+        return {"ok": False, "how": how, "detail": "a new session appeared during the resume, not stopped"
+                                                   + (f" ({', '.join(str(f) for f in fresh)})" if fresh else "")}
     return {"ok": res.returncode == 0, "how": how,
             "detail": f"exit {res.returncode}: {first_line(out)}" if res.returncode else first_line(out)}
 
@@ -784,7 +806,7 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
         tick.journal(stage, f"{tag}'s jwait does not match {len(lines)} lines addressed to it, waiting since "
                             f"{lines[0][0]:%H:%M}")
         tick.say(stage, "R3", f"{tag} has a live jwait that does not match {len(lines)} waiting lines: not woken")
-    if not (silent and (dead or ((lines or night) and not armed))):
+    if not (silent and not armed and (dead or lines or night)):  # a live own jwait is woken by its own match: a stop would kill it
         if ep and not (lines or night or raw_dead):
             hs["episode"] = None
         return
@@ -805,7 +827,12 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
 def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, dead, night, silent_min: int) -> None:
     now, tag = tick.now, rec.get("tag") or "hub"
     attempts = int(ep.get("attempts") or 0) + 1
-    delay = min(tick.wake_after * (2 ** (attempts - 1)), tick.backoff_max)
+    delay = tick.wake_after
+    for _ in range(min(attempts - 1, 64)):  # double up to the cap; never build a timedelta that overflows
+        if delay >= tick.backoff_max:
+            break
+        delay *= 2
+    delay = min(delay, tick.backoff_max)
     wakeable = o["transport"] != "notify" and o["busy"] is False
     bg = o["host"] in ("claude-bg", "claude-gone-bg") and o["row"] is not None
     if not tick.dry:
@@ -984,12 +1011,27 @@ def cron_line(shim: Path, minutes_: int) -> str:
         spec = f"0 */{minutes_ // 60} * * *"
     else:
         raise hc.UsageError("cron runs the job every 1-59 minutes or a whole number of hours (AGENT_HUB_WATCHDOG_EVERY)")
-    return f"{spec} {shlex.quote(str(shim))}  {CRON_MARKER} {hc.root()}"
+    return cron_escape(f"{spec} {shlex.quote(str(shim))}  {CRON_MARKER} {hc.root()}")
+
+
+def cron_escape(command_line: str) -> str:
+    """cron turns an unescaped `%` of the command into a newline (the rest becomes stdin): `\\%` keeps it a percent."""
+    return command_line.replace("%", "\\%")
 
 
 def read_crontab() -> list:
-    res = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-    return res.stdout.splitlines() if res.returncode == 0 else []
+    """The user's crontab lines. Empty only when `crontab -l` says there is none; any other failure raises, so that
+    install / uninstall never rewrite a crontab they could not read."""
+    try:
+        res = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    except OSError as e:
+        raise hc.Failure(f"crontab -l could not run ({e}): the crontab is untouched") from None
+    if res.returncode == 0:
+        return res.stdout.splitlines()
+    if res.returncode == 1 and "no crontab" in (res.stderr or "").lower():
+        return []
+    raise hc.Failure(f"crontab -l failed (exit {res.returncode}: {first_line(res.stderr or res.stdout)}): "
+                     "the crontab is untouched")
 
 
 def write_crontab(lines: list) -> None:
@@ -999,7 +1041,8 @@ def write_crontab(lines: list) -> None:
 
 
 def own_cron(line: str) -> bool:
-    return line.rstrip().endswith(f"{CRON_MARKER} {hc.root()}")
+    tail = f"{CRON_MARKER} {hc.root()}"
+    return line.rstrip().endswith((tail, cron_escape(tail)))
 
 
 def set_home_flag(on: bool) -> None:

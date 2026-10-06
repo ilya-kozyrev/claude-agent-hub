@@ -20,7 +20,7 @@
   (local, and `AGENT_HUB_NOTIFY_CMD` for a phone push) carries only the stage name, minutes, counts and an event word. New
   hub-wide settings: `AGENT_HUB_WATCHDOG`, `_EVERY`, `_WAKE_AFTER`, `_BACKOFF_MAX`, `_NIGHT_QUEUE`, `_API_ERROR`,
   `AGENT_HUB_NOTIFY_LOCAL`, `AGENT_HUB_NOTIFY_CMD`; setup asks about it as question 9. Supporting changes: `jwait
-  --journal` writes `.jwait-state/<caller>.armed.json` while it waits, `hub takeover` records `host:` in the hub's
+  --journal` writes `.jwait-state/<stage>/<caller>.armed.json` while it waits, `hub takeover` records `host:` in the hub's
   `roles.json` record and prints the watchdog line in its digest, and `agent.dead_candidates` lists what `observe_dead`
   would write without writing it. The Desktop night-nudge task (`templates/night-nudge-task.md`) is deprecated; the docs
   no longer call night support macOS-and-Desktop only. **Release note:** update both engines (the Claude and the Codex

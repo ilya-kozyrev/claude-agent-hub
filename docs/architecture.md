@@ -173,7 +173,7 @@ one that no rule names any more. `repo` `"*"` guards every repo.
 `- [ ] action | stop: condition | class: local|dev|stage|main|prod [| yes: DATE "owner quote"]`; `prod` needs `yes:`.
 
 **Watchdog files** (written by `watchdog`, `jwait` and `hub takeover`; [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken)):
-`<stage>/do-not-wake.json` is `{"by", "at", "until" (or null), "reason"}`; `<hub home>/.jwait-state/<caller>.armed.json` is
+`<stage>/do-not-wake.json` is `{"by", "at", "until" (or null), "reason"}`; `<hub home>/.jwait-state/<stage>/<caller>.armed.json` is
 `{"pid", "caller", "stage", "tags", "host_session", "started", "deadline"}` and exists while a journal `jwait` of that caller
 waits; the `hub` record of `roles.json` gains `"host"` (`desktop`, `detached`, `bg` or `term`) at `hub takeover`;
 `<state dir>/watchdog/` holds `state.json` (the episode of each stage's hub, the questions already reported), `lock`, `log.md`,

@@ -77,7 +77,7 @@ can be woken.
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
-the hub took over. "No `jwait` of its own" is the file `.jwait-state/<caller>.armed.json`, which `jwait --journal` writes
+the hub took over. "No `jwait` of its own" is the file `.jwait-state/<stage>/<caller>.armed.json`, which `jwait --journal` writes
 while it waits; a file whose process is gone is ignored and deleted. When a live waiter exists but lines still wait, the
 watchdog does not wake: it writes one journal line (no status word, no `@`) saying that the waiter does not match them.
 The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no status word and no `@`, so they never count as waiting; the R2 line is addressed to the hub on purpose and does. Times are `AGENT_HUB_WATCHDOG_WAKE_AFTER` (15m).
