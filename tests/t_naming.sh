@@ -91,4 +91,28 @@ python3 -c 'import json,sys; roles=json.load(open(sys.argv[1]))["roles"]; assert
 head -1 $R/yc-cutover/questions.md 2>/dev/null | grep -q "yc-cutover" || [ ! -e $R/yc-cutover/questions.md ]; check $? 0 "…the question register's heading, when there is one"
 $B/lock list > $P.ll.out 2>&1; grep -q 'Hub yc-cutover #1' $P.ll.out && grep -q 'yc-cutover: the deploy window' $P.ll.out && ! grep -q 'yc-move' $P.ll.out; check $? 0 "…the board's lock notes name the new stage"
 grep -q 'unrelated: the move to a cheaper cloud' $P.ll.out; check $? 0 "…and another stage's lock is left alone"
+
+# ---- the recovery hints carry the goal placeholder
+$B/jlog --stage nosuch-stage "x" > /dev/null 2> $P.h1.err; grep -q -- 'hub start --stage S --goal' $P.h1.err; check $? 0 "jlog's no-tag hint shows hub start with --goal"
+$B/tell retro-fixes "x" > /dev/null 2> $P.h2.err; grep -q -- 'hub start --stage S --goal' $P.h2.err; check $? 0 "tell's no-tag hint shows hub start with --goal"
+$B/hub takeover --stage nosuch-stage --session $H1 > /dev/null 2> $P.h3.err; grep -q -- 'hub start --stage nosuch-stage --goal' $P.h3.err; check $? 0 "takeover of a missing stage points at hub start with --goal"
+
+# ---- a rename that cannot go through leaves the stage where and what it was
+$B/hub start --stage fix-quotes --goal "Fix quotes" --session $H1 > /dev/null 2>&1; check $? 0 "setup: a stage to rename"
+echo '{"chain": 1, "pending": {' > $R/fix-quotes/auto-handoff.json
+before=$(snap $R); $B/hub rename --stage fix-quotes --to quotes-fixed > $P.bad.out 2> $P.bad.err; check "$?:$([ -d $R/fix-quotes ] && echo kept || echo gone):$([ -e $R/quotes-fixed ] && echo made || echo none)" "1:kept:none" "negative: a corrupt json file stops the rename before anything moves"
+grep -q "auto-handoff.json cannot be read as JSON" $P.bad.err && grep -q "nothing was renamed" $P.bad.err; check $? 0 "…the message names the file"
+check "$(snap $R)" "$before" "…and nothing changed"
+echo '{"chain": 1, "pending": null}' > $R/fix-quotes/auto-handoff.json
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p $R/fix-quotes/agents/b1; echo '{"role": "b1", "stage": "fix-quotes", "pid": 999999}' > $R/fix-quotes/agents/b1/meta.json; chmod 555 $R/fix-quotes/agents/b1
+  before=$(snap $R); $B/hub rename --stage fix-quotes --to quotes-fixed > $P.wf.out 2> $P.wf.err; rc=$?; chmod 755 $R/fix-quotes/agents/b1 $R/quotes-fixed/agents/b1 2> /dev/null
+  check "$rc:$([ -d $R/fix-quotes ] && echo kept || echo gone):$([ -e $R/quotes-fixed ] && echo made || echo none)" "1:kept:none" "negative: a write that fails half-way is rolled back (directory back, nothing at the new name)"
+  grep -q "rolled back" $P.wf.err; check $? 0 "…and says so"
+  check "$(snap $R)" "$before" "…every json file is as it was"
+  rm -rf $R/fix-quotes/agents/b1
+else
+  echo "SKIP rollback of a failed write (running as root: a read-only directory does not stop it)"
+fi
+$B/hub rename --stage fix-quotes --to quotes-fixed > $P.ok.out 2>&1; check "$?:$([ -d $R/quotes-fixed ] && echo there || echo none)" "0:there" "control: once the cause is gone, the same rename goes through"
 exit $fail
