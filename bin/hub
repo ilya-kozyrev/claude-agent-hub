@@ -377,9 +377,9 @@ def holder_of(sid: str):
 
 
 def live_elsewhere(sid: str, stage: str) -> bool:
-    """The session has a live role in another stage and none in `stage`."""
-    live = {h[0] for h in registry_of(sid)[0] if h[3]}
-    return bool(live) and stage not in live
+    """The session has a live role in a stage other than `stage` (whatever it has in `stage`: that is not the
+    previous hub alone any more)."""
+    return any(h[3] and h[0] != stage for h in registry_of(sid)[0])
 
 
 def holder_activity(stage, rec) -> str:

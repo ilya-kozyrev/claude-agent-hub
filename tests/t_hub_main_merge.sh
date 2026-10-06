@@ -116,7 +116,7 @@ check "$(holder)" $PREV "…its main-merge stays with it"
 grep -q 'left alone; take it with --take-main-merge' $P/r1c.out; check $? 0 "…and is reported"
 setup $PREV; addrole stage-b live hub $PREV hub-40; takeover --take-main-merge > $P/r1d.out 2>&1
 check "$(holder)" $NEW "…the explicit flag still takes it"
-grep -q 'of stage stage-b: its latest journal line is' $P/r1d.out; check $? 0 "…naming the stage it lives in"
+grep -q 'ATTENTION: main-merge (webapp) is taken from .* of stage unknown' $P/r1d.out; check $? 0 "…saying the stage cannot be told (live in two stages)"
 # 2. only a hub's lock goes with the config flag: a steward of this stage merging is not touched
 setup $STEWARD; addrole stage-a live merge-steward $STEWARD steward-1; takeover > $P/r2.out 2>&1; check $? 0 "takeover, main-merge held by a live agent of this stage"
 check "$(holder)" $STEWARD "…the config flag leaves it"
