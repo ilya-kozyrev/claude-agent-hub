@@ -24,6 +24,19 @@
   the per-model price the agents' results show, flagged `hub_basis: "estimate"`), and `hub_share`; `--once` prints it.
   Tests: `tests/t_agent_top_honest.sh` (a resumed Claude log, a resumed Codex log, a two-day journal, the share, a
   hub transcript read in pieces; it fails on 0.8.4's code) and a hub with a 5 MB transcript in `tests/t_agent_top_perf.sh`.
+- **A hub's `pkill -f "<words>"` can no longer kill agents, and an agent that died without a trace wakes the hub.**
+  `agent spawn`, a resume and `agent send` to a stopped agent pass the brief and the messages to the CLI on stdin
+  (`claude -p`, `codex exec -` / `exec resume <id> -`; the prompt is `prompt-<run>.txt` in the agent's directory), so no
+  command line holds brief text, the exit-note wrapper included; the brief footer gains two rules: stop only
+  processes you started and never `pkill -f` / `killall` with free text; never print environment variables or secret
+  files, and remove a secret the task needed before DONE. When an agent's process is gone without a result (`kill -9`
+  of the whole group takes the wrapper with it), the first observer — `agent status` or the poll of `jwait --journal`
+  (every 10 s) — journals `EXIT <role>: killed (no result)` once per run, which the hub's default `jwait` match wakes on.
+  The run's pid is now recorded when the process starts, not after its init event, so a resumed agent is never seen as
+  dead; `agent stop` is never reported. The observer decides from the log and meta read after the process is confirmed gone, under a per-agent lock (`.agent.lock`); where nothing can be written (a read-only sandbox running `agent status`) the observation is skipped and the status is still printed; `agent send` holds the same lock from reading the meta to saving it, so concurrent sends resume once and no queued message is overwritten, and each run reads its own `prompt-<run>.txt`. `agent-top` stays a pure viewer and does not observe. Tests:
+  `tests/t_prompt_argv.sh` (`ps -ww` shows no prompt text and `pkill -f` leaves the agent alive, both engines, spawn
+  and resume), `tests/t_agent_dead.sh` (three concurrent observers write one line; the wrapper's own EXIT is not
+  doubled; a result written just before the exit is not "killed"), `tests/t_agent_send_race.sh`; all fail on 0.8.4.
 
 ## 0.8.5 — 2026-10-06
 

@@ -170,5 +170,6 @@ one that no rule names any more. `repo` `"*"` guards every repo.
 `- [ ] action | stop: condition | class: local|dev|stage|main|prod [| yes: DATE "owner quote"]`; `prod` needs `yes:`.
 
 **Agent meta** (`agents/<role>/meta.json`): role, tag, stage, session_id, model, effort, permission_mode, cwd, brief,
-report, worktree (path, branch; with `--worktree`), runs (`pid`, `at`, `kind` spawn/resume), pid, inbox_unread. An agent is alive when its pid is alive **and**
-that process's command line contains its session id (guards against pid reuse).
+report, worktree (path, branch; with `--worktree`), runs (`pid`, `at`, `kind` spawn/resume; written as soon as the run's process exists), pid, inbox_unread. An agent is alive when its pid is alive **and**
+that process's command line contains its session id (guards against pid reuse). The prompt of the latest run is
+`prompt-<run>.txt` beside it: the CLI reads it on stdin, so no brief text is in any command line.

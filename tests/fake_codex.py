@@ -9,7 +9,7 @@ if not args or args[0] != 'exec':
  sys.exit('expected exec')
 resume = len(args)>1 and args[1]=='resume'
 sid = args[2] if resume else str(uuid.uuid4())
-prompt = args[-1]
+prompt = sys.stdin.read() if args[-1]=='-' else args[-1]  # `-` = read the prompt from stdin, as the real CLI does
 with open('codex-argv.jsonl','a') as f:
  f.write(json.dumps(args[:-1])+'\n')
 with open('codex-env.jsonl','a') as f:

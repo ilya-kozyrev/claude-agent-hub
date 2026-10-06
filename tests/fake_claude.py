@@ -3,13 +3,14 @@
 
 FAKE_CLAUDE=ok (default): init event, FAKE_HOLD seconds of work, one assistant line, result.
 FAKE_CLAUDE=die: no init, exits 1 after 2 s (a CLI that rejects its flags slowly).
-FAKE_CLAUDE=hang: alive for 60 s without an init event.
+FAKE_CLAUDE=hang: alive for 60 s without an init event. FAKE_INIT_DELAY=<s>: that long before the init event.
 FAKE_READ_INBOX=1: a Bash tool call on inbox.md after the hold; FAKE_FINAL=<text>: the last answer.
 FAKE_TURNS=<n>: n extra assistant messages (distinct ids) before the last answer.
 `--version` prints FAKE_VERSION (default 2.1.287) like the real CLI and exits, leaving no log: FAKE_VERSION_BANNER
 is printed on a line before it (a version manager's shim), FAKE_VERSION_LOG is a file that gets one line per call.
 The init event carries
 `model`: FAKE_MODEL, else the --model value with an alias resolved the way a current CLI does (sonnet -> claude-sonnet-5-5).
+The prompt is read from stdin when -p is the last argument (what the plugin does), else it is the argument after -p.
 Every prompt is appended to ./prompts.log, every argv (minus the prompt) to ./argv.log and the environment the
 plugin sets for the CLI (the first PATH entry, HUB_BIN, the background-wait ceiling and the hub home) to ./env.log, so a test can see what the
 agent was told, with which flags and settings.
@@ -29,7 +30,8 @@ def opt(name):
     return argv[argv.index(name) + 1] if name in argv else None
 
 sid = opt("--session-id") or opt("--resume")
-prompt = opt("-p") or ""
+# the prompt: the argument after -p (the old way), else stdin (`claude -p` without one reads it from there)
+prompt = opt("-p") if "-p" in argv[:-1] else (sys.stdin.read() if "-p" in argv else "")
 with open("prompts.log", "a", encoding="utf-8") as fh:
     fh.write(prompt + "\n=====\n")
 with open("argv.log", "a", encoding="utf-8") as fh:
@@ -51,6 +53,7 @@ def emit(ev):
 ALIASES = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "haiku": "claude-haiku-4-5-20251001",
            "fable": "claude-fable-5-1"}
 model = os.environ.get("FAKE_MODEL") or ALIASES.get(opt("--model") or "", opt("--model"))
+time.sleep(float(os.environ.get("FAKE_INIT_DELAY", "0")))  # a slow start: MCP servers connecting
 emit({"type": "system", "subtype": "init", "session_id": sid, "model": model})
 time.sleep(float(os.environ.get("FAKE_HOLD", "0")))
 if os.environ.get("FAKE_READ_INBOX"):

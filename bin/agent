@@ -12,12 +12,13 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
   agent stop R [--stage S]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
-brief.md (copy of the brief), inbox.md (messages while the agent runs).
+brief.md (copy of the brief), inbox.md (messages while the agent runs), prompt-<run>.txt (the prompt of each run, written once).
 spawn: `claude -p` with a fixed --session-id, --output-format stream-json --verbose and a permission mode
 (default bypassPermissions: nobody is there to approve a tool call; $AGENT_HUB_PERMISSION_MODE or
---permission-mode changes it), in its own session and process group (setsid), stdin from /dev/null: it
-survives the calling shell and the calling session. The hub home is the caller's, pinned in the agent's
-$AGENT_HUB_HOME, and granted with `--add-dir <hub home>` when it is not under the agent's cwd (spawn and every
+--permission-mode changes it), in its own session and process group (setsid): it survives the calling shell and
+the calling session. The prompt (brief and footer, or a resume message) is the run's stdin, read from prompt-<run>.txt, for
+both engines (`claude -p`, `codex exec -`): never argv, which `ps` shows to every `pkill -f`.
+The hub home is the caller's, pinned in the agent's $AGENT_HUB_HOME, and granted with `--add-dir <hub home>` when it is not under the agent's cwd (spawn and every
 resume): the agent writes its journal lines and report there without a prompt, also under the Bash sandbox.
 The agent gets HUB_TAG=<tag>, HUB_STAGE and this
 plugin's bin/ first on PATH and in $HUB_BIN (the brief footer names jlog as "$HUB_BIN/jlog", since a shell may put
@@ -47,7 +48,7 @@ merged. Two agents in one checkout overwrite each other's files: give each write
 status: alive or not, the model, age of the last log event, model turns (of the last run, with the total once the
 agent was resumed), the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
-the session is resumed detached with `claude --resume <id> -p "msg"` in the same cwd, the unread
+the session is resumed detached with `claude --resume <id> -p` (the message on stdin) in the same cwd, the unread
 messages replayed first (an agent that ended its turn before reading its inbox loses nothing;
 agent status flags them). spawn and resume succeed only once the run writes its init event
 (120 s, $AGENT_INIT_TIMEOUT); a CLI that rejects its flags is killed and reported, and no role is recorded.
@@ -60,6 +61,7 @@ Exit: 0 ok, 1 failure / unknown agent, 2 usage.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -127,6 +129,10 @@ other end: questions asked in chat are read by no one. The brief above is your c
 - Messages that arrive while you work: `{inbox}` — read it after every major step and before finishing.
 - The end of your turn is the end of the process. Keep long commands attached and wait for their completion
   through the host's execution tools; do not end your turn while a command you need still runs.
+- Stop only processes you started, by the pid or process group you recorded; never `pkill -f` or `killall` with free
+  text: it matches other agents' command lines.
+- Never print environment variables or secret files. A secret the task needs stays inside your worktree and is
+  removed before DONE.
 - Commit unfinished work before long runs: an interrupted turn loses whatever is uncommitted.
 """
 
@@ -261,6 +267,30 @@ def agent_dir(stage: str, role: str) -> Path:
     return hc.root() / hc.check_stage(stage) / "agents" / role
 
 
+class AgentLock:
+    """Per-agent lock (`.agent.lock` in the agent's directory) around everything that reads meta.json, decides from it
+    and writes it back or starts a process: `agent send` (queue or resume), and the observers' claim of a run's end.
+    Blocking by default; with blocking=False a holder elsewhere leaves `held` False and the caller skips (an observer
+    must not wait out a resume's init wait)."""
+
+    def __init__(self, stage: str, role: str, blocking: bool = True):
+        self.path, self.blocking, self.held, self.fh = agent_dir(stage, role) / ".agent.lock", blocking, False, None
+
+    def __enter__(self):
+        self.fh = open(self.path, "a")
+        try:
+            fcntl.flock(self.fh, fcntl.LOCK_EX | (0 if self.blocking else fcntl.LOCK_NB))
+            self.held = True
+        except BlockingIOError:
+            self.fh.close()
+        return self
+
+    def __exit__(self, *exc):
+        if self.held:
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+
+
 def claude_bin(cwd=None) -> str:
     """The CLI to start (hubcore.find_claude: $CLAUDE_BIN, else the newer of `claude` on PATH and Claude Desktop's)."""
     cli = hc.find_claude(cwd)
@@ -365,7 +395,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     if engine == "codex":
         argv = engines.codex_argv(meta, prompt, resume)
     else:
-        argv = claude_argv(meta, prompt, resume)
+        argv = claude_argv(meta, resume)
     log = d / "log.jsonl"
     offset = log.stat().st_size if log.exists() else 0
     note = 'marker=$1; shift; "$@"; c=$?; python3 "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
@@ -378,10 +408,30 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     else:
         env.update({"PLUGIN_ROOT": str(hc.BIN.parent), "CLAUDE_PLUGIN_ROOT": str(hc.BIN.parent),
                     "AGENT_HUB_CODEX_MODEL": meta.get("model") or "", "AGENT_HUB_CODEX_EFFORT": meta.get("effort") or ""})
-    with open(log, "ab") as out, open(d / "stderr.log", "ab") as err:
-        proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+    # The prompt is the run's stdin, never argv: `ps` shows every command line, so a hub's `pkill -f "<words of the
+    # brief>"` would otherwise kill the agents whose briefs hold the words (N2-01).
+    # One file per run, created exclusively and never rewritten: a run reads exactly the prompt it was started with.
+    run_id = uuid.uuid4().hex[:12]
+    stdin_file = d / f"prompt-{run_id}.txt"
+    fd = os.open(stdin_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(prompt)
+    with open(log, "ab") as out, open(d / "stderr.log", "ab") as err, open(stdin_file, "rb") as inp:
+        proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=inp, stdout=out, stderr=err,
                                 env=env, start_new_session=True, close_fds=True)
-    init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine)
+    # The run is on record from the moment it exists: an observer that finds the pid gone then sees this run's pid, not
+    # the previous run's (a resumed agent would otherwise look dead until the init event).
+    before = (meta.get("pid"), list(meta.get("runs") or []))
+    meta["pid"] = proc.pid
+    meta.setdefault("runs", []).append({"pid": proc.pid, "at": hc.now().isoformat(timespec="seconds"),
+                                        "kind": "resume" if resume else "spawn", "prompt": stdin_file.name})
+    save_meta(meta["stage"], meta["role"], meta)
+    try:
+        init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine)
+    except hc.Failure:
+        meta["pid"], meta["runs"] = before[0], before[1]
+        save_meta(meta["stage"], meta["role"], meta)
+        raise
     meta["session_id"] = init["session_id"]
     model = init.get("model")
     if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
@@ -389,8 +439,9 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     return proc.pid
 
 
-def claude_argv(meta: dict, prompt: str, resume: bool) -> list:
-    # Session flags first: the id stays at the head of `ps` output whatever the prompt size.
+def claude_argv(meta: dict, resume: bool) -> list:
+    """The command line of a run; the prompt is not in it: `-p` without a prompt argument reads it from stdin."""
+    # Session flags first: the id stays at the head of `ps` output.
     argv = [claude_bin(meta["cwd"])]
     argv += ["--resume", meta["session_id"]] if resume else ["--session-id", meta["session_id"]]
     argv += ["--model", meta["model"]]
@@ -401,8 +452,7 @@ def claude_argv(meta: dict, prompt: str, resume: bool) -> list:
     argv += hc.add_dir_args(meta["cwd"])  # before -n / -p: --add-dir takes several values
     if not resume:
         argv += ["-n", meta["title"]]
-    argv += ["-p", prompt]
-    return argv
+    return argv + ["-p"]
 
 
 def model_name(meta: dict) -> str:
@@ -529,9 +579,7 @@ def cmd_spawn(a) -> int:
     except hc.Failure:
         d.rename(d.with_name(f"{a.role}.failed-{time.strftime('%Y%m%d-%H%M%S')}"))
         raise
-    meta["pid"] = pid
-    meta["runs"].append({"pid": pid, "at": hc.now().isoformat(timespec="seconds"), "kind": "spawn"})
-    save_meta(stage, a.role, meta)
+    save_meta(stage, a.role, meta)  # launch recorded the pid and the run; this keeps the init event's session id
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
                        note=f"agent-spawn {model_name(meta)}", pid=pid, cwd=str(cwd), log=str(d / "log.jsonl"))
     with hc.roles_lock(stage):
@@ -646,6 +694,122 @@ def pending_unread(meta: dict) -> list:
     return pending
 
 
+OBSERVE_WINDOW_S = 24 * 3600  # a run that died longer ago than this is history, not news
+
+
+def process_gone(meta: dict) -> bool:
+    """Whether the recorded run's process is certainly gone: no such pid, or a pid that now runs another command line.
+    Unlike alive(), a `ps` that shows nothing (a sandbox hiding other processes) is not "gone": the observers below
+    write to the journal once and for all, so they need a certain answer."""
+    pid = meta.get("pid")
+    if not isinstance(pid, int) or not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass
+    try:
+        cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    return bool(cmd.strip()) and (meta.get("process_token") or meta["session_id"]) not in cmd
+
+
+def exit_marker(stage: str, meta: dict) -> Path:
+    run = (meta.get("runs") or [{}])[-1]
+    key = re.sub(r"[^\w.-]+", "_", f"{meta['role']}.{meta.get('pid')}.{run.get('at', '')}")
+    return hc.state_dir() / "agent-exits" / stage / key
+
+
+def claim_exit(stage: str, meta: dict) -> bool:
+    """True for the first caller to claim the end of this agent's latest run (atomic: O_CREAT|O_EXCL on a marker under
+    the state dir, never in the agent's own directory), False for every later one. The claim decides who writes the EXIT
+    line, so it is written once however many observers (agent status, jwait, the exit-note wrapper) see the end."""
+    path = exit_marker(stage, meta)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+    except FileExistsError:
+        return False
+    return True
+
+
+BUSY = object()  # observe_death: a start or resume holds the agent's lock; try again later
+
+
+def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
+    """An agent whose process is gone without a result of its latest run (kill -9, a crash of the whole group: the
+    exit-note wrapper died with it) is journaled once, by whoever notices first: `EXIT <role>: killed (no result)`,
+    under the agent's tag, the line the hub's default jwait wakes on. Returns the line, None (nothing to report, or
+    another observer wrote it, or nothing can be written here) or BUSY. Only for a recent death (`mtime` of the log); the caller checks the role is
+    registered (agent stop retires it).
+
+    The decision is made under the agent's lock, from what is on disk after the process is confirmed gone: the meta
+    (a resume that started meanwhile changed the pid) and the log (a run that wrote its result and exited between the
+    caller's read and now is not killed). A start or resume holds the lock for its whole init wait: no waiting here."""
+    if mtime is None or hc.now().timestamp() - mtime.timestamp() > OBSERVE_WINDOW_S:
+        return None
+    try:
+        with AgentLock(stage, meta["role"], blocking=False) as lock:
+            if not lock.held:
+                return BUSY
+            try:
+                fresh = load_meta(stage, meta["role"])
+            except hc.Failure:
+                return None
+            if not process_gone(fresh):
+                return None
+            info = read_log(Path(fresh["dir"]) / "log.jsonl")
+            if info["result"] and not info["running_after_result"]:
+                return None
+            if not claim_exit(stage, fresh):
+                return None
+            last = (info["last_text"] or "").strip().splitlines()
+            try:
+                return hc.journal_append(stage, fresh["tag"], f"EXIT {fresh['role']}: killed (no result); turns "
+                                         f"{turns_text(info)}{'; last: ' + last[-1][:160] if last else ''} — agent status "
+                                         f"{fresh['role']}")
+            except OSError:
+                exit_marker(stage, fresh).unlink(missing_ok=True)  # not written: the next observer may try
+                raise
+    except OSError:
+        # A read-only sandbox (a reviewer running `agent status`): no lock file, marker or journal line can be written. The
+        # observation is skipped; whatever the caller prints (a status line) is unaffected.
+        return None
+
+
+def observe_dead(stage: str, memo: dict | None = None) -> list:
+    """observe_death for every registered headless agent of the stage (jwait's poll). `memo` ({role: (pid, log
+    size)}) keeps a run that was looked at from being read again until its pid or log changes."""
+    memo = {} if memo is None else memo
+    base = hc.root() / stage / "agents"
+    if not base.is_dir():
+        return []
+    registered = hc.roles_load(stage)["roles"]
+    lines = []
+    for mp in sorted(base.glob("*/meta.json")):
+        role = mp.parent.name
+        if role not in registered:
+            continue
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            log = Path(meta["dir"]) / "log.jsonl"
+            st = log.stat()
+        except (OSError, ValueError, KeyError):
+            continue
+        if not isinstance(meta, dict) or not process_gone(meta) or memo.get(role) == (meta.get("pid"), st.st_size):
+            continue
+        line = observe_death(stage, meta, hc.dt.datetime.fromtimestamp(st.st_mtime, hc.TZ))
+        if line is BUSY:
+            continue  # looked at again on the next poll
+        memo[role] = (meta.get("pid"), st.st_size)
+        if line:
+            lines.append(line)
+    return lines
+
+
 def status_line(stage: str, role: str) -> str:
     meta = load_meta(stage, role)
     log = Path(meta["dir"]) / "log.jsonl"
@@ -666,6 +830,8 @@ def status_line(stage: str, role: str) -> str:
         state = "no process, no result (died or killed)"
     if registry is None:
         state += ", role retired"
+    elif not live:
+        observe_death(stage, meta, mtime)  # journals EXIT once when the process is gone without a result
     unread = pending_unread(meta) if not live else []
     if unread:
         state += (f"; unread inbox messages {len(unread)} since {unread[0]['at'][11:16]} — "
@@ -696,6 +862,15 @@ def cmd_status(a) -> int:
 def cmd_send(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
     msg = hc.one_line(" ".join(a.text))
+    load_meta(stage, a.role)  # an unknown agent fails before a lock file is made
+    # Everything from reading meta.json to writing it back — the liveness decision, the queueing, the resume with its init
+    # wait — is one critical section: two sends never both resume, a message queued while a resume starts is not
+    # overwritten by the resume's older copy of the meta, and the resume's prompt file is its own.
+    with AgentLock(stage, a.role):
+        return _send_locked(stage, a, msg)
+
+
+def _send_locked(stage: str, a, msg: str) -> int:
     meta = load_meta(stage, a.role)
     if a.role not in hc.roles_load(stage)["roles"]:
         raise hc.Failure(f"agent {a.role} was stopped (role retired); start a new one with agent spawn")
@@ -716,6 +891,7 @@ def cmd_send(a) -> int:
         print(f"agent alive (pid {meta['pid']}): queued in its inbox, read after its current step; if it ends its turn "
               f"unread, agent status shows it and the next agent send replays it\n{line}")
         return 0
+    queued = list(meta.get("inbox_unread") or [])
     unread = pending_unread(meta)
     if not msg and not unread:
         raise hc.UsageError("empty message and no unread inbox messages")
@@ -728,9 +904,8 @@ def cmd_send(a) -> int:
     pid = launch(meta, "\n\n".join(parts) + "\n\n(A message from the hub. The rules for talking to the hub are at the end of "
                  "the brief above: journal, report, inbox.)",
                  resume=True)
-    meta["inbox_unread"] = []
-    meta["pid"] = pid
-    meta["runs"].append({"pid": pid, "at": t.isoformat(timespec="seconds"), "kind": "resume"})
+    # only what this resume looked at leaves the queue (replayed, or already handled by the log)
+    meta["inbox_unread"] = [u for u in meta.get("inbox_unread") or [] if u not in queued]
     save_meta(stage, a.role, meta)
     with hc.roles_lock(stage):
         data = hc.roles_load(stage)
@@ -748,6 +923,10 @@ def cmd_stop(a) -> int:
     how = "no process was running"
     if alive(meta):
         pgid = meta["pid"]
+        try:
+            claim_exit(stage, meta)  # a stop is a known end: no observer reports it as "killed"
+        except OSError:
+            pass
         try:
             os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
@@ -807,6 +986,11 @@ def cmd_exit_note(a) -> int:
     clean = a.code == 0 and r and not r.get("is_error") and r.get("subtype") == "success"
     if clean and status_seen(stage, meta["tag"], since):
         return 0
+    try:
+        if not claim_exit(stage, meta):  # an observer already reported this run's end
+            return 0
+    except OSError:
+        pass  # an unwritable state dir must not cost the EXIT line
     why = "no status word in the journal" if clean else (f"{r.get('subtype')}, error" if r.get("is_error") else
                                                           (r.get("subtype") or "no result — died or killed"))
     last = (info["last_text"] or "").strip().splitlines()
