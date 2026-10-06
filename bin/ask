@@ -44,14 +44,17 @@ Usage:
   ask search word [word …] [--stage stage-a] [--all]   (all words, any status, every stage by default)
   ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision / permission)
   ask summary
+  ask inbox [--since <time>] [--stage S …] [--json] [--if-quiet]   (read-only digest for the owner, all stages)
 add / decided / plan / close / done stamp the time themselves (hub time zone, `--at` overrides) and print a ready
-journal line (add / decided / plan print the new id first; `--print-id` prints the id alone, for `ID=$(ask add …)`). Env: AGENT_HUB_HOME (the hub home; `hub home` shows which), AGENT_HUB_TZ, ASK_BY (default author).
+journal line (add / decided / plan print the new id first; `--print-id` prints the id alone, for `ID=$(ask add …)`). Env: AGENT_HUB_HOME (the hub home; `hub home` shows which), AGENT_HUB_TZ, ASK_BY (default author),
+AGENT_HUB_OWNER_DIGEST_AFTER (silence after which the hub opens with `ask inbox`; default 3h).
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import fcntl
+import json
 import os
 import re
 import sys
@@ -1076,6 +1079,353 @@ def cmd_list(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- owner inbox: one digest across the stages
+
+INBOX_CHARS = 2000                        # the text digest stays under this for ten active stages
+INBOX_DEFAULT_SINCE = dt.timedelta(hours=24)   # when no register holds an answer of the owner
+INBOX_MAX_BACK = dt.timedelta(days=14)    # journals are read at most this far back
+DIGEST_AFTER_KEY = "AGENT_HUB_OWNER_DIGEST_AFTER"
+DIGEST_AFTER_DEFAULT = "3h"
+DIGEST_AFTER_MAX = dt.timedelta(days=30)
+STAGE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+JOURNAL_FILE_RE = re.compile(r"^journal-(\d{4}-\d{2}-\d{2})\.md$")
+DONE_RE = re.compile(r"^(DONE|MERGED|[Rr]eleased)\b[:\s]*(.*)$")        # a journal line that says work finished
+BLOCKED_RE = re.compile(r"^(?:@hub\s+)?(?:BLOCKED|QUESTION)\b")          # an agent stopped and waits for the hub
+# an absolute path inside a journal sentence shrinks to its last segment; URLs (a word or ':' before the '/') stay
+PATH_RE = re.compile(r"(?<![\w:/.])(?:~|\.)?/(?:[^\s/()]+/)+([^\s/()]+)")
+
+
+def digest_after() -> dt.timedelta:
+    """The silence after which the hub opens its reply with the digest: $AGENT_HUB_OWNER_DIGEST_AFTER (hub home's
+    config.json or the environment; a duration such as 3h or 90m, up to 30d), default 3h; a bad value warns."""
+    raw = (hc.setting(DIGEST_AFTER_KEY) or "").strip()
+    if raw:
+        try:
+            d = hc.parse_duration(raw)
+            if dt.timedelta(0) < d <= DIGEST_AFTER_MAX:
+                return d
+        except (hc.UsageError, OverflowError):
+            pass
+        hc.warn(f"{DIGEST_AFTER_KEY}={raw!r} is not a duration like 3h or 90m between 1s and 30d; "
+                f"using {DIGEST_AFTER_DEFAULT}")
+    return hc.parse_duration(DIGEST_AFTER_DEFAULT)
+
+
+def parse_since(raw: str, now: dt.datetime) -> dt.datetime:
+    """--since: a duration back from now (6h, 2d), HH:MM (today; the day before when that is still ahead), a date
+    (its midnight) or an ISO date-time; local hub time."""
+    raw = raw.strip()
+    if re.fullmatch(r"(\d+[smhd])+", raw):
+        return now - hc.parse_duration(raw)
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", raw)
+    if m:
+        t = now.replace(hour=int(m.group(1)), minute=int(m.group(2)))
+        return t - dt.timedelta(days=1) if t > now else t
+    try:
+        t = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        raise SystemExit(f"ask: cannot parse --since {raw!r} (use 6h, 2d, HH:MM, YYYY-MM-DD or YYYY-MM-DDTHH:MM)") from None
+    return t.astimezone(TZ).replace(tzinfo=None) if t.tzinfo else t
+
+
+def stamp_dt(date: str, time_: str) -> dt.datetime | None:
+    """An entry's (date, time) as a local datetime; a date alone is its midnight."""
+    try:
+        d = dt.date.fromisoformat(date)
+        hh, mm = (int(x) for x in time_.split(":")) if time_ else (0, 0)
+        return dt.datetime.combine(d, dt.time(hh, mm))
+    except ValueError:
+        return None
+
+
+def owner_last_answer(registers: dict[str, list[Entry]], now: dt.datetime) -> tuple[dt.datetime, str] | None:
+    """The owner's latest recorded word in any register: an answered question, a standing permission (given or
+    revoked), an approved plan. Later than now is a typo and does not count. (datetime, entry id) or None."""
+    best: tuple[dt.datetime, str] | None = None
+    for entries in registers.values():
+        for e in entries:
+            if not ((e.kind_letter == "Q" and e.state == "answered") or e.kind_letter in ("A", "P")):
+                continue
+            at = stamp_dt(*entry_when(e))
+            if at and at <= now + dt.timedelta(minutes=2) and (best is None or at > best[0]):
+                best = (at, e.id)
+    return best
+
+
+def inbox_stages() -> list[str]:
+    """Every stage directory of the hub home that holds a register, a role registry or a journal."""
+    if not ROOT.is_dir():
+        return []
+    return sorted(d.name for d in ROOT.iterdir() if d.is_dir() and STAGE_NAME_RE.fullmatch(d.name) and any(
+        (d / n).exists() for n in (FILENAME, "roles.json", "coordinator")))
+
+
+def journal_text(text: str) -> str:
+    """A journal sentence for the digest: absolute paths shortened, one line."""
+    return one_line(PATH_RE.sub(r"\1", text))
+
+
+def read_roles(stage: str) -> dict:
+    try:
+        data = json.loads((ROOT / stage / "roles.json").read_text(encoding="utf-8"))
+        roles = data.get("roles") if isinstance(data, dict) else None
+        return roles if isinstance(roles, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+class ProcessTable:
+    """`ps` read once, and only if some stage has a headless agent."""
+
+    def __init__(self):
+        self._table, self._read = None, False
+
+    def get(self):
+        if not self._read:
+            import subagents
+            self._table, self._read = subagents.process_table(), True
+        return self._table
+
+
+def stage_inbox(stage: str, entries: list[Entry], since: dt.datetime, now: dt.datetime, ps: ProcessTable) -> dict:
+    """What one stage has to say since `since`: finished work (journal DONE / MERGED / released lines), questions
+    waiting for the owner (overdue first), decisions the hubs took, live and blocked agents."""
+    done, last_by_tag = [], {}
+    work = ROOT / stage / "coordinator" / "work"
+    # journal stamps have minute precision: a line is in the window from the minute `since` falls in; the latest line of
+    # a tag (is it blocked now?) does not depend on the window, so journals are read INBOX_MAX_BACK back
+    since = since.replace(second=0, microsecond=0)
+    roles = {r: rec for r, rec in read_roles(stage).items() if isinstance(rec, dict) and rec.get("kind") == "headless"}
+    first_day = (now - INBOX_MAX_BACK).date() if roles else since.date()   # no agent to be blocked: the window is enough
+    for f in sorted(work.glob("journal-*.md")) if work.is_dir() else []:
+        m = JOURNAL_FILE_RE.match(f.name)
+        try:
+            day = dt.date.fromisoformat(m.group(1)) if m else None
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines() if day and day >= first_day else []
+        except (OSError, ValueError):
+            continue
+        for line in lines:
+            p = hc.parse_journal_line(line)
+            at = stamp_dt(day.isoformat(), p[0]) if p else None
+            if not p or at is None:
+                continue
+            tag = p[1].split()[0]
+            last_by_tag[tag] = p[2]
+            dm = DONE_RE.match(p[2])
+            if dm and at >= since:
+                done.append({"at": at, "tag": tag, "word": dm.group(1).lower(), "text": journal_text(dm.group(2))})
+    waiting = []
+    for e in entries:
+        if e.kind_letter == "Q" and e.state in ("open", "default-taken"):
+            f = e.fields
+            waiting.append({"id": e.id, "title": one_line(e.title), "state": e.state, "default": f.get("default", NO_SET),
+                            "due": f.get("due", NO_SET), "due_at": e.due_at(), "overdue": e.overdue(now)})
+    waiting.sort(key=lambda w: (not w["overdue"], w["due_at"] or dt.datetime.max))
+    decided = []
+    for e in entries:
+        if e.kind_letter == "D" and e.state == "standing":
+            date, time_ = entry_when(e)
+            at = stamp_dt(date, time_)
+            if at and (at >= since or (not time_ and at.date() >= since.date())):
+                decided.append({"id": e.id, "title": one_line(e.title), "at": at})
+    live = blocked = 0
+    for role, rec in roles.items():
+        try:
+            meta = json.loads((ROOT / stage / "agents" / role / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = None
+        if isinstance(meta, dict):
+            import subagents
+            live += bool(subagents.is_alive(meta, ps.get()))
+        blocked += bool(BLOCKED_RE.match(last_by_tag.get(rec.get("tag") or role, "")))
+    return {"stage": stage, "done": done, "waiting": waiting, "decided": decided, "live": live, "blocked": blocked}
+
+
+def has_news(s: dict) -> bool:
+    return bool(s["done"] or s["waiting"] or s["decided"] or s["blocked"] or s.get("unreadable"))
+
+
+def urgency(s: dict) -> tuple:
+    return (not s.get("unreadable"), -sum(w["overdue"] for w in s["waiting"]), -len(s["waiting"]), -s["blocked"], -len(s["done"]), s["stage"])
+
+
+def pl(n: int, one: str, many: str = "") -> str:
+    return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+def inbox_items(s: dict, now: dt.datetime) -> list[tuple[int, str]]:
+    """(priority, line) detail lines of a stage, in display order; a lower priority is kept first when the digest is cut."""
+    out = []
+    for w in s["waiting"]:
+        if w["overdue"]:
+            state = f"overdue {hc.age(w['due_at'].replace(tzinfo=TZ), now.replace(tzinfo=TZ))}"
+        elif w["state"] == "default-taken":
+            state = "default taken, still awaiting you"
+        else:
+            state = f"due {w['due_at']:%d.%m %H:%M}" if w["due_at"] else "no due"
+        default = "" if w["default"] in NO_VALUE else f" → default: {clip(w['default'], 55)}"
+        out.append((0 if w["overdue"] else 1, f"  {w['id']} {state}: {clip(w['title'], 75)}{default}"))
+    if s["done"]:
+        last = s["done"][-1]
+        out.append((2, f"  last done {last['at']:%d.%m %H:%M} {last['tag']} {last['word']}: "
+                       f"{clip(last['text'], 90)}".rstrip(": ")))
+    for d in s["decided"]:
+        out.append((3, f"  {d['id']} (decided by the hub): {clip(d['title'], 90)}"))
+    return out
+
+
+def inbox_summary(s: dict) -> str:
+    parts = ["register unreadable"] if s.get("unreadable") else []
+    if s["done"]:
+        parts.append(f"{len(s['done'])} done")
+    if s["waiting"]:
+        over = sum(w["overdue"] for w in s["waiting"])
+        parts.append(pl(len(s["waiting"]), "question") + (f" ({over} overdue)" if over else ""))
+    if s["decided"]:
+        parts.append(pl(len(s["decided"]), "decision"))
+    if s["blocked"]:
+        parts.append(f"{s['blocked']} blocked")
+    if s["live"]:
+        parts.append(f"{s['live']} live")
+    return f"{s['stage']} — " + ", ".join(parts)
+
+
+def inbox_text(data: dict, now: dt.datetime, cap: int = INBOX_CHARS) -> str:
+    """The digest as text, outcome first, at most `cap` characters: a header with the totals, one summary line per stage
+    with news (most urgent first), as many detail lines as fit (overdue questions, open questions, the last finished
+    work, decisions), then the quiet stages. What does not fit is "K more: ask inbox --stage S"."""
+    stages = sorted((s for s in data["stages"] if has_news(s)), key=urgency)
+    quiet = [s["stage"] + (f" ({s['live']} live)" if s["live"] else "") for s in data["stages"] if not has_news(s)]
+    q_all = sum(len(s["waiting"]) for s in stages)
+    over = sum(w["overdue"] for s in stages for w in s["waiting"])
+    done = sum(len(s["done"]) for s in stages)
+    dec = sum(len(s["decided"]) for s in stages)
+    why = {"owner-answer": "your last answer", "--since": "--since", "default": "last 24 h"}[data["since_source"]]
+    since = data["since_at"]
+    head = f"Since {since:%d.%m %H:%M} ({why}, {hc.age(since.replace(tzinfo=TZ), now.replace(tzinfo=TZ))} ago): "
+    if stages:
+        bits = [pl(q_all, "question") + " wait for you" + (f" ({over} overdue)" if over else "")
+                if q_all else "no question waits for you",
+                f"{done} done", pl(dec, "decision") + " by the hubs"]
+        head += ", ".join(bits) + "."
+    else:
+        head += "nothing new."
+    tail = ""
+    if quiet:
+        names = ", ".join(quiet)
+        tail = f"{pl(len(quiet), 'stage')} quiet: {clip(names, 110)}"
+    items = {s["stage"]: inbox_items(s, now) for s in stages}
+
+    def render(shown_stages: list[dict], keep: set) -> str:
+        lines = [head]
+        for s in shown_stages:
+            its = items[s["stage"]]
+            kept = [i for i, _ in enumerate(its) if (s["stage"], i) in keep]
+            omitted = len(its) - len(kept)
+            lines.append(inbox_summary(s) + (f" [{omitted} more: ask inbox --stage {s['stage']}]" if omitted else ""))
+            lines += [its[i][1] for i in kept]
+        if len(shown_stages) < len(stages):
+            rest = [s["stage"] for s in stages[len(shown_stages):]]
+            lines.append(f"{pl(len(rest), 'more stage')} with news: ask inbox "
+                         + " ".join(f"--stage {n}" for n in rest[:3]) + (" …" if len(rest) > 3 else ""))
+        if tail:
+            if shown_stages:
+                lines.append(tail)
+            else:
+                lines[0] += " " + tail
+        return "\n".join(lines)
+
+    # stages in urgency order, each with its overdue question lines, while they fit; the rest go to the "more stages" line
+    shown, keep = [], set()
+    for s in stages:
+        must = {(s["stage"], i) for i, (prio, _) in enumerate(items[s["stage"]]) if prio == 0}
+        if not shown:   # the most urgent stage is always shown, with as many overdue lines as fit (at least one)
+            shown.append(s)
+            for item in sorted(must):
+                if not keep or len(render(shown, keep | {item})) <= cap:
+                    keep.add(item)
+        elif len(render(shown + [s], keep | must)) <= cap:
+            shown.append(s)
+            keep |= must
+        else:
+            break
+    order = sorted(((prio, si, i) for si, s in enumerate(shown) for i, (prio, _) in enumerate(items[s["stage"]])))
+    for prio, si, i in order:
+        trial = keep | {(shown[si]["stage"], i)}
+        if len(render(shown, trial)) <= cap:
+            keep = trial
+    return render(shown, keep)
+
+
+def inbox_json(data: dict, now: dt.datetime) -> dict:
+    iso = lambda t: t.isoformat(timespec="minutes") if t else None   # noqa: E731
+    last = data["last_answer"]
+    return {
+        "now": iso(now), "since": iso(data["since_at"]), "since_source": data["since_source"],
+        "threshold": data["threshold"], "quiet": data["quiet"],
+        "last_answer": {"at": iso(last[0]), "id": last[1]} if last else None,
+        "stages": [{
+            "stage": s["stage"],
+            "done": {"count": len(s["done"]),
+                     "lines": [{"at": iso(d["at"]), "tag": d["tag"], "word": d["word"], "text": d["text"]}
+                               for d in s["done"]]},
+            "waiting": [{"id": w["id"], "title": w["title"], "state": w["state"], "default": w["default"],
+                         "due": w["due"], "overdue": w["overdue"]} for w in s["waiting"]],
+            "decided": [{"id": d["id"], "title": d["title"], "at": iso(d["at"])} for d in s["decided"]],
+            "agents": {"live": s["live"], "blocked": s["blocked"]},
+            "register_unreadable": bool(s.get("unreadable")),
+        } for s in sorted(data["stages"], key=urgency) if has_news(s)],
+        "quiet_stages": [s["stage"] for s in data["stages"] if not has_news(s)],
+        "agents": {s["stage"]: {"live": s["live"], "blocked": s["blocked"]} for s in data["stages"]},
+    }
+
+
+def cmd_inbox(args) -> int:
+    """The owner's digest. Read-only. --if-quiet prints nothing while the owner's last recorded answer is newer than
+    the silence threshold, so a hub can run it before every reply."""
+    now = now_local()
+    known = inbox_stages()
+    for name in args.stage:
+        stage_file(name)
+        if name not in known:
+            raise SystemExit(f"ask: no stage {name!r} in {ROOT} (stages: {', '.join(known) or '—'})")
+    names = list(dict.fromkeys(args.stage)) or known
+    registers, unreadable = {}, set()
+    for name in known:
+        try:
+            registers[name] = load(name)[1]
+        except (OSError, UnicodeDecodeError) as e:   # not "no questions": the digest says so and the stage is not quiet
+            registers[name] = []
+            unreadable.add(name)
+            if name in names:
+                print(f"ask: cannot read {stage_file(name)}: {e.__class__.__name__}: {one_line(str(e))[:120]}",
+                      file=sys.stderr)
+    last = owner_last_answer(registers, now)   # any stage's register, even one --stage leaves out
+    threshold = digest_after()
+    quiet = last is None or now - last[0] >= threshold
+    if args.if_quiet and not quiet:
+        return 0
+    if args.since:
+        since, source = parse_since(args.since, now), "--since"
+    elif last:
+        since, source = last[0], "owner-answer"
+    else:
+        since, source = now - INBOX_DEFAULT_SINCE, "default"
+    since = max(since, now - INBOX_MAX_BACK)
+    ps = ProcessTable()
+    stages = [stage_inbox(n, registers.get(n, []), since, now, ps) for n in names]
+    for st in stages:
+        st["unreadable"] = st["stage"] in unreadable
+    data = {"stages": stages,
+            "since_at": since, "since_source": source, "last_answer": last, "quiet": quiet,
+            "threshold": f"{int(threshold.total_seconds() // 60)}m"}
+    if args.json:
+        print(json.dumps(inbox_json(data, now), ensure_ascii=False, indent=1))
+    else:
+        print(inbox_text(data, now))
+    return 0
+
+
 def summary_text() -> str:
     """What `ask summary` prints (agent-top calls it in-process)."""
     now = now_local()
@@ -1207,6 +1557,15 @@ def main(argv: list[str]) -> int:
 
     sub.add_parser("summary", help="one line per stage")
 
+    ib = sub.add_parser("inbox", help="digest for the owner: per stage what is done, what waits for the owner, what the "
+                        "hubs decided (read-only)")
+    ib.add_argument("--since", default="", help="6h, 2d, HH:MM, YYYY-MM-DD[THH:MM] (default: the owner's last answer "
+                    "recorded in any register, else 24 h)")
+    ib.add_argument("--stage", action="append", default=[], help="only this stage (repeatable; default: every stage)")
+    ib.add_argument("--json", action="store_true", help="the full digest as JSON (no size cap)")
+    ib.add_argument("--if-quiet", action="store_true", help=f"print nothing unless the owner has been silent for "
+                    f"${DIGEST_AFTER_KEY} (default {DIGEST_AFTER_DEFAULT})")
+
     args = p.parse_args(argv)
     today = now_local().date().isoformat()
     if args.cmd in ("close", "withdraw", "default-taken", "show", "done", "revoke") and args.stage:
@@ -1246,6 +1605,8 @@ def main(argv: list[str]) -> int:
         return cmd_list(args)
     if args.cmd == "summary":
         return cmd_summary(args)
+    if args.cmd == "inbox":
+        return cmd_inbox(args)
     return 2
 
 

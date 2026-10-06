@@ -52,7 +52,7 @@ flowchart LR
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
-| `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
+| `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. `ask inbox [--since T] [--stage S] [--json] [--if-quiet]` is the owner's digest across all stages: per stage what finished since the owner's last answer, which questions wait (overdue first), which decisions the hubs took, live and blocked agents; under 2 000 characters, read-only. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
 | `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. `hub handoff --finish` refuses a draft whose § 0–2 still hold `TODO` (`--allow-todo` overrides), `hub succeed` makes the same check, and `takeover` warns about such a handoff. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). |
 | `hub rename` | `hub rename --stage OLD --to NEW [--dry-run]`: rename a stage none of whose agents is alive (otherwise exit 2, the live ones listed): its directory, the names and paths in its json files, the question register's heading and the board's lock notes that name it. |
@@ -252,6 +252,17 @@ visible, contestable. The plan the owner approved is recorded with `ask plan` �
 none: show the plan to the owner first); `ask add|decided|plan --print-id` prints just the new id, for scripts. At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
 hub home, in repositories with `.agent-hub/` and for hub agents.
 
+`ask inbox` is the one screen the owner reads after a break, instead of asking each hub in turn. It reads every stage of
+the hub home and changes nothing. The window starts at the owner's latest recorded word (an answered question, a standing
+permission, an approved plan, in any register), else 24 hours back (`--since 6h|2d|HH:MM|YYYY-MM-DD` sets it, at most 14
+days). Per stage with news: finished work (journal lines that start with `DONE`, `MERGED` or `released`, counted, the
+latest quoted), questions waiting for the owner with their default and due time (overdue first), decisions the hubs took
+(`D-` ids), blocked and live agents. Stages with nothing new are one line at the end. The text is cut under 2 000
+characters — the most urgent stages first, "K more: ask inbox --stage S" for the rest; `--json` is complete.
+`--if-quiet` prints nothing while the owner's latest recorded word is newer than `AGENT_HUB_OWNER_DIGEST_AFTER` (`3h`),
+so the hub skill's rule is mechanical. The owner's chat is not a register: an owner who talks to a hub without anything
+being recorded still counts as silent after the threshold, and the hub shows the digest once per silence.
+
 ### Standing permissions
 
 The owner's word that a class of action needs no question each time — "merge after green CI and a review", "deploy to
@@ -416,6 +427,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
 | `AGENT_HUB_JWAIT_FOR` | `55m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `55m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `55m`). The default stays inside the one-hour prompt cache, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
+| `AGENT_HUB_OWNER_DIGEST_AFTER` | `3h` | Owner's silence after which the hub opens its reply with `ask inbox`: `ask inbox --if-quiet` prints nothing while the owner's latest recorded answer (an answered question, a standing permission, an approved plan, in any stage's register) is newer than this, and the digest otherwise. A duration such as `90m` or `6h`, at most `30d`; anything else warns and falls back to `3h`. Hub-wide. |
 | `AGENT_HUB_SENSITIVE_CLASSES` | money, migration, permissions | Classes of action a standing permission covers only when its own class names them: a JSON object `{"class": ["stem", …]}`; a stem in a question's text or class makes the class a requirement ([Standing permissions](standing-permissions.md)). Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
 
