@@ -1417,7 +1417,7 @@ def cmd_reviewer(a) -> int:
         return 1
     e = chosen.entry
     print(f"reviewer: {e.name} ({reviewers.describe(e)})")
-    print(f"review helpers: no judgement team below {helper_lines} changed lines; fill this threshold in the brief")
+    print(f"review helpers: no judgement team below {helper_lines} changed lines. Fill this threshold in the brief")
     print(f"start: {start}")
     return 0
 
