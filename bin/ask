@@ -1195,7 +1195,8 @@ def stage_inbox(stage: str, entries: list[Entry], since: dt.datetime, now: dt.da
     # journal stamps have minute precision: a line is in the window from the minute `since` falls in; the latest line of
     # a tag (is it blocked now?) does not depend on the window, so journals are read INBOX_MAX_BACK back
     since = since.replace(second=0, microsecond=0)
-    first_day = (now - INBOX_MAX_BACK).date()
+    roles = {r: rec for r, rec in read_roles(stage).items() if isinstance(rec, dict) and rec.get("kind") == "headless"}
+    first_day = (now - INBOX_MAX_BACK).date() if roles else since.date()   # no agent to be blocked: the window is enough
     for f in sorted(work.glob("journal-*.md")) if work.is_dir() else []:
         m = JOURNAL_FILE_RE.match(f.name)
         try:
@@ -1228,9 +1229,7 @@ def stage_inbox(stage: str, entries: list[Entry], since: dt.datetime, now: dt.da
             if at and (at >= since or (not time_ and at.date() >= since.date())):
                 decided.append({"id": e.id, "title": one_line(e.title), "at": at})
     live = blocked = 0
-    for role, rec in read_roles(stage).items():
-        if not isinstance(rec, dict) or rec.get("kind") != "headless":
-            continue
+    for role, rec in roles.items():
         try:
             meta = json.loads((ROOT / stage / "agents" / role / "meta.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -1340,9 +1339,11 @@ def inbox_text(data: dict, now: dt.datetime, cap: int = INBOX_CHARS) -> str:
     shown, keep = [], set()
     for s in stages:
         must = {(s["stage"], i) for i, (prio, _) in enumerate(items[s["stage"]]) if prio == 0}
-        if not shown:   # the most urgent stage is always shown, with as many overdue lines as fit
+        if not shown:   # the most urgent stage is always shown, with as many overdue lines as fit (at least one)
             shown.append(s)
-            keep = must if len(render(shown, must)) <= cap else set()
+            for item in sorted(must):
+                if not keep or len(render(shown, keep | {item})) <= cap:
+                    keep.add(item)
         elif len(render(shown + [s], keep | must)) <= cap:
             shown.append(s)
             keep |= must

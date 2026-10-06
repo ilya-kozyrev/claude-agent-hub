@@ -69,6 +69,13 @@ if sys.argv[1] == "overdue28":   # 28 stages, one overdue question each, nothing
         reg(f"ov-{n:02d}", f"V{n:02d}", [q(f"V{n:02d}-001", f"Overdue question number {n}", "open", ago(40), iso(ago(30)), "carry on")])
     sys.exit(0)
 
+if sys.argv[1] == "first20":    # the most urgent stage has more overdue questions than fit, the others one each
+    reg("aa-first", "FI", [q(f"FI-{n:03d}", f"Overdue question number {n} of the first stage, with a longer text", "open",
+                             ago(60), iso(ago(50 - n)), "carry on with the safe default") for n in range(20)])
+    for n in range(27):
+        reg(f"ov-{n:02d}", f"V{n:02d}", [q(f"V{n:02d}-001", f"Overdue question number {n}", "open", ago(40), iso(ago(30)), "carry on")])
+    sys.exit(0)
+
 if sys.argv[1] == "agents":     # live-s: two live agents and no other news; idle-s: nothing; bk-s: blocked three days ago
     pid = sys.argv[2]
     roles("live-s", {"w1": (int(pid), "sid-live"), "w2": (int(pid), "sid-live")})
@@ -216,6 +223,16 @@ grep -q 'Q-V00-001 overdue' $O/o28.out; check $? 0 "…the first stage's overdue
 s=$(grep -c '^ov-[0-9][0-9] — ' $O/o28.out); q=$(grep -c '^  Q-V[0-9][0-9]-001 overdue' $O/o28.out)
 [ "$s" = "$q" ] && [ "$s" -ge 5 ]; check $? 0 "…every stage shown keeps its overdue question line ($s stages, $q questions)"
 grep -q '^[0-9]* more stages with news: ask inbox --stage ov-' $O/o28.out; check $? 0 "…the stages that do not fit are named in one line"
+
+# the most urgent stage has more overdue questions than fit: as many as fit (the most overdue first), never none
+new_home
+python3 "$GEN" first20
+$B/ask inbox --since 6h > $O/f20.out
+chars=$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' $O/f20.out)
+[ "$chars" -le 2000 ]; check $? 0 "first stage with 20 overdue questions: within 2000 characters ($chars)"
+grep -q '^  Q-FI-000 overdue' $O/f20.out; check $? 0 "…its most overdue question is in the output"
+n=$(grep -c '^  Q-FI-' $O/f20.out); [ "$n" -ge 1 ] && [ "$n" -lt 20 ]; check $? 0 "…as many of its overdue questions as fit ($n of 20)"
+grep -q '^aa-first — 20 questions (20 overdue) \[[0-9]* more: ask inbox --stage aa-first\]' $O/f20.out; check $? 0 "…the rest is announced as 'K more'"
 
 # a stage with live agents is not idle; blocked now does not depend on the window
 new_home; R2=$AGENT_HUB_HOME
