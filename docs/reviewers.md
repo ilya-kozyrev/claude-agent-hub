@@ -9,7 +9,8 @@ CLI, a cloud service with its own quota — plugs it in as a *reviewer skill* an
 
 The hub fills the review template's helper threshold from `hub reviewer` (`helper_threshold` in `--json`).
 `AGENT_HUB_REVIEW_HELPER_LINES` is a non-negative integer (default 300 additions + deletions), read from env,
-repository config or hub-home config. Below it, the reviewer starts no judgement-helper team; bounded mechanical
+repository config or hub-home config; surrounding whitespace is ignored and an invalid value warns and falls back to 300.
+Zero disables the size restriction, while named risks, disjoint scopes and call budgets still apply to judgement helpers. Below it, the reviewer starts no judgement-helper team; bounded mechanical
 extraction is allowed. Larger deltas require named risks, disjoint scopes and call budgets before helpers start.
 
 ## Configuration

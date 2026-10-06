@@ -1209,7 +1209,8 @@ def cmd_handoff(a) -> int:
     agents_dir = hc.root() / stage / "agents"
     if agents_dir.is_dir():
         res = run_tool(["agent", "status", "--stage", stage])
-        agents_cell = "; ".join(res.stdout.strip().splitlines()) or "none"
+        agents_cell = "; ".join(line for line in res.stdout.strip().splitlines()
+                                if not line.startswith("Plugin runtime:")) or "none"
     summary = run_tool(["ask", "summary"]).stdout.strip().replace("\n", "; ")
     facts_rows = ("| Environments | TODO what runs where: versions, build ids, pending deploys | TODO |\n"
                   "| Main branch | TODO head; what is merged but not deployed | `git log origin/main` |\n"
@@ -1258,7 +1259,7 @@ Report progress against it with technical evidence separately.
 1. Name your session "{succ}"; `hub takeover --stage {stage} --session <your full session id> --handoff {out}` —
    locks ({', '.join(r['kind'] for r in held) or 'none held'}), `coordinator:` in night-queue, `roles set hub`, a journal
    line; it prints a digest and the first `jwait` command. Tell "{name}" once that you took over (`roles budget`).
-2. The first `jwait` — from the takeover digest, {wait_procedure()}; start no other waiters.
+2. The first `jwait` — use the wait procedure printed in the takeover digest; start no other waiters.
 3. Check every "owner said" below against `ask list --stage {stage}` (takeover digest); on a mismatch the register wins.
 4. TODO: background processes and script questions waiting for an answer (output file, question marker).
 

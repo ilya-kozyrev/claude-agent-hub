@@ -1151,8 +1151,10 @@ def plugin_version(bin_dir, engine=None) -> Optional[tuple]:
 
 
 def host_engine() -> str:
-    """Engine of this command's host, using the same selection as the launchers."""
-    return setting("AGENT_HUB_ENGINE") or ("codex" if os.environ.get("CODEX_THREAD_ID") else "claude")
+    """Actual host from its environment, independent of configured executor defaults."""
+    if os.environ.get("CODEX_THREAD_ID", "").strip():
+        return "codex"
+    return os.environ.get("AGENT_HUB_ENGINE", "").strip() or "claude"
 
 
 def plugin_runtime_line(engine=None) -> str:
@@ -1179,10 +1181,14 @@ def plugin_runtime_line(engine=None) -> str:
 
 def review_helper_lines() -> int:
     """Changed-line threshold for judgement helpers, configurable in the usual layers."""
-    raw = setting("AGENT_HUB_REVIEW_HELPER_LINES", "300")
-    if not re.fullmatch(r"[0-9]+", raw or ""):
-        raise UsageError("AGENT_HUB_REVIEW_HELPER_LINES must be a non-negative integer")
-    return int(raw)
+    raw = (setting("AGENT_HUB_REVIEW_HELPER_LINES", "300") or "").strip()
+    try:
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise ValueError
+        return int(raw)
+    except ValueError:
+        warn("AGENT_HUB_REVIEW_HELPER_LINES must be a non-negative integer; using default 300")
+        return 300
 
 
 def installed_plugin_bins() -> list:
