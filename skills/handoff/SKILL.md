@@ -20,6 +20,8 @@ pointers to the registers — never copies of them.
    `HANDOFF-<role>-<YYYY-MM-DD-HHMM>.md` in the stage's `coordinator/` directory.
 2. Fill every `TODO`:
    - **Headline**: one or two sentences — what matters most now and whose word is behind it (quote + `ask` id).
+   - **Business DoD**: link the agreed result/source or carry a concise inherited result (hub skill, "Planning a stage").
+     Preserve owner-supplied constraints; tell the successor to continue it and choose implementation details independently.
    - **§ 0 First steps**: 3–6 commands or files, in order. The first is always `hub takeover …`.
    - **§ 1 Where things stand**: each row a fact and where it shows (a command, a file, a URL).
    - **§ 2 Queue**: by dependency; item = action | "done" check | stop condition | who (model). Blocked items name the question id.

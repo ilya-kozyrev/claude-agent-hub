@@ -79,9 +79,11 @@ that is a complete setup. Commit `.agent-hub/`: it is the team's shared conventi
 
 ### Recommended companion: grilling
 
-The hub settles open decisions with you before it writes any brief. It does that best with the `grilling` skill from
+The hub agrees a Business DoD before autonomous work, using the
+[planning recipe](../skills/hub/SKILL.md#planning-a-stage-agree-the-business-result-before-autonomous-work).
+A clear request already supplies it; otherwise clarify business-material ambiguity with the `grilling` skill from
 [mattpocock/skills](https://github.com/mattpocock/skills) (MIT): rounds of numbered questions, each with a recommended
-answer, until nothing is left assumed. agent-hub does not bundle it; install it next to this plugin:
+answer, stopping once the business result is clear. agent-hub does not bundle it; install it next to this plugin:
 
 ```text
 /plugin marketplace add mattpocock/skills

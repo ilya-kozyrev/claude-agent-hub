@@ -16,12 +16,17 @@ Executor — <model> (<effort>), journal tag `<hub-N-role>`. Production — <rea
 The executor applies these as given. Data that disagrees with them is a fact for the report (a number, a query), not a
 proposal to reopen them and not a question to the owner; the hub decides.
 
+## Business DoD
+<Agreed user/business result or its source in the plan/register; inherit it without reopening.
+See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints and detailed specs.>
+
 ## What to do
 1. <Step> — <a "done" criterion checkable by a number or a command>.
 
-## Verification
+## Technical verification
 <A positive and a negative control of the same query; targeted tests; what to show in the report / PR.>
 
 ## Answer and stop
+Report the delivered result against the Business DoD, with technical evidence separately.
 Report `$WK/<tag>-REPORT.md` (≤ <N> KB, the outcome in the first line). Last action — `jlog --tag <tag> "DONE …"` or
 `BLOCKED …`. At most <N> turns. A negative claim only with a positive control. <What not to do: writes, merges, nearby code.>
