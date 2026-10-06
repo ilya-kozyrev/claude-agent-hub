@@ -123,29 +123,31 @@ your own session (`--session`, else the registered hub's and the session you run
 exit 2, listing id, description and age — because they die with you and the successor cannot message them; the ways out
 are under *Choosing how to launch work*.
 
-**Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`): at a quiet point (no agent awaiting your reply or lock operation
-in flight), write/fill `hub handoff`, then run the budget message's `hub succeed … --handoff <draft>` yourself.
-Codex `--surface auto` selects a native desktop request only in an actual app hub (both app markers, no detached
-worker role); a console hub uses the detached CLI path. `--surface cli` or `--headless` explicitly chooses CLI.
-For a desktop request, immediately follow [the native launch procedure](../../docs/codex.md#desktop-autopilot)
-in this app session: list_projects, desktop-request, create_thread, desktop-bind; use desktop-fail for a failure.
-This is the current agent's procedure. The owner does not run a setup wizard. Keep the predecessor active until
-`desktop-status --verified` succeeds after the actual successor's takeover. A clientThreadId confirms a pending
-creation, never a real session. A timeout or uncertain API result keeps the same request; no hidden CLI fallback.
+**Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; `<plugin-root>/docs/reference.md`, "Autopilot"): the context budget message tells you when, and gives
+the `hub succeed` command with your model, effort, mode and directory filled in. At a quiet point — no agent waiting for your
+reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,
+start the `jwait` it prints using the host wait procedure below. Its start line → tell the owner one line (the successor's
+name and any link returned by the launcher) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a
+headless successor's ALARM: `--again`, if `agent status` says it is not running). A refusal that prints a `jwait` →
+run that `jwait`, then retry. Exit 3 (chain limit), exit 2, or any other exit 1 → tell the owner the handoff path and
+why, and wait for them ("cannot determine the effort" means your own effort is unreadable here: never pass a guessed
+`--effort`; `hub effort` lists what was tried). A successor that took over but has to be swapped (a wrong launch): `hub succeed --stage <S>
+--replace` — it stops that successor (not while it is busy, unless `--force`) and starts a new one from the same handoff
+with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
+yourself, never from a sub-agent.
 
-For CLI/Claude launch, continue the printed `jwait` through the host procedure below. Its start line → tell the
-owner the successor's name and returned link/send command, then stop; release no locks. Claude background ALARM →
-`hub succeed --stage <S> --fallback`; detached ALARM → `--again` only after `agent status` confirms the successor
-is dead. Chain limit (exit 3) → tell the owner the handoff path and stop. Other errors retain the handoff and explain
-the failed step. A desktop permission failure leaves the predecessor active; APIs cannot set Full Access.
+For **Codex Desktop**, --surface auto selects a native request only in an actual app hub (both app markers,
+no detached worker role); --surface cli explicitly keeps CLI. Immediately follow
+[the native launch procedure](../../docs/codex.md#desktop-autopilot): list_projects, desktop-request, create_thread,
+desktop-bind; desktop-fail records failures. Keep the predecessor active until desktop-status --verified succeeds
+after actual takeover; a clientThreadId is not a real session. Uncertain results retain the same request without a
+hidden CLI fallback. On ALARM, tell the owner one line: request unconfirmed and the handoff path; the owner confirms
+the thread or takes over by hand, then stop. Native APIs cannot set Full Access. CLI replacement uses --surface cli.
 
-If effort cannot be determined, retain the handoff and use `hub effort`; never guess `--effort`.
-A CLI/Claude successor that needs replacement uses `hub succeed --replace` (main's verified stop/relaunch protocol),
-never a bare launcher; run it yourself, never from a sub-agent.
-
-An automatic successor prompt carries `[agent-hub auto-handoff k/N]`: run its takeover command, then work the finite
-handoff queue to its completion/stop checks. Wait only while work or external events remain. When the queue is done,
-journal DONE and finish. Questions go to `ask add` with a default; hand over again when your budget requires it.
+An automatic successor prompt carries `[agent-hub auto-handoff k/N]`: run its takeover command, then run the digest's
+first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
+checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
+Questions go to `ask add` with a default; hand over again when the budget requires it.
 
 ## Waiting
 

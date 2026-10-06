@@ -50,6 +50,32 @@ PY
 }
 succeed(){ $B/hub succeed --stage stage-a --handoff $H --cwd $W "$@"; }
 
+# Review H1/L4: replacement before takeover, legacy author and refusal before stop.
+replace_r1(){
+  setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > $R/initial.out 2>&1
+  FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --dry-run --model opus > $R/dryreplace.out 2>&1
+  check "$?:$(call stop count):$(call --bg count):$(chain)" "0:none:1:1" "r1 replace: not-taken-over dry run leaves predecessor and chain intact"
+  FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/replace.out 2>&1
+  check "$?:$(call stop count):$(call --bg count):$(chain):$(pending kind)" "0:1:2:1:bg" "r1 replace: running successor before takeover is stopped and replaced, chain unchanged"
+  setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > /dev/null 2>&1
+  python3 - "$R/stage-a/roles.json" <<'PYROLE'
+import json,sys
+p=sys.argv[1];d=json.load(open(p));d['roles']['hub']['tag']='hub-9';json.dump(d,open(p,'w'))
+PYROLE
+  FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/stale.out 2>&1
+  check "$?:$(call stop count):$(call --bg count):$(chain):$(pending kind)" "1:none:1:1:bg" "r1 replace: invalid predecessor is refused before stopping the recorded successor"
+  setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > /dev/null 2>&1
+  CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > /dev/null 2>&1
+  python3 - "$R/stage-a/auto-handoff.json" <<'PYAUTHOR'
+import json,sys
+p=sys.argv[1];d=json.load(open(p));d['pending'].pop('author',None);json.dump(d,open(p,'w'))
+PYAUTHOR
+  FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/legacy.out 2>&1
+  check "$?:$(call stop count):$(call --bg count):$(chain)" "0:1:2:1" "r1 replace: a taken-over legacy record without author permits the predecessor caller"
+}
+replace_r1
+[ "${AUTOPILOT_REPLACE_R1_ONLY:-0}" != 1 ] || exit $fail
+
 # ================================================================== the background successor
 setup
 CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli HUB_TAG=hub-1 succeed --model opus --permission-mode default > $R/s1.out 2>&1; rc=$?

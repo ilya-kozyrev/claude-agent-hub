@@ -902,10 +902,7 @@ def locked_takeover(a) -> int:
                 raise hc.UsageError("--desktop-request requires --auto-handoff")
             if not a.dry_run:
                 autopilot.desktop_preflight(a.stage, request, resolve_self(a.session), a.handoff)
-        rc = _cmd_takeover(a)
-        if request and not a.dry_run and rc == 0:
-            autopilot.desktop_complete(a.stage, request)
-        return rc
+    return _cmd_takeover(a)
 
 
 def _cmd_takeover(a) -> int:
@@ -1096,12 +1093,30 @@ def _cmd_takeover(a) -> int:
 
     prev_rec = dict(hc.roles_load(stage)["roles"].get("hub") or {})
     roles_cli = load_script("roles")
-    plan.step(f"roles: hub → {session} [{tag}]",
-              lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
-                                         note=f"hub takeover from {prev_label}"),
-              lambda: None if hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
-              else "role was not recorded",
-              short="roles")
+    # External config steps run outside this mutex; role and chain publication stay serialized.
+    with contextlib.nullcontext() if a.dry_run else autopilot.state_lock(stage):
+        request = getattr(a, "desktop_request", None)
+        if request and not a.dry_run:
+            autopilot.desktop_preflight(stage, request, cli, handoff)
+        plan.step(f"roles: hub → {session} [{tag}]",
+                  lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
+                                             note=f"hub takeover from {prev_label}"),
+                  lambda: None if hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
+                  else "role was not recorded",
+                  short="roles")
+        if not a.dry_run:
+            with hc.roles_lock(stage):
+                data = hc.roles_load(stage)
+                data["roles"]["hub"]["engine"] = engines.selected()
+                if request:
+                    pend = autopilot.load_state(stage)["pending"]
+                    data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
+                                               cwd=pend["cwd"], observed=pend["observed"])
+                hc.roles_save(stage, data)
+            if request:
+                autopilot.desktop_complete(stage, request)
+            else:
+                autopilot.on_takeover(stage, n, a.auto_handoff, cli, locked=True)
 
     stopped, live = replaced_hub(prev_rec, session, cli, stage, a.dry_run)
     if stopped:
@@ -1123,19 +1138,6 @@ def _cmd_takeover(a) -> int:
               short="journal")
 
     if not a.dry_run:
-        with hc.roles_lock(stage):
-            data = hc.roles_load(stage)
-            data["roles"]["hub"]["engine"] = engines.selected()
-            hc.roles_save(stage, data)
-        if getattr(a, "desktop_request", None):
-            with hc.roles_lock(stage):
-                data = hc.roles_load(stage)
-                pend = autopilot.load_state(stage)["pending"]
-                data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
-                                           cwd=pend["cwd"], observed=pend["observed"])
-                hc.roles_save(stage, data)
-        else:
-            autopilot.on_takeover(stage, n, a.auto_handoff, cli, locked=True)  # the automatic successor keeps the chain; anyone else resets it
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
@@ -1408,7 +1410,7 @@ def cmd_succeed(a) -> int:
         if not cwd.is_dir():
             raise hc.UsageError(f"--cwd {cwd}: no such directory")
         return autopilot.succeed(stage, n, Path(handoff), a.model, a.permission_mode, cwd, False, a.dry_run, False,
-                                 engine=a.engine, succ=succ, effort_arg=a.effort, replace=True, force=a.force)
+                                 engine=a.engine, succ=succ, effort_arg=a.effort, replace=True, force=a.force, surface="cli")
     # this hub's number (the handoff's outgoing one wins over a guess) and its successor's, from the function the
     # successor's takeover numbers by
     # `hub succeed` has no --n: the numbers are chosen in the handoff's title (`hub handoff --n N` writes it)
