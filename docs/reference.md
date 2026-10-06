@@ -264,12 +264,14 @@ A permission is bound to the repository the action touches (`--scope repo`, the 
 repository, or `--repo` — a path, a remote URL or an unambiguous short name; the repository is identified by its
 normalized `origin` URL, else its main clone's path), to one stage (`--scope stage`) or to every repository (`--scope
 all`); it lasts until revoked unless `--until` ends it. `ask add` refuses a question (exit 3, `covered by A-…
-(<source>)` and the owner's words) only when every `--class` keyword is covered on every `--repo` it names (default
+(<source>)` and the owner's words in full) only when every `--class` keyword, as written, is covered on every
+`--repo` it names (default
 the stage's repository); money, migrations and permissions/RBAC — named in the class or the text — are covered only by
 a permission whose class names them (`AGENT_HUB_SENSITIVE_CLASSES`). Act under a permission only where the owner's
 words cover the case (staging is not production); otherwise `--override "why"` adds the question and records why. A
 partly covered question is added with what is not covered; a keyword found only in the text gives a warning. An
-entry with no owner's words, an unparsable `until` or another defect covers nothing and is shown as `INVALID` by
+entry with no owner's words, an `until` other than `YYYY-MM-DD[THH:MM]`, scope `repo` without a `repo-id` or another
+defect covers nothing and is shown as `INVALID` by
 `ask allow --list`. The `hub start` / `hub takeover` digest lists the permissions in force for the stage after § 0
 (what does not fit is `K more`), or says in one line that there are none. Record format, storage and matching rules: [Standing permissions](standing-permissions.md).
 `skills/setup` proposes them after reading the project and the person; it ships no fixed list.

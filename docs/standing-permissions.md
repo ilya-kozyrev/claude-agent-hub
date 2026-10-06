@@ -33,8 +33,8 @@ The register already has the lock, the atomic write, the id prefix and the hand-
 next to the question its words answered; an older plugin skips the unknown `A-` heading instead of misreading it.
 A shared file would add a second lock and a second format for the same kind of record.
 
-**Repository identity.** `repo-id` is the repository's `origin` URL normalized to `host/owner/repo` (scheme, user,
-`.git` and the `git@host:` form dropped), else the absolute path of its main clone; a linked worktree resolves
+**Repository identity.** `repo-id` is the repository's `origin` URL normalized to `host[:port]/owner/repo` (scheme,
+user, `.git` and the `git@host:` form dropped, an explicit port kept), else the absolute path of its main clone; a linked worktree resolves
 through git's common directory to its main clone. Two checkouts named `shop` of different owners are two
 repositories. `--repo` takes a path, a remote URL, or a short name that exactly one known repository has (the
 repositories of every stage's `stage.json` and of every permission); an ambiguous or unknown short name is refused
@@ -48,13 +48,14 @@ asks about a release of repository R, the owner allowed it in stage Y for R — 
 
 **"Covered".** `ask add` checks before it writes. Without `--class` nothing is covered. With it, the question is
 covered only when, on **every** repository it touches, **every** requirement is named by a permission in force:
-- each `--class` keyword is a requirement;
-- a sensitive class — money, migration, permissions/RBAC by default (`AGENT_HUB_SENSITIVE_CLASSES` in the hub home's
+- each `--class` keyword is a requirement, as written: a permission covers it only with the same keyword
+  (`rbac-read` does not cover `rbac-write`, nor `migration-schema` `migration-data`);
+- on top of that, a sensitive class — money, migration, permissions/RBAC by default (`AGENT_HUB_SENSITIVE_CLASSES` in the hub home's
   `config.json`, `{"class": ["stem", …]}`) — is a requirement whenever one of its stems occurs in the question's text
   or class, and only a permission whose `class` names it (the class itself or a keyword starting with a stem) covers
-  it; never a weak match or another keyword.
+  that class; never a weak match or another keyword.
 
-A covered question is refused (exit 3) with `covered by A-… (<source>)` and the owner's words, and the agent acts
+A covered question is refused (exit 3) with `covered by A-… (<source>)` and the owner's words in full (a limit often comes last), and the agent acts
 under the permission only where those words cover the case — its environment and scope ("deploy to staging" is not a
 production deploy); otherwise it passes `--override "why"`, which adds the question and records `- override: A-… —
 why`. A partly covered question is added with `not covered: <class> on <repository>` on stderr. A weak match — a
@@ -62,8 +63,10 @@ permission keyword in the question's text, or a `--class` keyword in a permissio
 `may be covered by A-…`.
 
 **Invalid entries.** A hand-edited entry is checked on every read: no owner's words, an unknown scope, scope `repo`
-without a `repo-id`, an unparsable `until` or an unknown status make it invalid. An invalid entry covers nothing;
-`ask add` names it on stderr, `ask allow --list` shows it as `INVALID (<why>)`, the digest names it.
+without a `repo-id`, an `until` that is not exactly `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`, or an unknown status make
+it invalid. An invalid entry covers nothing; `ask add` names it on stderr, `ask allow --list` shows it as `INVALID
+(<why>)`, the digest names it — an entry that does not say where it applies (no `repo-id`, an unknown scope) under
+every filter.
 
 **Revocation and expiry.** `ask revoke A-… --reason "…"` sets `revoked: <reason> (<stamp>)`; `--until` on `ask allow`
 sets an end. No expiry by default (D-09-004). `ask allow --list [--repo R | --stage S] [--all]` shows the
