@@ -40,6 +40,7 @@ def journal(stage, lines):
             f.writelines(ls)
 
 def roles(stage, spec):
+    os.makedirs(os.path.join(root, stage), exist_ok=True)
     with open(os.path.join(root, stage, "roles.json"), "w") as f:
         json.dump({"version": 1, "roles": {r: {"kind": "headless", "tag": r} for r in spec}}, f)
     for r, (pid, sid) in spec.items():
@@ -61,6 +62,30 @@ if sys.argv[1] == "many":     # twelve stages with news: the size cap
                              q(f"M{n:02d}-002", f"Second question {n}", "open", ago(30), iso(ago(-9)), "wait"),
                              dec(f"M{n:02d}-003", f"A decision the hub took on its own number {n}, with a long enough text", ago(2))])
         journal(s, [(ago(1), "w", f"DONE /x/y/work-{n}-REPORT.md PR #{n}: a sentence about what changed and where it shows")])
+    sys.exit(0)
+
+if sys.argv[1] == "overdue28":   # 28 stages, one overdue question each, nothing else
+    for n in range(28):
+        reg(f"ov-{n:02d}", f"V{n:02d}", [q(f"V{n:02d}-001", f"Overdue question number {n}", "open", ago(40), iso(ago(30)), "carry on")])
+    sys.exit(0)
+
+if sys.argv[1] == "agents":     # live-s: two live agents and no other news; idle-s: nothing; bk-s: blocked three days ago
+    pid = sys.argv[2]
+    roles("live-s", {"w1": (int(pid), "sid-live"), "w2": (int(pid), "sid-live")})
+    reg("idle-s", "ID", [])
+    roles("bk-s", {"w1": (999999, "sid-dead")})
+    journal("bk-s", [(ago(73), "w1", "DONE old finished thing"), (ago(71), "w1", "BLOCKED waits for the hub")])
+    sys.exit(0)
+
+if sys.argv[1] == "edge":       # DONE two minutes ago (journal minute precision)
+    journal("edge-s", [(now - dt.timedelta(minutes=2), "a", "DONE just before the since boundary")])
+    sys.exit(0)
+
+if sys.argv[1] == "bad":        # a register with a broken UTF-8 byte and an overdue question
+    reg("bad-s", "BD", [q("BD-001", "Overdue", "open", ago(40), iso(ago(30)), "x")])
+    with open(os.path.join(root, "bad-s", "questions.md"), "ab") as f:
+        f.write(b"\n<!-- \xff -->\n")
+    reg("good-s", "GD", [q("GD-001", "Fine", "open", ago(2), iso(ago(-5)), "y")])
     sys.exit(0)
 
 pid, sid = sys.argv[2], sys.argv[3]
@@ -179,6 +204,53 @@ grep -q '^many-00 — ' $O/many.out && grep -q '^many-11 — \|more stage' $O/ma
 grep -q 'M00-001 overdue' $O/many.out; check $? 0 "…overdue questions are kept first"
 $B/ask inbox --since 6h --stage many-11 > $O/m11.out; grep -q 'D-M11-003' $O/m11.out && ! grep -q 'more: ask inbox' $O/m11.out; check $? 0 "the stage named in the cut shows everything on its own"
 $B/ask inbox --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d["stages"])==14, len(d["stages"])'; check $? 0 "--json is not cut"
+
+# ---- review round 1 (each check fails on the first version of the command)
+# the cut keeps the overdue question lines of the most urgent stages; the stages that no longer fit are named in one line
+new_home; R2=$AGENT_HUB_HOME
+python3 "$GEN" overdue28
+$B/ask inbox --since 6h > $O/o28.out
+chars=$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' $O/o28.out)
+[ "$chars" -le 2000 ]; check $? 0 "28 stages with one overdue question each: within 2000 characters ($chars)"
+grep -q 'Q-V00-001 overdue' $O/o28.out; check $? 0 "…the first stage's overdue question is in the output"
+s=$(grep -c '^ov-[0-9][0-9] — ' $O/o28.out); q=$(grep -c '^  Q-V[0-9][0-9]-001 overdue' $O/o28.out)
+[ "$s" = "$q" ] && [ "$s" -ge 5 ]; check $? 0 "…every stage shown keeps its overdue question line ($s stages, $q questions)"
+grep -q '^[0-9]* more stages with news: ask inbox --stage ov-' $O/o28.out; check $? 0 "…the stages that do not fit are named in one line"
+
+# a stage with live agents is not idle; blocked now does not depend on the window
+new_home; R2=$AGENT_HUB_HOME
+python3 "$GEN" agents "$LIVE"
+$B/ask inbox --since 1h > $O/ag.out
+grep -q 'quiet: idle-s, live-s (2 live)$' $O/ag.out; check $? 0 "text: a stage with only live agents shows its count in the quiet line"
+$B/ask inbox --since 1h --json > $O/ag.json
+python3 - "$O/ag.json" <<'PY'; check $? 0 "--json: agent counts for every stage; blocked since three days ago still counts with --since 1h"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["agents"]["live-s"] == {"live": 2, "blocked": 0}, d["agents"]
+assert d["agents"]["idle-s"] == {"live": 0, "blocked": 0}, d["agents"]
+assert d["agents"]["bk-s"]["blocked"] == 1, d["agents"]
+bk = [s for s in d["stages"] if s["stage"] == "bk-s"]
+assert bk and bk[0]["agents"]["blocked"] == 1 and bk[0]["done"]["count"] == 0, d["stages"]
+assert "bk-s" not in d["quiet_stages"] and "live-s" in d["quiet_stages"], d["quiet_stages"]
+PY
+grep -q '^bk-s — 1 blocked' $O/ag.out; check $? 0 "text: the blocked stage has its own line"
+
+# minute precision: the journal says 10:00, since is 10:00:30
+for attempt in 1 2 3; do
+    new_home; m1=$(date -u +%M); python3 "$GEN" edge
+    $B/ask inbox --stage edge-s --since 90s > $O/edge.out; m2=$(date -u +%M)
+    [ "$m1" = "$m2" ] && break
+done
+grep -q '^edge-s — 1 done' $O/edge.out; check $? 0 "a DONE line two minutes ago is counted with --since 90s (the boundary minute is kept)"
+
+# an unreadable register is not "no questions"
+new_home; python3 "$GEN" bad
+$B/ask inbox --since 6h > $O/bad.out 2> $O/bad.err; check $? 0 "unreadable register: the digest still exits 0"
+grep -q 'bad-s/questions.md' $O/bad.err; check $? 0 "…stderr names the file"
+grep -q '^bad-s — register unreadable' $O/bad.out; check $? 0 "…the text marks the stage"
+grep -q 'quiet: .*bad-s\|quiet: bad-s' $O/bad.out; check $? 1 "…and never lists it as quiet"
+grep -q 'good-s — 1 question' $O/bad.out; check $? 0 "…the other stages are served"
+$B/ask inbox --since 6h --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); b=[s for s in d["stages"] if s["stage"]=="bad-s"][0]; assert b["register_unreadable"] is True and "bad-s" not in d["quiet_stages"]'; check $? 0 "…--json says so"
 
 # ---- docs and skill
 grep -q 'ask inbox --if-quiet' "$T/../skills/hub/SKILL.md"; check $? 0 "the hub skill names the digest command"

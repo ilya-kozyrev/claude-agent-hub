@@ -10,7 +10,8 @@
   [--json] [--if-quiet]` reads every stage's register, journal and agents and prints, outcome first and under 2 000
   characters, what finished since the owner's last recorded answer (journal `DONE` / `MERGED` / `released` lines, counted,
   the latest quoted), the questions waiting for the owner with default and due time (overdue first), the `D-` decisions the
-  hubs took, and blocked and live agents; quiet stages are one closing line, an overflow is "K more: ask inbox --stage S".
+  hubs took, and blocked and live agents; quiet stages are one closing line (with live counts), an overflow is "K more: ask inbox --stage S"
+  (overdue questions of the most urgent stages first); a register that cannot be read is named, never quiet.
   It is read-only. New setting `AGENT_HUB_OWNER_DIGEST_AFTER` (hub home, default `3h`): `ask inbox --if-quiet` prints
   nothing while the owner answered within it; the hub skill opens its reply with the digest on the owner's first message
   after that silence and puts into every question what each answer changes. Tests: `tests/t_owner_digest.sh` (fixture
