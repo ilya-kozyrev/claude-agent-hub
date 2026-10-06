@@ -7,7 +7,7 @@
   lock from whoever held it (06.10: sentinel-yc-move from core-c in the middle of its merge). The setting now applies
   only to a free (absent or expired) lock and, on `takeover`, to one held by an earlier `hub` of the same stage (found
   in the stage's `roles.json`, live or retired; a live role in another stage wins over a retired record here, and a
-  holder that cannot be placed for sure — two stages, an unreadable registry — counts as foreign); on `start`, for
+  holder that cannot be placed for sure — two stages, an unreadable registry — counts as foreign; a predecessor's main-merge too, unless its record here is the `hub` role); on `start`, for
   an agent of this stage such as a merge steward, and for a holder of another stage or of none, the lock is left alone with "take it with --take-main-merge". An explicit `--take-main-merge` still takes it, now with an
   `ATTENTION` line naming the holder's stage and the age of its latest journal line (or "no journal line"), and
   `hub start` accepts `--skip-lock <resource>` like `takeover`. Tests: `tests/t_hub_main_merge.sh`; against 0.8.4's
