@@ -26,8 +26,11 @@ pointers to the registers — never copies of them.
    - **§ 4 Owner questions**: anything the owner was asked in chat without a record goes into `ask add` first; then its id here.
    - **§ 5 Risks**: what breaks when nobody watches, and how it shows.
    - **§ 6 Skills**: which skills the successor loads first.
-3. Keep it ≤ 12 KB (the `handoff_size` hook refuses a `HANDOFF-*.md` over 15 KB). The chronology stays in the
+3. Check it: `hub handoff --stage <S> --finish` refuses (exit 2, the lines listed) while § 0–2 still hold `TODO`; `hub succeed`
+   makes the same check and `hub takeover` warns the successor about a handoff that fails it. `--allow-todo` overrides, and
+   the successor then rebuilds that state from the journal. A `TODO` in § 3–6 does not stop it.
+4. Keep it ≤ 12 KB (the `handoff_size` hook refuses a `HANDOFF-*.md` over 15 KB). The chronology stays in the
    journal; link it.
-4. Delete the role's older handoffs, `jlog "handoff written: <path>"`, and tell the owner the path.
+5. Delete the role's older handoffs, `jlog "handoff written: <path>"`, and tell the owner the path.
 
 Do not release locks — the successor's `hub takeover` takes them over. Redact secrets: name the variable, never the value.

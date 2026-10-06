@@ -97,11 +97,11 @@ W=$P/w; mkdir -p $W; echo "brief" > $W/b.md
 wait_dead(){ for i in $(seq 1 40); do $B/agent status "$1" | grep -q 'ALIVE' || return 0; sleep 0.5; done; }
 FAKE_HOLD=3 $B/agent spawn --role ru --cwd $W --model haiku --brief $W/b.md > /dev/null 2>&1
 $B/jlog --tag ru "PENDING OWNER: which branch?" > /dev/null; wait_dead ru
-grep -q 'EXIT ru' $(journal stage-a); check $? 1 "an extra wake word counts as a status word (no EXIT line)"
+grep -q 'EXIT ru\|ENDED ru:' $(journal stage-a); check $? 1 "an extra wake word counts as a status word (no EXIT, no ENDED line)"
 rm $R/config.json
 FAKE_HOLD=3 $B/agent spawn --role ru2 --cwd $W --model haiku --brief $W/b.md > /dev/null 2>&1
 $B/jlog --tag ru2 "PENDING OWNER: which branch?" > /dev/null; wait_dead ru2
-grep -q 'EXIT ru2: no status word' $(journal stage-a); check $? 0 "negative: without the setting the same line is not a status word"
+grep -q 'ENDED ru2: finished, no status word' $(journal stage-a); check $? 0 "negative: without the setting the same line is not a status word"
 
 # ---- CLAUDE_BIN=desktop: the newest CLI bundled with Claude Desktop, not PATH
 FH=$P/fakehome; for v in 2.1.9 2.1.10; do mkdir -p "$FH/Library/Application Support/Claude/claude-code/$v/claude.app/Contents/MacOS"; done

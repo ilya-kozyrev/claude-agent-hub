@@ -119,7 +119,7 @@ project the task is about (its main clone under `~/repos/`, or where the brief p
    session with it (a busy one or a terminal one is only named: leave it to the owner).
 
 Leaving: `hub handoff --stage <S>` writes a `HANDOFF-hub-*.md` draft with the facts filled in and TODOs; fill the TODOs
-(skill `handoff`). Locks are not released — the successor's `hub takeover` takes them. It first looks for sub-agents of
+(skill `handoff`; `hub handoff --finish` refuses a draft with TODO left in § 0–2, and `hub succeed` checks the same). Locks are not released — the successor's `hub takeover` takes them. It first looks for sub-agents of
 your own session (`--session`, else the registered hub's and the session you run it in) that still run and refuses —
 exit 2, listing id, description and age — because they die with you and the successor cannot message them; the ways out
 are under *Choosing how to launch work*.
@@ -154,7 +154,7 @@ Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
   `jwait` and handle its result before starting another. A detached successor uses the same foreground procedure.
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER' --for 55m` —
+- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER' --for 55m` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
   (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there. `--for` defaults to 55m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
@@ -288,8 +288,9 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   a headless agent, not an in-session sub-agent:
   `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`.
   It survives the hub's handoff and any hub can talk to it. The executor's tag is `hub-<N>-<role>` (a sub-tag
-  `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it). A run that ends abnormally or
-  without a status word leaves `EXIT <role>: …` in the journal under its tag.
+  `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it). A run that ends abnormally leaves
+  `EXIT <role>: …` in the journal under its tag; one that ends normally without a status word of its own, `ENDED <role>: …`
+  (`REVIEWED <role>: …` for a review role) — the agent stopped, nothing is wrong.
   `agent status [R]` — alive or not, the model it runs on, age of the last event, turns (the last run's next to the total
   after a resume), the last line it said, its worktree.
   `agent send R "…"` — alive: into its inbox and the journal; process gone: the session resumes with this message and

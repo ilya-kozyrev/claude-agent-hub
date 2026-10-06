@@ -141,7 +141,7 @@ hub lists worktrees in the handoff and runs `git worktree remove <path>` once th
 ## Formats
 
 **Journal line** — `- HH:MM [tag] text`, one per event, in `<stage>/coordinator/work/journal-YYYY-MM-DD.md`.
-Status words the hub waits for: `MERGED`, `STOP`, `DONE`, `BLOCKED`, `EXIT`, `QUESTION`; a script waiting for input
+Status words the hub waits for: `MERGED`, `STOP`, `DONE`, `BLOCKED`, `QUESTION`, and the three `agent` itself writes when a run ends: `EXIT` (abnormally), `ENDED` and `REVIEWED` (normally, without a status word of the agent's own); a script waiting for input
 prints `AWAITING ANSWER`. `@tag` addresses a line to a role. A tag `T/sub` is a sub-tag of `T`: the caller's own tag
 and its sub-tags never wake its own `jwait`.
 

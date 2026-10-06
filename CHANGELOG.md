@@ -51,6 +51,20 @@
   `tests/t_prompt_argv.sh` (`ps -ww` shows no prompt text and `pkill -f` leaves the agent alive, both engines, spawn
   and resume), `tests/t_agent_dead.sh` (three concurrent observers write one line; the wrapper's own EXIT is not
   doubled; a result written just before the exit is not "killed"), `tests/t_agent_send_race.sh`; all fail on 0.8.4.
+- **A run that ended normally no longer looks like an alarm, a hub's own lines stop waking it after a Desktop restart, and
+  an unfinished handoff is refused.** An agent that ends with code 0 and a result but no status word of its own (a
+  read-only reviewer cannot journal at all) now leaves `ENDED <role>: …`, or `REVIEWED <role>: …` for a role whose name has
+  `review`/`reviewer` in it; `EXIT` stays for a non-zero code, an error result, no result and `killed (no result)`, on both
+  engines. The hub's default `jwait` wakes on `ENDED` and `REVIEWED` too (the agent stopped), and the brief footer asks
+  for `PROGRESS` lines, which no wake pattern matches, instead of milestone `DONE`/`QUESTION` lines. `hub handoff --finish`
+  refuses (exit 2, lines listed) a draft whose § 0–2 still hold `TODO`, `--allow-todo` overrides it, `hub succeed` makes
+  the same check and `hub takeover` warns about such a handoff. After a Claude Desktop session's CLI restarts (a new
+  `$CLAUDE_CODE_SESSION_ID` under the same `local_…` id) `jlog`, `jwait` and `agent send` still resolve the caller to the
+  hub's tag through `$CLAUDE_CODE_HOST_SESSION_ID` — only when Desktop's record of that session names this CLI session —
+  and refresh the registry's CLI id, so the hub's own `agent send "… report DONE"` echo is signed with its tag and no
+  longer wakes it. `docs/reference.md` shows how a project separates a CI retry from a deploy in `lock-rules.json`. Tests:
+  `t_agent_ended.sh`, `t_handoff_todo.sh` and `t_caller_host.sh` fail on 0.8.5's code; `t_lock_retry_doc.sh` runs the
+  example of `docs/reference.md` itself.
 
 ## 0.8.5 — 2026-10-06
 

@@ -32,7 +32,7 @@ $B/agent status probe > $R/st2.out
 grep -q 'finished (success' $R/st2.out; check $? 0 "status: finished with success"
 grep -q 'last: echo: ' $R/st2.out; check $? 0 "status: last assistant line"
 grep -q 'unread inbox messages 1' $R/st2.out; check $? 0 "unread message (not read, no DONE) flagged after exit"
-grep -q 'EXIT probe: no status word in the journal' $(journal stage-a); check $? 0 "a run without a status word journals EXIT"
+grep -q 'ENDED probe: finished, no status word in the journal' $(journal stage-a); check $? 0 "a clean run without a status word journals ENDED (EXIT is for abnormal ends: t_agent_ended.sh)"
 # 2. send after exit resumes the same session and replays the unread message
 $B/agent-send probe "Answer with one word: RESUMED" > $R/send2.out; rc=$?
 check $rc 0 "send while dead -> resume"
