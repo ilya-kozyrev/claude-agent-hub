@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The watchdog can queue a turn for a confirmed idle Codex app hub:** `watchdog_codex.py` reads runtime state and rollout activity, keeps Desktop, terminal, unknown and notLoaded threads notify-only, and never runs native `exec resume`; Codex API-error detection remains disabled (R4 is Claude-only in 0.9.1), with positive and negative controls in `t_watchdog_codex.sh`.
+
 ## 0.9.0 — 2026-10-06
 
 - **`hub start` now insists on a stage name that says what the work is, and the goal travels with the hub.** A stage
