@@ -49,7 +49,7 @@ MODEL_ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 MODEL_VALUE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@\[\]/-]{0,199}")
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
-                 "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_SCOPE_DIRS")
+                 "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_JWAIT_FOR", "AGENT_HUB_SCOPE_DIRS")
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
@@ -61,6 +61,10 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending.
 # $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
+# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
+# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
+DEFAULT_JWAIT_FOR = "55m"
+MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflows the deadline's date
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
 # the polling guard is a team convention a repository may set; a repository's effort rules apply in addition to the
@@ -869,6 +873,22 @@ def status_pattern(exit_word: bool = True) -> str:
             extra = ""
     base = STATUS_WORDS if exit_word else STATUS_WORDS.replace("|EXIT", "")
     return f"{base}|{extra}" if extra else base
+
+
+def jwait_for() -> str:
+    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a duration between zero
+    (exclusive) and 24h is reported on stderr and replaced by the default."""
+    raw = (setting("AGENT_HUB_JWAIT_FOR") or "").strip()
+    if not raw:
+        return DEFAULT_JWAIT_FOR
+    try:
+        if 0 < parse_duration(raw).total_seconds() <= MAX_JWAIT_FOR_S:
+            return raw
+    except (UsageError, OverflowError):
+        pass
+    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 55m or 1h30m between 1s and 24h ({raw!r}); "
+          f"using {DEFAULT_JWAIT_FOR}")
+    return DEFAULT_JWAIT_FOR
 
 
 def truthy(raw: Optional[str]) -> bool:

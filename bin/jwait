@@ -29,8 +29,8 @@ unseen matching line, even the first time (a script may have asked its question 
 started); a last line without a newline is delivered after it stays unchanged for max(--settle, 1) s.
 Batching: after the first match keeps collecting for --settle seconds (default 20), then prints.
 Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone; a past clock time means
-tomorrow) or --for 6h; default --for 2h (a background Bash task is not guaranteed to live longer; wait again
-after the alarm). On the
+tomorrow) or --for 6h; default --for 55m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
+sleeps longer pays for re-writing its whole context at every wake; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
 """
@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 
 POLL_S = 1.0
-DEFAULT_FOR = "2h"
+DEFAULT_FOR = hc.DEFAULT_JWAIT_FOR  # the built-in; main() reads hc.jwait_for() ($AGENT_HUB_JWAIT_FOR)
 MAX_OUT_LINES = 200
 MAX_LINE_CHARS = 1200
 
@@ -238,7 +238,7 @@ def main(argv: list) -> int:
     if args.until:
         deadline = hc.parse_deadline(args.until, start)
     else:
-        deadline = start + hc.parse_duration(args.for_ or DEFAULT_FOR)
+        deadline = start + hc.parse_duration(args.for_ or hc.jwait_for())
     has_source = args.journal or bool(args.file)
     if not has_source and not (args.until or args.for_):
         raise hc.UsageError("no source (--journal/--file) and no deadline (--until/--for)")

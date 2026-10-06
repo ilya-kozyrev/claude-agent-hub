@@ -495,7 +495,7 @@ def roles_digest(stage: str) -> str:
 def jwait_command(stage: str, tag: str, since=None) -> str:
     since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
     return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match {shlex.quote(hc.status_pattern())} "
-            f"{since_opt}--for 2h --note \"scheduled round\"")
+            f"{since_opt}--for {hc.jwait_for()} --note \"scheduled round\"")
 
 
 def hub_notes_line(stage: str) -> str:
