@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.5 — 2026-10-06
+
 - **`hub start` and `hub takeover` no longer take the main-merge lock from a live hub of another stage.** With
   `AGENT_HUB_TAKE_MAIN_MERGE=true` in a repository's config, every new stage's `hub start` and every takeover took the
   lock from whoever held it (06.10: sentinel-yc-move from core-c in the middle of its merge). The setting now applies
