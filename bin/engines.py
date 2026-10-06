@@ -135,7 +135,9 @@ def hook_args(cwd=None):
     return args
 
 
-def codex_argv(meta, prompt, resume=False):
+def codex_argv(meta, prompt=None, resume=False):
+    """The command line of a run. The prompt is not in it: the trailing `-` makes `codex exec` (and `exec resume`)
+    read it from stdin, so it never shows in `ps`. `prompt` is accepted for callers that preview the command."""
     args = [codex_bin(meta["cwd"]), "exec"]
     if resume:
         args += ["resume", meta["session_id"]]
@@ -158,7 +160,7 @@ def codex_argv(meta, prompt, resume=False):
                 if key in policy:
                     args += ["-c", f"sandbox_workspace_write.{key}=" + toml_value(policy[key])]
     args += hook_args(meta["cwd"])
-    return args + [prompt]
+    return args + ["-"]
 
 
 def normalize_event(ev):
