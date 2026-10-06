@@ -64,6 +64,7 @@ STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER"
 # How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
 # The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
 DEFAULT_JWAIT_FOR = "55m"
+MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflows the deadline's date
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
 # the polling guard is a team convention a repository may set; a repository's effort rules apply in addition to the
@@ -875,17 +876,18 @@ def status_pattern(exit_word: bool = True) -> str:
 
 
 def jwait_for() -> str:
-    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a positive duration is
-    reported on stderr and replaced by the default."""
+    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a duration between zero
+    (exclusive) and 24h is reported on stderr and replaced by the default."""
     raw = (setting("AGENT_HUB_JWAIT_FOR") or "").strip()
     if not raw:
         return DEFAULT_JWAIT_FOR
     try:
-        if parse_duration(raw).total_seconds() > 0:
+        if 0 < parse_duration(raw).total_seconds() <= MAX_JWAIT_FOR_S:
             return raw
-    except UsageError:
+    except (UsageError, OverflowError):
         pass
-    _warn(f"AGENT_HUB_JWAIT_FOR is not a positive duration like 55m or 1h30m ({raw!r}); using {DEFAULT_JWAIT_FOR}")
+    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 55m or 1h30m between 1s and 24h ({raw!r}); "
+          f"using {DEFAULT_JWAIT_FOR}")
     return DEFAULT_JWAIT_FOR
 
 

@@ -168,8 +168,13 @@ mkdir -p $O && echo '{"AGENT_HUB_JWAIT_FOR": "20m"}' > $O/config.json
 check "$(hcfor)" 20m "jwait_for(): the hub home's config.json sets it"
 check "$(AGENT_HUB_JWAIT_FOR=1h30m hcfor)" 1h30m "jwait_for(): the environment wins over config.json"
 check "$(AGENT_HUB_JWAIT_FOR=soon hcfor 2>$O/w1.err)" 55m "jwait_for(): an unparsable value falls back to 55m"
-grep -q 'AGENT_HUB_JWAIT_FOR is not a positive duration' $O/w1.err; check $? 0 "…and says so on stderr"
+grep -q 'AGENT_HUB_JWAIT_FOR is not a duration' $O/w1.err; check $? 0 "…and says so on stderr"
 check "$(AGENT_HUB_JWAIT_FOR=0m hcfor 2>/dev/null)" 55m "jwait_for(): a zero duration falls back to 55m"
+check "$(AGENT_HUB_JWAIT_FOR=24h hcfor)" 24h "jwait_for(): 24h, the cap, is accepted"
+for v in 25h 100000000d 1000000000d; do
+  check "$(AGENT_HUB_JWAIT_FOR=$v hcfor 2>$O/w2.err)" 55m "jwait_for(): $v is over the cap -> 55m"
+  grep -q 'AGENT_HUB_JWAIT_FOR is not a duration' $O/w2.err; check $? 0 "…with a warning, no traceback ($v)"
+done
 # a real run: the deadline in the start line is now + the configured wait; an explicit --for still wins
 waited(){  # waited <minutes expected> <extra env...> -- <jwait args...>: run jwait, read its deadline, stop it
   local want=$1; shift; local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
@@ -180,6 +185,8 @@ import datetime as dt, re, sys
 m = re.search(r"until (\d\d)\.(\d\d) (\d\d):(\d\d)(?::(\d\d))?", open(sys.argv[1]).read())
 now = dt.datetime.now(dt.timezone.utc)
 end = now.replace(month=int(m[2]), day=int(m[1]), hour=int(m[3]), minute=int(m[4]), second=int(m[5] or 0), microsecond=0)
+if end < now - dt.timedelta(days=1):  # the deadline is across New Year: the printed date has no year
+    end = end.replace(year=now.year + 1)
 left = (end - now).total_seconds() / 60
 print("ok" if abs(left - float(sys.argv[2])) <= 1.5 else f"got {left:.1f} min")
 PY
