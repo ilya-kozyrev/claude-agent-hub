@@ -209,6 +209,12 @@ you need. When you go quiet on purpose (a long wait for the owner, a pause), say
   on every repository is refused (exit 3) and prints the owner's words — act under them only if they cover this
   case's specifics (environment, scope, what is touched) and journal the id; if they do not, `--override "why"`.
   Money, migrations and permissions/RBAC are covered only by a permission that names them.
+- Owner digest: on the owner's first message after a long silence run `ask inbox --if-quiet` and open your reply with
+  its output, then answer; it prints nothing while the owner's last recorded answer is newer than
+  `AGENT_HUB_OWNER_DIGEST_AFTER` (3h by default), so empty output means go straight to the reply. Show it once per
+  silence, not on every message; `ask inbox` on request at any time (`--stage S` for one stage, `--since 6h`). Every
+  question you put to the owner says what each answer changes: "A: …; B: …" with the consequence of each, and the
+  default you take if no answer comes.
 
 ## Planning a stage: agree the business result before autonomous work
 

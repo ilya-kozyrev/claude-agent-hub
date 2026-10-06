@@ -28,6 +28,19 @@
   that was installed (`watchdog status` says so); an owner of the Desktop night-nudge task may delete it. Tests:
   `tests/t_watchdog.sh`, `tests/t_watchdog_install.sh`.
 
+- **One digest for the owner across all stages: `ask inbox`.** In the morning the owner asked four hubs one by one for
+  status and read about ten minutes of long replies before the first decision. `ask inbox [--since T] [--stage S …]
+  [--json] [--if-quiet]` reads every stage's register, journal and agents and prints, outcome first and under 2 000
+  characters, what finished since the owner's last recorded answer (journal `DONE` / `MERGED` / `released` lines, counted,
+  the latest quoted), the questions waiting for the owner with default and due time (overdue first), the `D-` decisions the
+  hubs took, and blocked and live agents; quiet stages are one closing line (with live counts), an overflow is "K more: ask inbox --stage S"
+  (overdue questions of the most urgent stages first); a register that cannot be read is named, never quiet.
+  It is read-only. New setting `AGENT_HUB_OWNER_DIGEST_AFTER` (hub home, default `3h`): `ask inbox --if-quiet` prints
+  nothing while the owner answered within it; the hub skill opens its reply with the digest on the owner's first message
+  after that silence and puts into every question what each answer changes. Tests: `tests/t_owner_digest.sh` (fixture
+  with three stages, exact content, the cap, `--since`, `--if-quiet` on both sides of the threshold, `--json`; it fails
+  on the old `bin/`).
+
 ## 0.9.0 — 2026-10-06
 
 - **`hub start` now insists on a stage name that says what the work is, and the goal travels with the hub.** A stage

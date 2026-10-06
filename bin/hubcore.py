@@ -112,6 +112,8 @@ JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_H
 # only: a cloned repository must not loosen what needs the owner's explicit word.
 HUB_WIDE_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
 JSON_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
+# Silence after which the hub opens its reply with `ask inbox` (bin/ask; a duration like 3h): hub home only.
+HUB_WIDE_KEYS += ("AGENT_HUB_OWNER_DIGEST_AFTER",)
 
 
 # ---------------------------------------------------------------- the hub home
