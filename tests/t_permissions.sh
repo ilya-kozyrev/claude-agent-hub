@@ -119,10 +119,23 @@ cat >> $R/stage-x/questions.md <<'MD'
 - repo: shop
 - repo-id: github.com/client-a/shop
 - class: bump
+
+## A-X-060 — rotate logs by hand
+- kind: allow
+- status: allowed
+- scope: repo
+- repo: shop
+- repo-id: github.com/client-a/shop
+- class: rotate
+- words: «логи крути сам»
+- until: 2026-10-06Tgarbage
 MD
 add --stage stage-x --class tag "Tag the release?"; check $? 0 "an entry with an unparsable until covers nothing"
 grep -q "^ask: A-X-050 is invalid (until 'someday' unparsable) and covers nothing" $P.add.err; check $? 0 "…and ask add reports it"
 add --stage stage-x --class bump "Bump the version?"; check $? 0 "an entry without the owner's words covers nothing"
+add --stage stage-x --class rotate "Rotate the logs?"; check $? 0 "an until with a valid date and garbage after it covers nothing"
+grep -q "^ask: A-X-060 is invalid (until '2026-10-06Tgarbage' unparsable)" $P.add.err; check $? 0 "…and is reported"
+$B/ask allow --stage stage-x --class rotate --words "ok" --until 2099-01-01Tgarbage "x" > /dev/null 2>&1; check $? 1 "negative: ask allow refuses such an --until"
 $B/ask allow --list --stage stage-x > $P.l0
 grep -q "^A-X-050 \[stage-x\] INVALID (until 'someday' unparsable): covers nothing" $P.l0 && grep -q "^A-X-051 \[stage-x\] INVALID (no owner's words)" $P.l0
 check $? 0 "ask allow --list marks both invalid"
@@ -154,7 +167,7 @@ $B/hub start --stage stage-x --session $S1 --dry-run > $P.d1 2>&1; check $? 0 "h
 grep -q '^Standing permissions (repo shop; act only where' $P.d1 && grep -q "^$HX2 \[stage-x\] hotfix — до 2099 (until 2099-01-01)" $P.d1 \
   && grep -q '^A-Z-003 \[stage-z\] docs — доки без вопросов' $P.d1; check $? 0 "…lists the permissions in force for shop and all repositories"
 grep -q '^A-Y-001' $P.d1; check $? 1 "…not the revoked one"
-grep -q '^invalid, cover nothing: A-X-051, A-X-050\|^invalid, cover nothing: A-X-050, A-X-051' $P.d1; check $? 0 "…names the invalid ones"
+grep '^invalid, cover nothing:' $P.d1 | grep 'A-X-050' | grep 'A-X-051' | grep -q 'A-X-060'; check $? 0 "…names the invalid ones"
 mkdir -p $R/stage-w; printf '{"repo": "%s"}\n' $G/client-b/shop > $R/stage-w/stage.json
 $B/hub start --stage stage-w --session $S1 --dry-run > $P.d4 2>&1
 grep -q '^A-Z-003' $P.d4 && ! grep -q '^A-Y-' $P.d4; check $? 0 "client-b's shop: only the all-repositories one, none of client-a's"

@@ -518,6 +518,23 @@ def resolve_repo(raw: str) -> Repo:
 
 # ---- records
 
+UNTIL_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?")
+
+
+def parse_until(raw: str) -> dt.datetime | None:
+    """A permission's end, parsed whole: YYYY-MM-DD (the end of that day) or YYYY-MM-DDTHH:MM, nothing before or
+    after; None for anything else (an entry with such an `until` is invalid). Stricter than a question's --due."""
+    raw = (raw or "").strip()
+    if not UNTIL_RE.fullmatch(raw):
+        return None
+    try:
+        if "T" in raw:
+            return dt.datetime.fromisoformat(raw)
+        return dt.datetime.combine(dt.date.fromisoformat(raw), dt.time(23, 59))
+    except ValueError:
+        return None
+
+
 def perm_problems(e: Entry) -> list[str]:
     """Why an A- entry cannot be trusted (an invalid entry covers nothing); [] for a well-formed one."""
     f, out = e.fields, []
@@ -531,7 +548,7 @@ def perm_problems(e: Entry) -> list[str]:
     elif scope == "repo" and f.get("repo-id", "") in NO_VALUE + ("*",):
         out.append("scope repo without a repo-id")
     until = f.get("until", "")
-    if until not in NO_VALUE and parse_due(until) is None:
+    if until not in NO_VALUE and parse_until(until) is None:
         out.append(f"until {until!r} unparsable")
     return out
 
@@ -542,7 +559,7 @@ def perm_state(e: Entry, now: dt.datetime) -> str:
         return "revoked"
     if perm_problems(e):
         return "invalid"
-    until = parse_due(e.fields.get("until", ""))
+    until = parse_until(e.fields.get("until", ""))
     return "expired" if until is not None and until < now else "allowed"
 
 
@@ -713,8 +730,8 @@ def cmd_allow(args) -> int:
         raise SystemExit("ask: allow needs --stage and the class of action (or --list)")
     if not one_line(args.words):
         raise SystemExit("ask: --words is empty — a permission records the owner's own words; without them ask the owner")
-    if args.until and parse_due(args.until) is None:
-        raise SystemExit(f"ask: cannot parse --until {args.until!r} (use YYYY-MM-DDTHH:MM or YYYY-MM-DD)")
+    if args.until and parse_until(args.until) is None:
+        raise SystemExit(f"ask: cannot parse --until {args.until!r} (use YYYY-MM-DD or YYYY-MM-DDTHH:MM, nothing else)")
     stage_file(args.stage)   # the stage name is checked before anything else is resolved
     if len(args.repo) > 1:
         raise SystemExit("ask: allow takes one --repo (record one permission per repository)")
