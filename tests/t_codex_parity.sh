@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Runtime, identity and reviewer-budget controls: fake homes/caches, no model or native app calls.
+# PARITY_CASE selects identity, wait, runtime, helpers, agents_cell, helpers_whitespace,
+# helpers_invalid, helpers_zero_doc, or a host_* control (host runs all host controls).
 set -euo pipefail
 PARITY_ROOT="${BIN:-$(cd "$(dirname "$0")/../bin" && pwd)}"
 PARITY_TMP="$(mktemp -d)"
@@ -31,7 +33,8 @@ def call(b, *args, extra=None, cwd=None):
 # Each round-one finding can run before fixes without an earlier stale expectation masking it.
 host_cases = {'host_claude_home': ('claude', 'home'), 'host_claude_project': ('claude', 'project'),
               'host_codex_home': ('codex', 'home'), 'host_codex_project': ('codex', 'project'),
-              'host_codex_env': ('codex', 'env'), 'host_terminal': ('codex', 'terminal')}
+              'host_codex_env': ('codex', 'env'), 'host_terminal': ('codex', 'terminal'),
+              'host_terminal_claude': ('claude', 'terminal')}
 if case in ('all', 'host', *host_cases):
     # A deliberately newer cache proves that cross-engine warnings are excluded, not merely absent.
     cache = tmp/'codex/plugins/cache/market/agent-hub/999.0.0'
@@ -46,7 +49,7 @@ if case in ('all', 'host', *host_cases):
         cwd = tmp
         extra = {}
         if layer == 'terminal':
-            extra['AGENT_HUB_ENGINE'] = 'codex'
+            extra['AGENT_HUB_ENGINE'] = host
         else:
             extra['CODEX_THREAD_ID' if host=='codex' else 'CLAUDE_CODE_SESSION_ID'] = new
             executor = 'claude' if host=='codex' else 'codex'
