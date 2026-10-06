@@ -6,9 +6,10 @@ Long work (a merge steward, a release rehearsal, anything > 1 h) runs as a detac
 session instead of a hub sub-agent: it survives the hub's handoff, and any hub can talk to it.
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
-              [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--permission-mode MODE]
+              [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
+              [--permission-mode MODE]
   agent status [R] [--stage S] [--all]
-  agent send R "msg" [--stage S]
+  agent send R "msg" [--stage S] [--resume-anyway]
   agent stop R [--stage S]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
@@ -28,7 +29,11 @@ resolves it to the latest model of that family; Claude Code 2.1.287 is the minim
 resolves it to an older model), and spawn warns about it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
 and agent-top. $AGENT_HUB_MODEL_MAP pins aliases to ids ("sonnet=claude-sonnet-x-y,opus=…") — an opt-in, since a pin
 goes stale with the next model release.
-Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effort flag.
+Effort: --effort, else the model's entry in $AGENT_HUB_EFFORT_DEFAULTS, else $AGENT_HUB_DEFAULT_EFFORT, else high;
+haiku gets no effort flag. An effort above the model's default, or a model of $AGENT_HUB_REASON_MODELS, needs
+--reason "…" (warning, or refusal with AGENT_HUB_REASON_POLICY=refuse); the reason goes into the journal start line
+and meta.json (bin/spawn_policy.py). The title registered for the agent is `<role> — <the brief's first heading,
+without a leading "Brief:"> (<stage>)`, unless --title says otherwise.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
 (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
@@ -46,16 +51,19 @@ An existing branch or worktree is used as it is (--base is ignored with a note).
 the base. status and stop name the worktree; nothing removes it — `git worktree remove` once the branch is
 merged. Two agents in one checkout overwrite each other's files: give each writer its own worktree.
 status: alive or not, the model, age of the last log event, model turns (of the last run, with the total once the
-agent was resumed), the last assistant text line.
+agent was resumed), the context size (ctx, the last model call's input), the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
 the session is resumed detached with `claude --resume <id> -p` (the message on stdin) in the same cwd, the unread
 messages replayed first (an agent that ended its turn before reading its inbox loses nothing;
 agent status flags them). spawn and resume succeed only once the run writes its init event
 (120 s, $AGENT_INIT_TIMEOUT); a CLI that rejects its flags is killed and reported, and no role is recorded.
+A resume is refused while the agent's context is above $AGENT_HUB_RESUME_MAX_CTX (default 250k tokens): spawn a fresh
+agent from a handoff file; --resume-anyway overrides.
 stop: SIGTERM to the process group (SIGKILL after 10 s), role retired.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
-spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: `ask plan`.
+spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
+the owner first, `ask plan` is recorded only after the owner's yes.
 Exit: 0 ok, 1 failure / unknown agent, 2 usage.
 """
 from __future__ import annotations
