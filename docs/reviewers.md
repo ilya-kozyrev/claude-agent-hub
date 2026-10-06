@@ -109,6 +109,8 @@ entries still override that default. Check actual CLI model availability before 
 
 ## The brief
 
+The hub writes the brief and launches the reviewer; the author of the change does neither.
+
 `${CLAUDE_PLUGIN_ROOT}/templates/brief-review.md` is a self-contained review brief: what changed and why, the diff
 (`git diff <base sha>..<head sha>`), where to look hardest, read-only, findings ranked high / medium / low with
 `file:line`, a concrete failing scenario and a one-sentence fix, a verdict (`merge`, `merge after fixes`, `changes

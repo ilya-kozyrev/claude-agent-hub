@@ -113,7 +113,6 @@ check $rc 0 "partial: a question without a newline is delivered once stable"
 grep -q 'ship?' $O/o12.out; check $? 0 "partial: …with its text"
 printf '\n' >> $F
 $B/jwait --file $F --match 'AWAITING ANSWER' --caller p1 --settle 1 --for 4s >/dev/null 2>&1; check $? 3 "partial: completing the line later does not deliver it again"
-# 12. the default deadline is 2 h: a background Bash task is not guaranteed to live longer
 # 15. stage-qualified address: on stage core-c, --tag hub-30 also hears @core-c-hub-30 (how another stage's hub signs
 # and answers), and nothing that merely looks like it
 mkdir -p $AGENT_HUB_HOME/core-c $AGENT_HUB_HOME/dolyaq   # a stage of its own here, whatever exists in the real hub home

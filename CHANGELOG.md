@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A hub's wait is now shorter than the prompt cache's life, and the plugin's own service lines no longer wake it.**
+  `jwait` waited 2 h by default; the cache lives 1 h, so every wake after a long sleep re-wrote the hub's whole context
+  into it. The default is now `55m`, set by the new hub-wide `AGENT_HUB_JWAIT_FOR` (environment or the hub home's
+  `config.json`; a bad value warns and falls back); the digest's `jwait` line, the skill, the docs and `--help` carry
+  it, and the skill keeps the Bash `timeout` at or above `--for`. The autopilot's `auto-handoff chain reset` line,
+  which was tagged `hub` and woke every hub's `--tag hub` wait, is now tagged `autopilot`: still in the journal, wakes
+  nobody. The review brief template and the skill say the hub writes the brief and launches the reviewer, never the
+  author; money, masking and permissions narrow it to that risk, and the reviewer caps its reading by the diff size.
+  Tests: `t_jwait.sh` (default, setting layers, a real run's deadline, a service line next to a `DONE`), `t_hardening.sh`
+  (the digest's printed command).
+
 ## 0.8.5 — 2026-10-06
 
 - **`hub start` and `hub takeover` no longer take the main-merge lock from a live hub of another stage.** With

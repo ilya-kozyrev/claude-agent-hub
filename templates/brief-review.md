@@ -2,7 +2,10 @@
 
 <!-- Self-contained brief for a reviewer — an `agent` reviewer (`hub reviewer` prints its `agent spawn` line) or a
 reviewer skill; docs/reviewers.md has the contract. The reviewer has not seen the conversation: everything it needs
-is here. Fill every <…>; delete the "Round N" section for a first review. -->
+is here. Fill every <…>; delete the "Round N" section for a first review.
+The hub writes this brief and launches the reviewer, never the author of the change: an author's brief steers the
+reviewer to what the author already checked. For money, masking and permissions narrow "Look hardest at" to that
+risk and leave style out. -->
 
 ## What changed and why
 <The problem in two or three lines, with a source (an issue, a journal line, a report). Then what the change does,
@@ -26,7 +29,7 @@ production, permissions) say here which risk the review is narrowed to, and leav
   rerun a test only when a finding needs it (the author's results are above). A read-only sandbox — a Codex `read-only`
   one — cannot write files or create temp dirs: do not try.
 - Check the change against the intent above, not only the diff in isolation: read the callers and the tests of what it
-  touches.
+  touches. Cap the reading by the diff size: a small diff reads its callers and tests, not the repository.
 - Findings, ranked **high** (wrong result, data loss, security, breaks the build), **medium** (a real defect with a
   narrower trigger, a missing test for new behaviour) and **low** (style, naming — only if cheap). For each:
   `file:line` — the defect in one sentence — a concrete failing scenario (inputs or state, and the wrong output or

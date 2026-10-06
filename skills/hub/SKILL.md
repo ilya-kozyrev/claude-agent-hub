@@ -132,8 +132,10 @@ default, and you hand over the same way when your own budget says so.
 ## Waiting
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
-- **Claude Code:** run Bash with `run_in_background: true`, `timeout: 7200000`, and `--for` at most 2h.
-  Its completion notification wakes the coordinator.
+- **Claude Code:** run Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (55m by
+  default, `AGENT_HUB_JWAIT_FOR`). The prompt cache lives one hour: a wake after a longer sleep re-writes the whole
+  context into it, so a longer wait costs more than it saves. The Bash `timeout` stays at or above `--for`. Its
+  completion notification wakes the coordinator.
 - **Codex:** use the shell tool's yielded execution session and its continuation/wait tool. Keep each blocking
   tool wait at most 60 seconds so the coordinator can respond, and do independent work before continuing it.
   Preserve the returned execution id; use the tool's exit code to distinguish an event, an alarm, and a failure.
@@ -141,12 +143,11 @@ Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
   `jwait` and handle its result before starting another. A detached successor uses the same foreground procedure.
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER' --for 2h` —
+- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b|AWAITING ANSWER' --for 55m` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
-  (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there. `--for` defaults to 2h, the longest a background Bash
-  task is guaranteed. Called with `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry
-  entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
+  (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there. `--for` defaults to 55m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
+  `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
   wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
   delivered too.
@@ -257,6 +258,9 @@ Reviewer engine choice is separate from the implementation engine; this review p
 Codex implementation. Check the chosen engine's available models and limits before launch, record the reviewer
 choice in stage rules and its brief, and honour the owner's explicit reviewer policy. For a Claude author,
 use its configured independent Fable or Codex reviewer. One reviewer is sufficient.
+The hub writes the review brief and launches the reviewer itself; the author of the change does neither (an author
+briefing its own reviewer steers it to what the author already checked). For money, masking and permissions the brief
+is narrowed to that risk (the template's "Look hardest at") and leaves style out.
 
 `hub reviewer --for <class>` walks the configured reviewers (`AGENT_HUB_REVIEWERS`, default one ordinary `agent
 spawn`) and prints the first that is available now and exactly how to start it: an `agent spawn --role review-… --brief
