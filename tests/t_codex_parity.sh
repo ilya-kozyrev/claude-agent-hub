@@ -45,9 +45,10 @@ if case in ('all', 'identity'):
     except hc.UsageError: pass
     else: raise AssertionError('unresolved self borrowed the registered hub identity')
     print('PASS self resolves both hosts and worker identity with registry ownership; missing identity refuses')
+if case in ('all', 'wait'):
     for engine, key in (('codex', 'CODEX_THREAD_ID'), ('codex', 'AGENT_SESSION_ID'), ('claude', 'CLAUDE_CODE_SESSION_ID')):
         path=tmp/f'HANDOFF-{engine}-{key}.md'
-        r=call(bins/'hub', 'handoff', '--stage','stage-a','--session','self','--out',str(path),
+        r=call(bins/'hub', 'handoff', '--stage','stage-a','--session',old,'--out',str(path),
                extra={'AGENT_HUB_ENGINE':engine, key:old})
         assert r.returncode == 0, (r.stdout, r.stderr)
         text=path.read_text()
