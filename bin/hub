@@ -1388,58 +1388,65 @@ def cmd_rename(a) -> int:
     if live:
         raise hc.UsageError(f"stage {old} has live agents: {', '.join(live)} — stop them (`agent stop --stage {old} "
                             "<role>`) or wait until they finish, then rename")
-    files = [p for p in [*sorted(src.glob("*.json")), *sorted(src.glob("agents/*/meta.json"))] if p.is_file()]
-    rewritten = {}  # relative path -> (text now, text after the rename): everything is read and checked before the first write
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-            data = json.loads(text)
-        except (OSError, ValueError) as e:
-            raise hc.Failure(f"{path} cannot be read as JSON ({e}); fix it by hand — nothing was renamed") from None
-        rewritten[path.relative_to(src)] = (text, json.dumps(rename_strings(data, old, new, hc.root()), ensure_ascii=False,
-                                                              indent=1) + "\n")
     board = board_module()
-    roles = hc.roles_load(old)["roles"]
-    sessions = {v for r in roles.values() for v in (r.get("session"), r.get("cli_session_id")) if v}
-    locks = board.load()
-    lock_changes = renamed_locks(locks, old, new, sessions)
-    register = src / "questions.md"
-    register_text = register.read_text(encoding="utf-8") if register.is_file() else ""
-    head, sep, rest = register_text.partition("\n")
     tag = "[plan] " if a.dry_run else ""
-    print(f"{tag}rename stage {old} → {new}: directory {src} → {dst}")
-    print(f"{tag}rewrite names and paths in {len(files)} json file(s): " + ", ".join(str(p) for p in rewritten))
-    for i, rec in lock_changes:
-        print(f"{tag}board: {rec['kind']} ({rec.get('repo') or board.DEFAULT_REPO}): "
-              + "; ".join(f"{k} → {rec[k]!r}" for k in ("owner_name", "why", "took_over_from") if rec.get(k) != locks[i].get(k)))
-    if a.dry_run:
-        return 0
     undo = []  # what to put back, most recent first, when a step fails: the stage is then where and what it was
-    try:
-        with hc.roles_lock(old):
+    # the roles lock is held from the first read to the end (and through a rollback): a `roles set` that lands in between
+    # waits, instead of being overwritten by a snapshot taken before it
+    with hc.roles_lock(old):
+        files = [p for p in [*sorted(src.glob("*.json")), *sorted(src.glob("agents/*/meta.json"))] if p.is_file()]
+        rewritten = {}  # relative path -> (text now, text after the rename): all read and checked before the first write
+        for path in files:
+            try:
+                text = path.read_text(encoding="utf-8")
+                data = json.loads(text)
+            except (OSError, ValueError) as e:
+                raise hc.Failure(f"{path} cannot be read as JSON ({e}); fix it by hand — nothing was renamed") from None
+            rewritten[path.relative_to(src)] = (text, json.dumps(rename_strings(data, old, new, hc.root()),
+                                                                  ensure_ascii=False, indent=1) + "\n")
+        roles = hc.roles_load(old)["roles"]
+        sessions = {v for r in roles.values() for v in (r.get("session"), r.get("cli_session_id")) if v}
+        locks = board.load()
+        lock_changes = renamed_locks(locks, old, new, sessions)
+        register = src / "questions.md"
+        register_text = register.read_text(encoding="utf-8") if register.is_file() else ""
+        head, sep, rest = register_text.partition("\n")
+        print(f"{tag}rename stage {old} → {new}: directory {src} → {dst}")
+        print(f"{tag}rewrite names and paths in {len(files)} json file(s): " + ", ".join(str(p) for p in rewritten))
+        for i, rec in lock_changes:
+            print(f"{tag}board: {rec['kind']} ({rec.get('repo') or board.DEFAULT_REPO}): "
+                  + "; ".join(f"{k} → {rec[k]!r}" for k in ("owner_name", "why", "took_over_from")
+                              if rec.get(k) != locks[i].get(k)))
+        if a.dry_run:
+            return 0
+        try:
             os.rename(src, dst)
             undo.append(lambda: os.rename(dst, src))
             for rel, (before, after) in rewritten.items():
                 hc.atomic_write(dst / rel, after)
                 undo.append(lambda rel=rel, before=before: hc.atomic_write(dst / rel, before))
-        if head == f"# Owner questions — {old}":
-            hc.atomic_write(dst / "questions.md", f"# Owner questions — {new}" + sep + rest)
-            undo.append(lambda: hc.atomic_write(dst / "questions.md", register_text))
-        if lock_changes:
-            with board.Locked():
-                current = board.load()
-                for i, rec in renamed_locks(current, old, new, sessions):
-                    current[i] = rec
-                board.write(current)
-    except Exception as e:
-        problems = []
-        for step in reversed(undo):
-            try:
-                step()
-            except Exception as e2:  # keep undoing the rest
-                problems.append(str(e2))
-        raise hc.Failure(f"rename {old} → {new} failed ({e}); " + ("rolled back" if not problems else
-                         "ROLLBACK INCOMPLETE (" + "; ".join(problems) + ") — check " + f"{src} and {dst}")) from None
+            if head == f"# Owner questions — {old}":
+                hc.atomic_write(dst / "questions.md", f"# Owner questions — {new}" + sep + rest)
+                undo.append(lambda: hc.atomic_write(dst / "questions.md", register_text))
+            if lock_changes:
+                with board.Locked():
+                    current = board.load()
+                    for i, rec in renamed_locks(current, old, new, sessions):
+                        current[i] = rec
+                    board.write(current)
+        except BaseException as e:  # also Ctrl-C and SIGTERM-as-exception: the stage must never stay half-renamed
+            problems = []
+            for step in reversed(undo):
+                try:
+                    step()
+                except Exception as e2:  # keep undoing the rest
+                    problems.append(str(e2))
+            if not isinstance(e, Exception):
+                print(f"rename {old} → {new} interrupted; " + ("rolled back" if not problems else
+                      "ROLLBACK INCOMPLETE (" + "; ".join(problems) + ")"), file=sys.stderr)
+                raise
+            raise hc.Failure(f"rename {old} → {new} failed ({e}); " + ("rolled back" if not problems else
+                             "ROLLBACK INCOMPLETE (" + "; ".join(problems) + ") — check " + f"{src} and {dst}")) from None
     print(f"renamed stage {old} → {new}. Sessions that still run under HUB_STAGE={old} (a hub, a shell) need the new name; "
           f"worktrees and branches named {old}-… are not renamed.")
     return 0

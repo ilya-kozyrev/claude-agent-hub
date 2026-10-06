@@ -115,4 +115,56 @@ else
   echo "SKIP rollback of a failed write (running as root: a read-only directory does not stop it)"
 fi
 $B/hub rename --stage fix-quotes --to quotes-fixed > $P.ok.out 2>&1; check "$?:$([ -d $R/quotes-fixed ] && echo there || echo none)" "0:there" "control: once the cause is gone, the same rename goes through"
+
+# ---- a rename holds the stage's roles lock from its first read: a concurrent `roles set` is not overwritten
+$B/hub start --stage lock-race --goal "Race the lock" --session $H1 > /dev/null 2>&1; check $? 0 "setup: a stage for the lock race"
+python3 - $R/lock-race $B $H2 > $P.holder.out 2>&1 <<'PY' &
+import sys, time, json, fcntl
+stage, B, sid = sys.argv[1:4]
+sys.path.insert(0, B)
+import hubcore as hc
+with open(f"{stage}/.roles.lock", "a") as fh:      # the lock a `roles set` of the stage's own hub holds
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    print("locked", flush=True)
+    time.sleep(3)
+    path = f"{stage}/roles.json"
+    data = json.load(open(path))
+    data["roles"]["late"] = {"session": sid, "cli_session_id": sid, "kind": "headless", "tag": "late", "title": "agent late (lock-race)"}
+    json.dump(data, open(path, "w"), indent=1)
+PY
+HOLDER=$!
+for i in $(seq 1 100); do grep -q locked $P.holder.out 2>/dev/null && break; sleep 0.1; done
+$B/hub rename --stage lock-race --to race-lock > $P.race.out 2>&1; check $? 0 "rename while the roles lock is held by a writer"
+wait $HOLDER
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["roles"]; assert "late" in r and r["late"]["tag"]=="late" and r["hub"]["title"].startswith("Hub race-lock #1"), sorted(r)' $R/race-lock/roles.json; check $? 0 "…waits for it: the role written meanwhile is in the renamed stage, not overwritten by a stale snapshot"
+
+# ---- Ctrl-C between two writes rolls the rename back (KeyboardInterrupt is not an Exception)
+$B/hub start --stage int-stage --goal "Interrupt me" --session $H1 > /dev/null 2>&1; check $? 0 "setup: a stage for the interrupt"
+python3 - $B $R > $P.int.out 2>&1 <<'PY'
+import argparse, importlib.machinery, importlib.util, json, os, sys
+B, R = sys.argv[1:3]
+sys.path.insert(0, B)
+import hubcore as hc
+loader = importlib.machinery.SourceFileLoader("hub_cli", f"{B}/hub")
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("hub_cli", loader)); loader.exec_module(mod)
+before = open(f"{R}/int-stage/roles.json").read()
+real, calls = hc.atomic_write, []
+def interrupted(path, text):
+    calls.append(path)
+    if len(calls) == 2:
+        raise KeyboardInterrupt
+    return real(path, text)
+hc.atomic_write = interrupted
+try:
+    mod.cmd_rename(argparse.Namespace(stage="int-stage", to="stage-int", dry_run=False))
+    print("NO-INTERRUPT")
+except KeyboardInterrupt:
+    print("INTERRUPTED")
+hc.atomic_write = real
+assert os.path.isdir(f"{R}/int-stage") and not os.path.exists(f"{R}/stage-int"), "directory not back"
+assert open(f"{R}/int-stage/roles.json").read() == before, "roles.json not restored"
+print("RESTORED")
+PY
+grep -q INTERRUPTED $P.int.out && grep -q RESTORED $P.int.out; check $? 0 "Ctrl-C after the first rewritten file: the original interrupt is re-raised and the stage is back where and what it was"
+$B/hub rename --stage int-stage --to stage-int > /dev/null 2>&1; check "$?:$([ -d $R/stage-int ] && echo there || echo none)" "0:there" "…so the same rename can be run again"
 exit $fail
