@@ -5,6 +5,17 @@
 - **Codex hubs are notify-only in 0.9.1: the watchdog notifies the owner.** The queue path is inert until a host producer lands (nothing records `host: codex-app` yet); `watchdog_codex.py` reads runtime state and rollout activity, keeps Desktop, terminal, unknown and notLoaded threads notify-only, and never runs native `exec resume`; Codex API-error detection remains disabled (R4 is Claude-only in 0.9.1), with positive and negative controls for queue decoding, unknown timeout outcomes, hanging proxies and missing CLIs in `t_watchdog_codex.sh`.
 - **Codex handoffs resolve `--session self`, and runtime versions identify the tools actually in use.** Handoff drafts use the wait procedure printed in the takeover digest, which follows the reader's host; status and takeover warn about a newer cache for that engine. Reviewers use no judgement-helper team below the configurable 300 changed-line threshold; bounded extraction stays available. Controls: `tests/t_codex_parity.sh` (both hosts, fake caches, registry identity and threshold layers).
 - **The hub agrees a Business DoD before autonomous work and preserves it across handoffs.** Clear requests supply the agreed result and plan authorization; questions address ambiguity that changes that result. Standing permissions and explicit plan approvals still apply. Briefs, handoffs and night queues inherit the result; technical checks remain the executor's responsibility. Controls: `tests/t_hub.sh`, `tests/t_ask_nightq.sh`, `tests/t_codex_agent.sh`.
+- **One digest for the owner across all stages: `ask inbox`.** In the morning the owner asked four hubs one by one for
+  status and read about ten minutes of long replies before the first decision. `ask inbox [--since T] [--stage S …]
+  [--json] [--if-quiet]` reads every stage's register, journal and agents and prints, outcome first and under 2 000
+  characters, what finished since the owner's last recorded answer (journal `DONE` / `MERGED` / `released` lines, counted,
+  the latest quoted), the questions waiting for the owner with default and due time (overdue first), the `D-` decisions the
+  hubs took, and blocked and live agents; quiet stages are one closing line, an overflow is "K more: ask inbox --stage S".
+  It is read-only. New setting `AGENT_HUB_OWNER_DIGEST_AFTER` (hub home, default `3h`): `ask inbox --if-quiet` prints
+  nothing while the owner answered within it; the hub skill opens its reply with the digest on the owner's first message
+  after that silence and puts into every question what each answer changes. Tests: `tests/t_owner_digest.sh` (fixture
+  with three stages, exact content, the cap, `--since`, `--if-quiet` on both sides of the threshold, `--json`; it fails
+  on the old `bin/`).
 
 ## 0.9.0 — 2026-10-06
 
