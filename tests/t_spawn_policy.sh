@@ -79,6 +79,25 @@ check "$(meta x3 'm["reason"]')" "hard diagnosis" "codex: the reason is in meta.
 AGENT_HUB_REASON_POLICY=refuse spawn x4 --engine codex --model gpt-fixture --effort max; check $? 2 "codex: policy refuse"
 unset AGENT_HUB_EFFORT_DEFAULTS
 
+# the CLI's own configured model (no --model, no AGENT_HUB_CODEX_DEFAULT_MODEL)
+export CODEX_HOME=$R/codexhome; mkdir -p $CODEX_HOME
+printf 'model = "gpt-6-big"\nmodel_reasoning_effort = "high"\n' > $CODEX_HOME/config.toml
+export AGENT_HUB_REASON_MODELS='["big"]'
+spawn y1 --engine codex; check $? 0 "codex without --model: spawn goes on (warn)"
+grep -q 'model gpt-6-big is above the default' $R/y1.err; check $? 0 "…the policy sees the model of the Codex config"; wait_dead y1
+AGENT_HUB_REASON_POLICY=refuse spawn y2 --engine codex; check $? 2 "…and refuses it under policy refuse"
+AGENT_HUB_REASON_POLICY=refuse spawn y3 --engine codex --reason "needed"; check $? 0 "…accepts it with a reason"; wait_dead y3
+AGENT_HUB_EFFORT_DEFAULTS='{"big": "low"}' spawn y4 --engine codex; wait_dead y4
+grep -q 'model_reasoning_effort=.*low' $W/codex-argv.jsonl; check $? 0 "…and applies the per-model default effort to it"
+printf 'profile = "p"\nmodel = "gpt-6-big"\n[profiles.p]\nmodel = "gpt-6-small"\n' > $CODEX_HOME/config.toml
+AGENT_HUB_REASON_POLICY=refuse spawn y5 --engine codex; check $? 0 "a selected profile's model is the one that counts"; wait_dead y5
+rm $CODEX_HOME/config.toml
+AGENT_HUB_REASON_POLICY=refuse spawn y6 --engine codex; check $? 2 "unreadable config, REASON_MODELS set, policy refuse: refused"
+grep -q 'pass --model' $R/y6.err; check $? 0 "…saying to pass --model"
+AGENT_HUB_REASON_POLICY=refuse spawn y7 --engine codex --model gpt-fixture; check $? 0 "…a given --model is fine"; wait_dead y7
+unset AGENT_HUB_REASON_MODELS CODEX_HOME
+AGENT_HUB_REASON_POLICY=refuse spawn y8 --engine codex; check $? 0 "no REASON_MODELS: nothing to check, no refusal"; wait_dead y8
+
 # ---- 4. the resume limit
 spawn s1 --model haiku; wait_dead s1
 ctx(){ local sub=${3:-}; python3 -c "
@@ -105,7 +124,16 @@ ctx s1 300000
 $B/agent send s1 --resume-anyway "override" > $R/rs5.out 2>&1; check $? 0 "--resume-anyway overrides"; wait_dead s1
 ctx s1 300000
 $B/agent send --resume-anyway s1 "flag first" > $R/rs5b.out 2>&1; check $? 0 "--resume-anyway before the role works too"; wait_dead s1
-$B/agent send s1 --nonsense "x" > $R/rs5c.out 2>&1; check $? 2 "negative: an unknown option is still a usage error"
+$B/agent send --nonsense s1 "x" > $R/rs5c.out 2>&1; check $? 2 "negative: an unknown option before the role is a usage error"
+ctx s1 300000
+$B/agent send s1 --resume-anyway -- -dashed-text > $R/rs5d.out 2>&1; check $? 0 "after --: a word that starts with a dash is the message"; wait_dead s1
+grep -qx -- '.*-dashed-text.*' $W/prompts.log; check $? 0 "…and reaches the agent"
+ctx s1 300000
+$B/agent send s1 --resume-anyway "- please fix" > $R/rs5e.out 2>&1; check $? 0 "a message that starts with '- ' after the flag is accepted"; wait_dead s1
+grep -q -- '- please fix' $W/prompts.log; check $? 0 "…and reaches the agent"
+ctx s1 300000
+$B/agent send s1 --resume-anyway --odd-word "x" > $R/rs5f.out 2>&1; check $? 0 "after the role even a word that looks like an option is the message"; wait_dead s1
+grep -q -- '--odd-word x' $W/prompts.log; check $? 0 "…and reaches the agent"
 ctx s1 900000 sub   # a sub-agent's call (parent_tool_use_id) is not this agent's context
 python3 - $R/stage-a/agents/s1/log.jsonl <<'PY'
 import json, sys
@@ -115,6 +143,30 @@ lines.insert(len(lines) - 1, json.dumps({"type": "assistant", "message": {"id": 
 open(sys.argv[1], "w").write("\n".join(lines) + "\n")
 PY
 $B/agent send s1 "sub-agent context ignored" > $R/rs6.out 2>&1; check $? 0 "a sub-agent's context does not count"; wait_dead s1
+# one liveness reading per send: a process that dies right after the first reading must not slip a resume past the limit
+ctx s1 300000
+python3 - $B $R <<'PY'
+import importlib.machinery, importlib.util, sys, os
+bindir, home = sys.argv[1:3]
+sys.path.insert(0, bindir)
+loader = importlib.machinery.SourceFileLoader("agent_cli", os.path.join(bindir, "agent"))
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_cli", loader)); loader.exec_module(mod)
+readings, launched = [], []
+def alive(meta):
+    readings.append(1)
+    return len(readings) <= 2          # alive for the first two readings, gone afterwards
+mod.alive = alive
+mod.launch = lambda *a, **k: launched.append(1) or 4242
+rc = None
+try:
+    with __import__("contextlib").redirect_stdout(__import__("io").StringIO()):
+        mod._send_locked("stage-a", __import__("argparse").Namespace(role="s1", text=["x"], stage=None, resume_anyway=False), "x")
+except Exception as e:
+    rc = e
+assert not launched, "a 300k agent was resumed without --resume-anyway"
+print("ok")
+PY
+check $? 0 "a process that dies between liveness readings is not resumed past the limit"
 AGENT_HUB_RESUME_MAX_CTX=lots $B/agent send s1 "x" > $R/rs7.out 2>&1; check $? 2 "negative: a bad limit is a usage error"
 $B/agent spawn --role s2 --cwd $W --brief $W/b.md --model haiku > /dev/null; wait_dead s2
 $B/agent send s2 "unknown context resumes" > /dev/null 2>&1; check $? 0 "a log without context numbers is not refused"; wait_dead s2
@@ -136,6 +188,13 @@ import json,sys; t=json.load(open(sys.argv[1]))['title']; assert t.startswith('t
 check $? 0 "a long heading is trimmed"
 $B/agent spawn --role t5 --cwd $W --brief $W/b.md --model haiku --title "my own" > /dev/null 2>&1; wait_dead t5
 check "$(meta t5 'm["title"]')" "my own" "--title still wins"
+
+printf -- '---\n# a yaml comment\ntitle: x\n---\n# Brief: Port to C#\n' > $W/fm.md
+$B/agent spawn --role t6 --cwd $W --brief $W/fm.md --model haiku > /dev/null 2>&1; wait_dead t6
+check "$(meta t6 'm["title"]')" "t6 — Port to C# (stage-a)" "front matter is skipped and a '#' glued to the word stays"
+printf '## Closing hashes ##\n' > $W/ch.md
+$B/agent spawn --role t7 --cwd $W --brief $W/ch.md --model haiku > /dev/null 2>&1; wait_dead t7
+check "$(meta t7 'm["title"]')" "t7 — Closing hashes (stage-a)" "closing hashes after a space are still stripped"
 
 # ---- 6. the no-plan warning text
 export HUB_STAGE=stage-b

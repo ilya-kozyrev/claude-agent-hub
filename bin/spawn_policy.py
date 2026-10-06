@@ -52,7 +52,8 @@ def clean_reason(reason: Optional[str]) -> str:
     return hc.one_line(reason or "").strip()[:REASON_MAX]
 
 
-def check_reason(names: list, effort: Optional[str], default: str, allowed: tuple, reason: str, cwd=None) -> Optional[str]:
+def check_reason(names: list, effort: Optional[str], default: str, allowed: tuple, reason: str, cwd=None,
+                 model_unknown: bool = False) -> Optional[str]:
     """A warning line for a spawn above the default without a reason (None: fine); a UsageError when the policy is
     `refuse`. Above the default: an effort ranked higher than the model's default, or a model of AGENT_HUB_REASON_MODELS."""
     policy = (hc.setting("AGENT_HUB_REASON_POLICY", cwd=cwd) or "warn").strip().lower()
@@ -69,10 +70,15 @@ def check_reason(names: list, effort: Optional[str], default: str, allowed: tupl
         hit = [m for m in models if isinstance(m, str) and pattern_matches(m, names)]
         if hit:
             above.append(f"model {names[0]} is above the default (AGENT_HUB_REASON_MODELS: {hit[0]})")
+    if model_unknown and models:
+        above.append("the model the Codex CLI will use is not named by --model, AGENT_HUB_CODEX_DEFAULT_MODEL or a "
+                     "readable Codex config, so AGENT_HUB_REASON_MODELS cannot be checked")
     if not above:
         return None
-    text = (f"{' and '.join(above)}: say why the work needs it with --reason \"…\" (a short sentence; it goes into the "
-            "journal and meta.json)")
+    text = (f"{' and '.join(above)}: pass --model, or say why the work needs it with --reason \"…\" (a short sentence; "
+            "it goes into the journal and meta.json)") if model_unknown and models else \
+        (f"{' and '.join(above)}: say why the work needs it with --reason \"…\" (a short sentence; it goes into the "
+         "journal and meta.json)")
     if policy == "refuse":
         raise hc.UsageError(text)
     return text + "; spawning anyway"
@@ -103,11 +109,15 @@ def brief_title(role: str, stage: str, brief_text: str, width: int = 90) -> str:
     """`<role> — <the brief's first heading, without a leading "Brief:"> (<stage>)`, trimmed to `width`; without a
     heading, `agent <role> (<stage>)`."""
     heading, fenced = "", False
-    for line in brief_text.splitlines():
+    lines = brief_text.lstrip("\ufeff").splitlines()
+    if lines and lines[0].strip() == "---":  # YAML front matter: its `# comment` lines are not headings
+        end = next((i for i, ln in enumerate(lines[1:], 1) if ln.strip() in ("---", "...")), None)
+        lines = lines[end + 1:] if end is not None else lines
+    for line in lines:
         if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
         elif not fenced:
-            m = re.match(r"#{1,6}\s+(.*?)\s*#*\s*$", line)
+            m = re.match(r"#{1,6}\s+(.*?)(?:\s+#+)?\s*$", line)
             if m and m.group(1).strip():
                 heading = m.group(1).strip()
                 break
