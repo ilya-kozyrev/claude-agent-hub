@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`hub start` and `hub takeover` no longer take the main-merge lock from a live hub of another stage.** With
+  `AGENT_HUB_TAKE_MAIN_MERGE=true` in a repository's config, every new stage's `hub start` and every takeover took the
+  lock from whoever held it (06.10: sentinel-yc-move from core-c in the middle of its merge). The setting now applies
+  only to a free (absent or expired) lock and, on `takeover`, to one held by an earlier hub of the same stage (found
+  in the stage's `roles.json`, live or retired); on `start`, and for a holder of another stage or of none, the lock is
+  left alone with "take it with --take-main-merge". An explicit `--take-main-merge` still takes it, now with an
+  `ATTENTION` line naming the holder's stage and the age of its latest journal line (or "no journal line"), and
+  `hub start` accepts `--skip-lock <resource>` like `takeover`. Tests: `tests/t_hub_main_merge.sh`; against 0.8.4's
+  `bin/hub` it fails on the start and takeover cases that steal the lock.
+
 ## 0.8.4 — 2026-10-06
 
 - **The agent-top mod is quick again, and its Feed no longer hangs on "loading the feed…".** `agent-top --json`

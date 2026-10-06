@@ -46,8 +46,9 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    an informational resource (`migration-head`, no commands: the holder records the expected head with `--value`).
 5. Anything else shared and single-user: a test database, a rate-limited API key, a release window. *Recommended:* none
    unless you saw one.
-6. Should the hub hold `main-merge` by default (`AGENT_HUB_TAKE_MAIN_MERGE=true` in `config.json`)? *Recommended:* yes
-   when more than one agent may merge; no for a solo repository.
+6. Should a hub hold `main-merge` by default (`AGENT_HUB_TAKE_MAIN_MERGE=true` in `config.json`: a free lock, and on
+   takeover one held by an earlier hub of the same stage; another stage's lock needs an explicit `--take-main-merge`)?
+   *Recommended:* yes when more than one agent may merge; no for a solo repository.
 7. Where should the hub keep its files? One folder for all your projects, `~/agent-hub` (recommended: hubs of different
    projects can talk and share locks) / inside this project (nothing outside the repository; projects do not see each
    other, and `git clean -fdx` deletes that folder). *Recommended:* the shared folder, unless the user wants nothing

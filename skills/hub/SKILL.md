@@ -90,7 +90,8 @@ project the task is about (its main clone under `~/repos/`, or where the brief p
 1. `hub takeover --stage <S> --session <your full session id | self> [--handoff <file>]` — one command (`self` = this
    session's host identity, read by the tool): the previous hub's
    locks (`--skip-lock <resource>` if its executor still works under that lock; `--take-main-merge` to take the merge
-   role too; `AGENT_HUB_TAKE_MAIN_MERGE=true` in the repository's config makes that the default), `roles set hub`, a
+   role too, from anyone; `AGENT_HUB_TAKE_MAIN_MERGE=true` in the repository's config takes it only when it is free or
+   held by an earlier hub of your own stage — never from another stage's hub, and never on `hub start`), `roles set hub`, a
    start line in the journal (and `coordinator:` of the night queue, if the stage has one). Your number is the
    registered hub's + 1 (or the successor named in the handoff); `--n` overrides. A step that does not verify stops
    the command and names the step; a re-run finishes the rest. `--dry-run` first if unsure.
