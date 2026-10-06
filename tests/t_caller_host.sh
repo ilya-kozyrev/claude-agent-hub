@@ -88,4 +88,46 @@ PY
   check "$(cat $P/ro.out)" hub-1 "a read-only stage directory: the tag is found, the refresh is skipped"
   check "$(cli_in_registry)" $OLD "…and the registry is unchanged"
 fi
+
+# 6. a change while the caller waited for .roles.lock: the registration and Desktop's binding are checked again under it
+race(){  # race SCENARIO: runs role_for_caller with a lock that applies SCENARIO the moment it is taken; prints the result
+python3 - "$B" "$R" "$LOCAL" "$NEW" "$OTHER_LOCAL" "$1" <<'PY'
+import contextlib, json, os, sys
+B, R, LOCAL, NEW, OTHER_LOCAL, scenario = sys.argv[1:]
+sys.path.insert(0, B)
+import hubcore as hc
+path = f"{R}/stage-a/roles.json"
+data = json.load(open(path)); data["roles"]["hub"]["cli_session_id"] = "stale-cli"; json.dump(data, open(path, "w"))
+real_lock = hc.roles_lock
+@contextlib.contextmanager
+def lock(stage):
+    with real_lock(stage):
+        d = json.load(open(path))
+        if scenario == "roles-set":      # `roles set hub <another session>` ran while we waited
+            d["roles"]["hub"]["session"] = OTHER_LOCAL; d["roles"]["hub"]["tag"] = "hub-2"
+        json.dump(d, open(path, "w"))
+        if scenario == "restart":        # Desktop restarted the CLI again while we waited
+            rec = os.path.join(os.environ["CLAUDE_SESSIONS_DIR"], "a/b", LOCAL + ".json")
+            r = json.load(open(rec)); r["cliSessionId"] = "cccccccc-0000-4000-8000-000000000003"; json.dump(r, open(rec, "w"))
+        yield
+hc.roles_lock = lock
+os.environ.update(CLAUDE_CODE_SESSION_ID=NEW, CLAUDE_CODE_HOST_SESSION_ID=LOCAL)
+hit = hc.role_for_caller("stage-a")
+print((hit[0] + ":" + (hit[1].get("tag") or "")) if hit else "none", json.load(open(path))["roles"]["hub"]["cli_session_id"])
+PY
+}
+mk $LOCAL $NEW "Hub hub-09 #1"
+check "$(race none)" "hub:hub-1 $NEW" "no change while waiting: the tag is found and the CLI id is written"
+python3 - $R/stage-a/roles.json $LOCAL <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["roles"]["hub"].update(session=sys.argv[2], tag="hub-1"); json.dump(d, open(sys.argv[1], "w"))
+PY
+check "$(race roles-set)" "none stale-cli" "a concurrent roles set moved the registration: no tag, the stale CLI id is not written back"
+python3 - $R/stage-a/roles.json $LOCAL <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["roles"]["hub"].update(session=sys.argv[2], tag="hub-1"); json.dump(d, open(sys.argv[1], "w"))
+PY
+mk $LOCAL $NEW "Hub hub-09 #1"
+check "$(race restart)" "none stale-cli" "Desktop's binding changed while waiting: no tag, nothing written"
+mk $LOCAL $NEW "Hub hub-09 #1"
 exit $fail

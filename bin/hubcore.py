@@ -1509,11 +1509,16 @@ def role_for_caller(stage: str) -> Optional[tuple]:
                 return None
             try:
                 with roles_lock(stage):
+                    # what was read before the lock is stale by now if a `roles set` or another restart ran while we waited
+                    # for it: the registration and Desktop's binding are checked again, and a caller that no longer
+                    # matches neither writes nor gets the candidate's tag
                     data = roles_load(stage)
-                    if name in data["roles"] and data["roles"][name].get("session") == host:
-                        data["roles"][name]["cli_session_id"] = sid
-                        roles_save(stage, data)
-                        rec = data["roles"][name]
+                    now = data["roles"].get(name) or {}
+                    if now.get("session") != host or (desktop_session(host) or {}).get("cliSessionId") != sid:
+                        return role_for_session(stage, sid)
+                    data["roles"][name]["cli_session_id"] = sid
+                    roles_save(stage, data)
+                    rec = data["roles"][name]
             except (OSError, Failure):
                 pass  # a read-only home still gets its tag, only the refresh is skipped
             return name, rec
