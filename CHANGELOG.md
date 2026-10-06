@@ -10,10 +10,9 @@
   does four things per stage: writes `EXIT <role>: killed (no result)` for an agent whose process is gone (R1), journals
   one `[watchdog] @hub OVERDUE Q-…` line for an open question past its due time that has a default (R2), wakes a hub that
   is silent for 15 minutes while lines addressed to it have waited that long, or an open night-queue item has inside
-  `AGENT_HUB_NIGHT`, and no `jwait` of its own runs (R3), and wakes a Claude hub whose last turn ended on an API error (R4).
+  `AGENT_HUB_NIGHT`, and no `jwait` of its own runs (R3), and wakes a Claude hub whose last turn ended on an API error (R4); a live `jwait` of the hub holds both back.
   A headless hub gets `agent send`; an idle `claude --bg` hub gets `claude stop` and `claude --bg --resume <same id>` with
-  no other flag (a live probe on claude 2.1.289: any flag, or a session still listed, makes the CLI start a copy, which
-  the watchdog checks for and stops); a Desktop, a terminal or a not-background Claude hub only gets a notification, and a
+  no other flag (a live probe on claude 2.1.289: any flag, or a session still listed, makes the CLI start a copy, the watchdog stops only the copy the CLI itself names, checks that it left `claude agents` and otherwise tells the owner; a session that merely appears is never stopped); a Desktop, a terminal or a not-background Claude hub only gets a notification, and a
   Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). It never starts a successor, honours `watchdog quiet --stage S
   --reason "…" [--for 8h]` (`<stage>/do-not-wake.json`), wakes once per episode with a backoff of 15, 30, 60, 120, 240
   minutes, skips a stage with a pending handoff, runs one tick at a time and has `watchdog run --dry-run`. A notification
