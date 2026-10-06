@@ -42,6 +42,9 @@ import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import session_effort  # noqa: E402
 
+# The tag of the plugin's own informational journal lines (a chain reset): not `hub`, which every hub's `jwait --tag hub`
+# wakes on, so the line stays readable in the journal and wakes nobody.
+SERVICE_TAG = "autopilot"
 MARKER_RE = re.compile(r"\[agent-hub auto-handoff (\d+)/(\d+)\]")
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
 BG_ID_RE = re.compile(r"backgrounded\s*·\s*(\S+)")
@@ -160,7 +163,7 @@ def reset_chain(stage: str, why: str) -> bool:
         save_state(stage, data)
     dropped = (f"; dropped the pending hub-{pend.get('n')} ({pend.get('kind')} {pend.get('id') or pend.get('role')}), "
                "which did not take over in time — its session is not stopped" if stale else "")
-    hc.journal_append(stage, "hub", f"auto-handoff chain reset ({was} → 0): {why}{dropped}")
+    hc.journal_append(stage, SERVICE_TAG, f"auto-handoff chain reset ({was} → 0): {why}{dropped}")
     return True
 
 

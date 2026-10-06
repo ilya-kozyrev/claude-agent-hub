@@ -143,6 +143,14 @@ check $rc 0 "control: another stage's QUESTION line wakes it"
 ( armed $AGENT_HUB_HOME/r3.out; $B/jlog --stage dolyaq --tag core-c-hub-30 "@hub QUESTION own again" >/dev/null ) &
 HUB_STAGE=core-c HUB_TAG=hub-30 $B/jwait --journal --stage dolyaq --match QUESTION --include-own --settle 1 --for 30s --caller r1 > $AGENT_HUB_HOME/r3.out 2>&1; rc=$?
 check $rc 0 "--include-own keeps the own signature"
+# 8. the default --for is 55m (the prompt cache lives 1 h), a setting changes it, a printed command carries it
+hcfor(){ python3 - "$B" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import hubcore as hc
+print(hc.jwait_for())
+PY
+}
 secs=$(python3 - "$B" <<'PY'
 import importlib.machinery, importlib.util, sys
 sys.path.insert(0, sys.argv[1])
@@ -152,6 +160,42 @@ spec = importlib.util.spec_from_loader("jwait_cli", loader); jw = importlib.util
 print(int(hc.parse_duration(jw.DEFAULT_FOR).total_seconds()))
 PY
 )
-check "$secs" 7200 "default --for is 2h"
-$B/jwait --help | tr '\n' ' ' | grep -q 'default --for 2h'; check $? 0 "--help says the default is 2h"
+check "$secs" 3300 "default --for is 55m"
+$B/jwait --help | tr '\n' ' ' | grep -q 'default --for 55m'; check $? 0 "--help says the default is 55m"
+check "$(hcfor)" 55m "jwait_for(): no setting -> 55m"
+check "$(AGENT_HUB_JWAIT_FOR=90m hcfor)" 90m "jwait_for(): the environment sets it"
+mkdir -p $O && echo '{"AGENT_HUB_JWAIT_FOR": "20m"}' > $O/config.json
+check "$(hcfor)" 20m "jwait_for(): the hub home's config.json sets it"
+check "$(AGENT_HUB_JWAIT_FOR=1h30m hcfor)" 1h30m "jwait_for(): the environment wins over config.json"
+check "$(AGENT_HUB_JWAIT_FOR=soon hcfor 2>$O/w1.err)" 55m "jwait_for(): an unparsable value falls back to 55m"
+grep -q 'AGENT_HUB_JWAIT_FOR is not a positive duration' $O/w1.err; check $? 0 "…and says so on stderr"
+check "$(AGENT_HUB_JWAIT_FOR=0m hcfor 2>/dev/null)" 55m "jwait_for(): a zero duration falls back to 55m"
+# a real run: the deadline in the start line is now + the configured wait; an explicit --for still wins
+waited(){  # waited <minutes expected> <extra env...> -- <jwait args...>: run jwait, read its deadline, stop it
+  local want=$1; shift; local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  env "${envs[@]}" $B/jwait "$@" > $O/wd.out 2>&1 & local pid=$!
+  armed $O/wd.out; kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  python3 - "$O/wd.out" "$want" <<'PY'
+import datetime as dt, re, sys
+m = re.search(r"until (\d\d)\.(\d\d) (\d\d):(\d\d)(?::(\d\d))?", open(sys.argv[1]).read())
+now = dt.datetime.now(dt.timezone.utc)
+end = now.replace(month=int(m[2]), day=int(m[1]), hour=int(m[3]), minute=int(m[4]), second=int(m[5] or 0), microsecond=0)
+left = (end - now).total_seconds() / 60
+print("ok" if abs(left - float(sys.argv[2])) <= 1.5 else f"got {left:.1f} min")
+PY
+}
+rm $O/config.json
+check "$(waited 55 -- --journal --caller d1 --stage stage-a)" ok "a run without --for waits 55 minutes"
+check "$(waited 40 AGENT_HUB_JWAIT_FOR=40m -- --journal --caller d1 --stage stage-a)" ok "AGENT_HUB_JWAIT_FOR=40m: the run waits 40 minutes"
+check "$(waited 5 AGENT_HUB_JWAIT_FOR=40m -- --journal --caller d1 --stage stage-a --for 5m)" ok "an explicit --for wins over the setting"
+# 9. a plugin service line (the autopilot's chain reset) does not wake a hub; a DONE line does
+mkdir -p $O/stage-a; echo '{"chain": 2, "pending": null}' > $O/stage-a/auto-handoff.json
+PAT=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import hubcore as hc; print(hc.status_pattern())' "$B")
+( armed $O/o9.out; python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import autopilot as ap; ap.reset_chain("stage-a", "the owner spoke in the hub'"'"'s session")' "$B"
+  sleep 2; $B/jlog --tag builder "DONE builder finished" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --match "$PAT" --settle 1 --for 30s --caller s9 > $O/o9.out 2>&1; rc=$?
+check $rc 0 "service line: the DONE line wakes the hub"
+grep -q 'DONE builder finished' $O/o9.out; check $? 0 "…and is delivered"
+grep -q 'chain reset' $J; check $? 0 "the chain reset line is in the journal (readable)"
+grep -q 'chain reset' $O/o9.out; check $? 1 "negative: the chain reset line does not wake a hub waiting on --tag hub"
 exit $fail
