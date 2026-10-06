@@ -717,13 +717,17 @@ def process_gone(meta: dict) -> bool:
     return bool(cmd.strip()) and (meta.get("process_token") or meta["session_id"]) not in cmd
 
 
+def exit_marker(stage: str, meta: dict) -> Path:
+    run = (meta.get("runs") or [{}])[-1]
+    key = re.sub(r"[^\w.-]+", "_", f"{meta['role']}.{meta.get('pid')}.{run.get('at', '')}")
+    return hc.state_dir() / "agent-exits" / stage / key
+
+
 def claim_exit(stage: str, meta: dict) -> bool:
     """True for the first caller to claim the end of this agent's latest run (atomic: O_CREAT|O_EXCL on a marker under
     the state dir, never in the agent's own directory), False for every later one. The claim decides who writes the EXIT
     line, so it is written once however many observers (agent status, jwait, the exit-note wrapper) see the end."""
-    run = (meta.get("runs") or [{}])[-1]
-    key = re.sub(r"[^\w.-]+", "_", f"{meta['role']}.{meta.get('pid')}.{run.get('at', '')}")
-    path = hc.state_dir() / "agent-exits" / stage / key
+    path = exit_marker(stage, meta)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
@@ -739,7 +743,7 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
     """An agent whose process is gone without a result of its latest run (kill -9, a crash of the whole group: the
     exit-note wrapper died with it) is journaled once, by whoever notices first: `EXIT <role>: killed (no result)`,
     under the agent's tag, the line the hub's default jwait wakes on. Returns the line, None (nothing to report, or
-    another observer wrote it) or BUSY. Only for a recent death (`mtime` of the log); the caller checks the role is
+    another observer wrote it, or nothing can be written here) or BUSY. Only for a recent death (`mtime` of the log); the caller checks the role is
     registered (agent stop retires it).
 
     The decision is made under the agent's lock, from what is on disk after the process is confirmed gone: the meta
@@ -747,26 +751,33 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
     caller's read and now is not killed). A start or resume holds the lock for its whole init wait: no waiting here."""
     if mtime is None or hc.now().timestamp() - mtime.timestamp() > OBSERVE_WINDOW_S:
         return None
-    with AgentLock(stage, meta["role"], blocking=False) as lock:
-        if not lock.held:
-            return BUSY
-        try:
-            fresh = load_meta(stage, meta["role"])
-        except hc.Failure:
-            return None
-        if not process_gone(fresh):
-            return None
-        info = read_log(Path(fresh["dir"]) / "log.jsonl")
-        if info["result"] and not info["running_after_result"]:
-            return None
-        try:
+    try:
+        with AgentLock(stage, meta["role"], blocking=False) as lock:
+            if not lock.held:
+                return BUSY
+            try:
+                fresh = load_meta(stage, meta["role"])
+            except hc.Failure:
+                return None
+            if not process_gone(fresh):
+                return None
+            info = read_log(Path(fresh["dir"]) / "log.jsonl")
+            if info["result"] and not info["running_after_result"]:
+                return None
             if not claim_exit(stage, fresh):
                 return None
-        except OSError:  # no marker, no certainty that it is written once: stay silent
-            return None
-        last = (info["last_text"] or "").strip().splitlines()
-        return hc.journal_append(stage, fresh["tag"], f"EXIT {fresh['role']}: killed (no result); turns {turns_text(info)}"
-                                 f"{'; last: ' + last[-1][:160] if last else ''} — agent status {fresh['role']}")
+            last = (info["last_text"] or "").strip().splitlines()
+            try:
+                return hc.journal_append(stage, fresh["tag"], f"EXIT {fresh['role']}: killed (no result); turns "
+                                         f"{turns_text(info)}{'; last: ' + last[-1][:160] if last else ''} — agent status "
+                                         f"{fresh['role']}")
+            except OSError:
+                exit_marker(stage, fresh).unlink(missing_ok=True)  # not written: the next observer may try
+                raise
+    except OSError:
+        # A read-only sandbox (a reviewer running `agent status`): no lock file, marker or journal line can be written. The
+        # observation is skipped; whatever the caller prints (a status line) is unaffected.
+        return None
 
 
 def observe_dead(stage: str, memo: dict | None = None) -> list:

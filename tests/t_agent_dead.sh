@@ -12,7 +12,7 @@ spawn(){ FAKE_HOLD=${HOLD:-60} $B/agent spawn --role "$1" --cwd $W --model haiku
 exits(){ grep -c "EXIT $1: " "$(journal stage-a)"; }          # EXIT lines of the role, whatever they say
 killed(){ grep -c "EXIT $1: killed (no result)" "$(journal stage-a)"; }
 wait_gone(){ for i in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
-trap 'for r in d1 d2 d3 d4 d5 d6 d7 d8; do $B/agent stop $r >/dev/null 2>&1; done' EXIT
+trap 'chmod 755 $R/stage-a/agents/aro 2>/dev/null; for r in d1 d2 d3 d4 d5 d6 d7 d8 aro bok; do $B/agent stop $r >/dev/null 2>&1; done' EXIT
 
 # 1. kill -9 of the whole group, two observers at once, a jwait with the hub's default match waiting
 spawn d1; check $? 0 "spawn d1"
@@ -117,4 +117,22 @@ m.alive = alive_then_finish
 m.status_line("stage-a", role)
 PY
 check "$(exits d8)" 0 "a result written just before the exit is re-read after the process is gone: no EXIT killed"
+
+# 8. a read-only sandbox (a reviewer running `agent status`): no lock file can be made in the agent's directory; the observation
+# is skipped, the status line is still printed, and a listing goes on past the agent
+spawn aro; PA=$(pid_of aro); spawn bok
+kill -KILL -- -$PA; wait_gone $PA
+chmod 555 $R/stage-a/agents/aro
+if touch $R/stage-a/agents/aro/.probe 2>/dev/null; then
+    rm -f $R/stage-a/agents/aro/.probe; echo "PASS (running as a user that can write to a 555 directory: the read-only case cannot be made, skipped)"
+else
+    $B/agent status aro > $R/st-ro1.out 2> $R/st-ro1.err; check $? 0 "read-only agent dir: status exits 0"
+    grep -q 'no process, no result' $R/st-ro1.out; check $? 0 "…and prints the status line"
+    $B/agent status > $R/st-ro2.out 2> $R/st-ro2.err; check $? 0 "read-only agent dir: the all-agents listing exits 0"
+    grep -q '^aro ' $R/st-ro2.out && grep -q '^bok .*ALIVE' $R/st-ro2.out && grep -q '^d1 ' $R/st-ro2.out; check $? 0 "…and goes on to the agents after it"
+    grep -q 'Traceback\|Permission' $R/st-ro1.err $R/st-ro2.err; check $? 1 "…without an error on stderr"
+    check "$(exits aro)" 0 "…and nothing was journaled: the observation was skipped"
+fi
+chmod 755 $R/stage-a/agents/aro
+$B/agent status aro > /dev/null 2>&1; check "$(killed aro)" 1 "writable again: the death is journaled on the next look"
 exit $fail
