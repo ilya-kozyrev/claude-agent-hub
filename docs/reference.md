@@ -148,7 +148,10 @@ A full working day, step by step: [docs/a-day-with-agent-hub.md](a-day-with-agen
   as an executor that ran 1,100 turns because it was never cut into pieces.
 - **Give every brief a turn limit and a stop condition**, and cut day-long work into pieces: a fresh agent for each, with
   a short report or handoff file between them. The turn limit is a line in the brief; agent-hub does not enforce it.
-- **`agent-top` shows a dollar figure only when the CLI reports one** (the cost of finished runs); a live run shows `—`.
+- **`agent-top` shows a dollar figure only when the CLI reports one** (a Claude agent's cost: the latest cumulative total
+  of each of its sessions; a live run shows `—`). A hub is a Desktop or terminal session that logs tokens, not dollars, so
+  its share of the stage's spend (`spend` in `agent-top --json`, a line in `--once`) is an estimate from its transcript,
+  priced at what the stage's agents' own results show per model (±20 %); Codex agents show tokens only, never dollars.
 - **Agents run on the latest models if Claude Code is current.** `--model opus|sonnet|haiku|fable` goes to the CLI,
   which resolves the alias to the newest model of that family: Claude Code 2.1.287 (the minimum supported version) and
   later gives `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-4-5-20251001` and `claude-fable-5-1`, an older CLI

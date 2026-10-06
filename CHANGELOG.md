@@ -12,6 +12,18 @@
   author; money, masking and permissions narrow it to that risk, and the reviewer caps its reading by the diff size.
   Tests: `t_jwait.sh` (default, setting layers, a real run's deadline, a service line next to a `DONE`), `t_hardening.sh`
   (the digest's printed command).
+- **agent-top shows what the logs say: cost, Codex tokens and the hub's journal age are no longer inflated, and the
+  hub's share of the stage's spend is on screen.** A Claude `result` carries the session's cumulative
+  `total_cost_usd` (also across `--resume`: 64 multi-result logs on the owner's home never step back, none changes
+  session id), and agent-top had added every result up — $72.22 shown against $3.61 real. It now takes each session's
+  latest total. A Codex `turn.completed` carries the thread's cumulative count, again logged after each resume; the
+  count of each thread is now the latest one (`usage_scope` is `session`, `sessions` for several threads, or `partial` — shown as ≈ — when a count
+  read before any `init` of a log scanned from its tail sits beside known threads; it was `logged_runs`). The hub's "journal" age is its newest line across yesterday's and today's journal (today's was
+  shadowed by yesterday's when the tag wrote on both days). `agent-top --json` carries `spend` per stage — the agents'
+  logged dollars (every agent folder of the stage, whatever the list hides), the hub's dollars (logged for a headless hub, else estimated from the tokens of its transcript at
+  the per-model price the agents' results show, flagged `hub_basis: "estimate"`), and `hub_share`; `--once` prints it.
+  Tests: `tests/t_agent_top_honest.sh` (a resumed Claude log, a resumed Codex log, a two-day journal, the share, a
+  hub transcript read in pieces; it fails on 0.8.4's code) and a hub with a 5 MB transcript in `tests/t_agent_top_perf.sh`.
 
 ## 0.8.5 — 2026-10-06
 

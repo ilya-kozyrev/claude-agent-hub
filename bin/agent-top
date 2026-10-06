@@ -29,6 +29,11 @@ The offsets and what was read up to them outlive the process in a cache, <state 
 $AGENT_HUB_STATE_DIR, else <hub home>/.state; bin/topcache.py), so a new `--json` (the mod runs one every few seconds)
 reads only what the logs gained since the last one; AGENT_TOP_CACHE=0 reads everything afresh and writes no cache.
 Files of agents are never opened for writing; that cache is the only file agent-top writes.
+Cost: a Claude agent's is the latest cumulative `total_cost_usd` of each of its sessions, summed over sessions; a Codex
+agent's tokens are the latest cumulative count of each of its threads (a count seen before any init is its own bucket and
+makes the total `partial`). `spend` (--json, and a line in --once) is the
+stage's agents' dollars against its hub's: the hub's are logged when it is a headless agent, else estimated from its
+session transcript's tokens at the per-model price the agents' results show (≈; a hub without a Claude transcript has none).
 Env: AGENT_HUB_HOME (hub home; `hub home` shows which and why), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
 default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB),
 AGENT_TOP_CACHE (0: no disk cache), NO_COLOR.
@@ -306,7 +311,9 @@ class LogState:
         self.last_text, self.last_text_ts = "", None
         self.last_tool = None
         self.ctx = 0
-        self.last_result, self.cost_sum, self.n_results = None, None, 0
+        self.last_result, self.n_results = None, 0
+        self.cost_by_sid = {}             # session id -> the last `total_cost_usd`: the CLI reports it cumulative for the whole session
+        self.init_sid = ""                # the session of the latest init: the owner of a `result` that names none
         self.running = False              # an init after the last result: a run is (or was) in progress
         self.inbox_touch, self.done_at = -1, -1
         self.truncated = False
@@ -317,8 +324,16 @@ class LogState:
         self.codex_turns = self.codex_run_turns = 0
         self.usage_tokens = self.ctx_source = self.context_window = self.codex_rate_limits = None
         self.usage_scope = None
+        self.codex_sid = ""               # the thread of the latest init: a resumed run logs the same thread again
+        self.usage_by_sid = {}            # thread id -> its latest cumulative token usage
         self.model_usage = None           # the last result's modelUsage: per model, its contextWindow among others
         self.rollout = codex_rollouts.Normalizer()
+
+    @property
+    def cost_sum(self):
+        """Cost of the log: each session's latest cumulative total (a resumed run continues the same counter), summed
+        over sessions; None while no result carried one."""
+        return sum(self.cost_by_sid.values()) if self.cost_by_sid else None
 
     @property
     def turns(self) -> int:
@@ -396,13 +411,10 @@ class LogState:
             return
         usage = ev.get("codex_usage")
         if isinstance(usage, dict):
-            if ev.get("codex_usage_scope") == "session":
-                self.usage_tokens = dict(usage)
-                self.usage_scope = "session"
-            else:
-                self.usage_tokens = {key: num((self.usage_tokens or {}).get(key)) + num(value)
-                                     for key, value in usage.items()}
-                self.usage_scope = "logged_runs"
+            # Codex counts are cumulative per thread, and a resumed run logs the same thread again: keep the latest
+            # count of each thread, never add runs of one thread together.
+            self.usage_by_sid[self.codex_sid] = dict(usage)
+            self._sum_usage()
         if isinstance(ev.get("context_tokens"), int):
             # Codex's total input usage sums every model call. Only the most
             # recent call's input size is comparable to Claude's context metric.
@@ -413,6 +425,8 @@ class LogState:
             self.codex_rate_limits = ev["codex_rate_limits"]
         if typ == "system" and ev.get("subtype") == "init":
             self.codex_run_turns = 0
+            if isinstance(ev.get("session_id"), str):
+                self.codex_sid = ev["session_id"]
         if typ == "result" and not ev.get("result"):
             errors = ev.get("errors") or []
             detail = "; ".join(str(err.get("message") or err) if isinstance(err, dict) else str(err)
@@ -420,6 +434,14 @@ class LogState:
             ev = {**ev, "result": detail or self.last_text}
         if typ in ("assistant", "user", "result", "system"):
             self._legacy_feed(pos, json.dumps(ev).encode(), str(typ).encode())
+
+    def _sum_usage(self) -> None:
+        counts = list(self.usage_by_sid.values())
+        self.usage_tokens = {key: sum(num(u.get(key)) for u in counts) for key in dict.fromkeys(k for u in counts for k in u)}
+        # A count read before any init (a log scanned from its tail) belongs to an unknown thread, kept in its own bucket
+        # (key ""): it may be the thread that follows or an older one, so the total is marked partial, not guessed.
+        self.usage_scope = ("partial" if "" in self.usage_by_sid and len(self.usage_by_sid) > 1
+                            else "session" if len(self.usage_by_sid) == 1 else "sessions")
 
     def _legacy_feed(self, pos, line, typ):
         if typ == b"assistant":
@@ -439,7 +461,7 @@ class LogState:
                 self.n_results += 1
                 cost = ev.get("total_cost_usd")
                 if isinstance(cost, (int, float)):
-                    self.cost_sum = (self.cost_sum or 0.0) + cost
+                    self.cost_by_sid[str(ev.get("session_id") or self.init_sid)] = cost
                 if isinstance(ev.get("modelUsage"), dict):
                     self.model_usage = ev["modelUsage"]
                 if _DONE_RE.search(str(ev.get("result") or "")):
@@ -455,6 +477,8 @@ class LogState:
                 ev = _loads(line)
                 if isinstance(ev, dict) and isinstance(ev.get("model"), str):
                     self.model = ev["model"]
+                if isinstance(ev, dict) and isinstance(ev.get("session_id"), str):
+                    self.init_sid = ev["session_id"]
         elif typ == b"rate_limit_event":
             ev = _loads(line)
             if ev and isinstance(ev.get("rate_limit_info"), dict):
@@ -512,6 +536,107 @@ def event_type(line: bytes) -> bytes:
         ev = _loads(line)
         return str(ev.get("type") or "").encode() if ev else b""
     return b"result" if _RESULT_RE.search(line) else b""
+
+
+# What one token costs relative to an input token. The CLI reports dollars only in a headless `result`; a hub (a
+# Desktop/terminal session) writes tokens and no dollars, so its spend is an estimate: the observed price of the model's
+# weighted tokens (these ratios) in the agents' own results. The prices of the real models differ from the ratios by
+# up to ~20 %, which is why a hub's spend is shown as an estimate, never as a bill.
+TOKEN_WEIGHTS = (("inputTokens", "input_tokens", 1.0), ("cacheCreationInputTokens", "cache_creation_input_tokens", 1.25),
+                 ("cacheReadInputTokens", "cache_read_input_tokens", 0.1), ("outputTokens", "output_tokens", 5.0))
+
+
+LINE_MAX = 16 * 1024 * 1024       # a transcript line is read whole up to this; a longer one (a huge tool result) is skipped
+
+
+def weighted_tokens(usage: dict, snake: bool) -> float:
+    return sum(num(usage.get(s if snake else c)) * w for c, s, w in TOKEN_WEIGHTS)
+
+
+class Transcript:
+    """A hub session's transcript (<claude config>/projects/*/<session>.jsonl), read incrementally for its token usage
+    per model: the last usage of each assistant message (a message is written once per content block, one after another).
+    A read takes at most `budget` bytes, so a huge first read spreads over several snapshots (`complete` is False
+    until the end of the file is reached)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.ino, self.offset, self.size = None, 0, 0
+        self.by_model = {}                # model -> usage of the messages already closed {"input_tokens": ..}
+        self.cur_id, self.cur_model, self.cur = None, None, {}
+        self.skipped = 0                  # lines over LINE_MAX left unread: the totals miss their usage
+
+    @property
+    def complete(self) -> bool:
+        return self.offset >= self.size and not self.skipped
+
+    def totals(self) -> dict:
+        out = {m: dict(u) for m, u in self.by_model.items()}
+        if self.cur_model:
+            acc = out.setdefault(self.cur_model, {})
+            for _, s, _ in TOKEN_WEIGHTS:
+                acc[s] = acc.get(s, 0) + num(self.cur.get(s))
+        return out
+
+    def _close(self) -> None:
+        if self.cur_model:
+            acc = self.by_model.setdefault(self.cur_model, {})
+            for _, s, _ in TOKEN_WEIGHTS:
+                acc[s] = acc.get(s, 0) + num(self.cur.get(s))
+        self.cur_id, self.cur_model, self.cur = None, None, {}
+
+    def _apply(self, mid, model, usage) -> None:
+        if not isinstance(usage, dict) or not isinstance(model, str) or model.startswith("<"):
+            return
+        if mid != self.cur_id or not mid:
+            self._close()
+        self.cur_id, self.cur_model, self.cur = mid, model, usage
+
+    def _line(self, line: bytes) -> None:
+        if b'"usage"' not in line or b'"assistant"' not in line:
+            return
+        ev = _loads(line)
+        msg = ev.get("message") if isinstance(ev, dict) else None
+        if isinstance(msg, dict) and ev.get("type") == "assistant" and not ev.get("parent_tool_use_id"):
+            self._apply(msg.get("id"), msg.get("model"), msg.get("usage"))
+
+    def update(self, budget: int) -> None:
+        """Reads whole lines from the offset until `budget` bytes are passed. The offset never moves past an unterminated
+        line (it is still being written); a terminated line over LINE_MAX is skipped and counted in `skipped`."""
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return
+        if st.st_ino != self.ino or st.st_size < self.offset:
+            self.__init__(self.path)
+            self.ino = st.st_ino
+        self.size = st.st_size
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self.offset)
+                end = self.offset + budget
+                while self.offset < end:
+                    line = fh.readline(LINE_MAX + 1)
+                    if not line:
+                        break
+                    if len(line) > LINE_MAX and not line.endswith(b"\n"):
+                        n = len(line)
+                        while True:                     # the rest of the oversize line, a piece at a time, kept nowhere
+                            more = fh.readline(1 << 20)
+                            n += len(more)
+                            if not more or more.endswith(b"\n"):
+                                break
+                        if not more:
+                            break                       # unterminated
+                        self.offset += n
+                        self.skipped += 1
+                    elif line.endswith(b"\n"):
+                        self.offset += len(line)
+                        self._line(line)
+                    else:
+                        break
+        except OSError:
+            return
 
 
 class Item:
@@ -708,6 +833,7 @@ class Collector:
     def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
+        self.transcripts, self.transcript_paths = {}, {}
         self.store = open_store()
         self.flushed_at = time.monotonic()
         codex_rollouts.INDEX.store = self.store
@@ -762,8 +888,11 @@ class Collector:
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
         locks = self._locks(now)
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
+        costs = {s: self._stage_costs(s, rs) for s, rs in roles_by_stage.items()}   # reads every log of the stage first:
+        rates = self.token_rates()                                                  # prices must not depend on the list's filter
+        spend = {s: self._spend(rs, rates, *costs[s]) for s, rs in roles_by_stage.items()}
         out = {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
-               "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles,
+               "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
                "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
                "codex_limits": self.codex_limits.snapshot()}
@@ -893,6 +1022,75 @@ class Collector:
             "report_path": None, "agent_type": meta.get("agentType"), "background": sub.background,
         }
 
+    # -- spend of a stage: its agents (logged dollars) and its hub (an estimate from the hub's transcript)
+    def token_rates(self) -> dict:
+        """model -> dollars per weighted token, as observed in the `modelUsage` of the agents' latest results."""
+        cost, tokens = {}, {}
+        for ls in self.logs.values():
+            for model, u in (ls.model_usage or {}).items() if isinstance(ls.model_usage, dict) else []:
+                dollars = u.get("costUSD") if isinstance(u, dict) else None
+                if isinstance(dollars, (int, float)) and dollars > 0:      # (num() would truncate 1.5 to 1)
+                    cost[model] = cost.get(model, 0.0) + dollars
+                    tokens[model] = tokens.get(model, 0.0) + weighted_tokens(u, snake=False)
+        return {m: cost[m] / tokens[m] for m in cost if tokens[m] > 0}
+
+    def transcript(self, sid: str):
+        """The reader of a session's transcript, brought up to date (at most SCAN_MAX bytes per call), or None."""
+        path = self.transcript_paths.get(sid)
+        if path is None or not path.exists():
+            found = sorted(subagents.projects_root().glob(f"*/{sid}.jsonl"))
+            path = self.transcript_paths[sid] = found[0] if found else None
+            if path is None:
+                return None
+        tr = self.transcripts.get(path)
+        if tr is None:
+            tr = self.transcripts[path] = Transcript(path)
+            topcache.load_into(tr, self.store.get("transcript", str(path)))
+        before = (tr.ino, tr.offset)
+        tr.update(SCAN_MAX)
+        if (tr.ino, tr.offset) != before:
+            self.store.put("transcript", str(path), tr)
+        return tr
+
+    def _stage_costs(self, stage: str, roles: dict) -> tuple:
+        """(the hub's logged dollars or None, the other agents' logged dollars) over every agent folder of the stage:
+        what the list hides by age or archive is spend all the same. Only Claude headless logs carry dollars (a Codex
+        agent adds nothing). The hub's are those of the agent registered as the hub's session, when it is a headless one
+        too; a predecessor's archived folder is an agent like the others."""
+        rec = roles.get("hub") or {}
+        hub_sids = {v for v in (rec.get("cli_session_id"), rec.get("session")) if isinstance(v, str) and v}
+        hub_cost, agents_usd, base = None, 0.0, hc.root() / stage / "agents"
+        for mp in sorted(base.glob("*/meta.json")) if base.is_dir() else []:
+            meta = read_json(mp)
+            if not isinstance(meta, dict):
+                continue
+            cost = self.log_state(mp.parent / "log.jsonl").cost_sum
+            if meta.get("session_id") in hub_sids and not ARCHIVE_RE.match(mp.parent.name) and cost is not None:
+                hub_cost = cost
+            elif cost is not None:
+                agents_usd += cost
+        return hub_cost, agents_usd
+
+    def _spend(self, roles: dict, rates: dict, hub_cost, agents_usd: float) -> dict:
+        """{"hub_usd", "hub_basis", "hub_partial", "agents_usd", "hub_share"} of one stage. The hub's dollars are the
+        logged ones, else an estimate from the tokens in the hub's transcript; None when neither exists."""
+        rec = roles.get("hub") or {}
+        out = {"hub_usd": None, "hub_basis": None, "hub_partial": False, "agents_usd": round(agents_usd, 4), "hub_share": None}
+        sid = rec.get("cli_session_id") or rec.get("session") or ""
+        if hub_cost is not None:
+            out.update(hub_usd=round(hub_cost, 4), hub_basis="logged")
+        elif rec.get("engine", "claude") == "claude" and isinstance(sid, str) and UUID_RE.fullmatch(sid):
+            tr = self.transcript(sid)
+            if tr is not None:
+                totals = tr.totals()
+                priced = {m: u for m, u in totals.items() if m in rates}
+                if priced:
+                    est = sum(weighted_tokens(u, snake=True) * rates[m] for m, u in priced.items())
+                    out.update(hub_usd=round(est, 4), hub_basis="estimate", hub_partial=not tr.complete or len(priced) < len(totals))
+        if out["hub_usd"] is not None and out["hub_usd"] + agents_usd > 0:
+            out["hub_share"] = round(out["hub_usd"] / (out["hub_usd"] + agents_usd), 4)
+        return out
+
     # -- locks / roles
     def _locks(self, now: float) -> list:
         import board
@@ -906,7 +1104,7 @@ class Collector:
                  "value": r.get("value") or ""} for r in recs]
 
     def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
-        lines = self.journal_lines(stage, 0) + self.journal_lines(stage, 1)
+        lines = self.journal_lines(stage, 1) + self.journal_lines(stage, 0)   # oldest first: today's lines are met first from the end
         newest = {}   # base tag -> its newest line: what hc.tag_is(line tag, base) finds first from the end
         for day_off, hhmm, t, _ in reversed(lines):
             if not t:
@@ -1204,7 +1402,7 @@ def card_rows(a: dict, width: int) -> list:
     rows += wrap_rows(" · ".join(bits), width, "dim", " ", "   ")
     if a.get("engine") == "codex":
         usage = a.get("usage_tokens") or {}
-        rows += wrap_rows(f"Codex: user turns · input usage {fmt_k(usage.get('input_tokens'))} across model calls"
+        rows += wrap_rows(f"Codex: user turns · input usage {'≈' if a.get('usage_scope') == 'partial' else ''}{fmt_k(usage.get('input_tokens'))} across model calls"
                           + (" · ctx is the last model input" if a.get("ctx_source") else " · context size unavailable"),
                           width, "dim", " ", "   ", 3)
     if a["title"]:
@@ -1311,6 +1509,16 @@ def tag_style(tag: str) -> str:
     return "tag%d" % (sum(ord(c) for c in tag.split("/")[0]) % 6)
 
 
+def spend_text(sp: dict) -> str:
+    """One line: what the stage's agents cost and the hub's share of it (≈ marks an estimate from tokens)."""
+    hub, agents = sp.get("hub_usd"), sp.get("agents_usd") or 0.0
+    if hub is None:
+        return f"spend: agents ${agents:.2f}; the hub's cost is unknown (no transcript, no price for its model)"
+    est = "≈" if sp.get("hub_basis") == "estimate" else ""
+    return (f"spend: hub {est}${hub:.2f} + agents ${agents:.2f} — the hub is {est}{(sp.get('hub_share') or 0) * 100:.0f} % of the stage"
+            + (" (partial: transcript not fully read or a model unpriced)" if sp.get("hub_partial") else ""))
+
+
 def summary_rows(snap: dict, width: int) -> list:
     rows = [R(("Locks (lock list)", "bold_u"))]
     if not snap["locks"]:
@@ -1335,6 +1543,7 @@ def summary_rows(snap: dict, width: int) -> list:
             rows += wrap_rows(f"{hub}{r['role']} [{r['tag']}] {state}  journal "
                               + (f"{fmt_age(r['journal_age_s'])} ago" if r["journal_age_s"] is not None else "—") + f"  {r['title']}",
                               width, "norm" if r["role"] == "hub" else "dim", "   ", "     ", 2)
+        rows += wrap_rows(spend_text(snap["spend"].get(stage) or {}), width, "dim", "   ", "     ", 2)
     lim = snap.get("limits")
     if lim and isinstance(lim["info"], dict):
         rows += [R(("", "norm")), R(("Claude plan limits (latest rate_limit event in the logs)", "bold_u"))]
@@ -1486,7 +1695,7 @@ def render_widget(snap: dict) -> str:
 def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> dict:
     agents = [{k: v for k, v in a.items() if not k.startswith("_")} for a in snap["agents"]]
     out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "counts": snap["counts"], "agents": agents,
-           "roles": snap["roles"], "locks": snap["locks"], "questions": snap["questions"],
+           "roles": snap["roles"], "spend": snap["spend"], "locks": snap["locks"], "questions": snap["questions"],
            "questions_ok": snap.get("questions_ok", False), "limits": snap["limits"],
            "codex_limits": snap.get("codex_limits", {}),
            "journal_tail": [{"stage": s, "time": hh, "tag": t, "text": x} for s, hh, t, x in coll.journal(snap["stages"], 0)[-20:]]}

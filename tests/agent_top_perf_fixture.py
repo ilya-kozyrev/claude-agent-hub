@@ -21,6 +21,7 @@ from pathlib import Path
 hub, claude, codex = (Path(p) for p in sys.argv[1:4])
 NOW = time.time()
 STAGES, AGENTS, TURNS, SESSIONS, SUBS = 10, 6, 1500, 4, 4
+HUB_MSGS = 2000                  # messages of perf-00's hub transcript (4 of them 1 MB lines); the test expects 110 weighted tokens each
 PAD = "x" * 600
 
 
@@ -47,7 +48,9 @@ def headless_log(sid, turns, t0, prefix):
                 {"tool_use_id": tid, "type": "tool_result", "content": f"ok {i} {PAD}", "is_error": False}]},
                 "parent_tool_use_id": None, "session_id": sid}))
     out.append(line({"duration_api_ms": 1, "type": "result", "subtype": "success", "is_error": False, "num_turns": turns,
-                     "result": "DONE", "total_cost_usd": 1.5, "session_id": sid}))
+                     "result": "DONE", "total_cost_usd": 1.5, "session_id": sid,
+                     "modelUsage": {"claude-opus-5-5": {"inputTokens": 300000, "outputTokens": 0, "cacheReadInputTokens": 0,
+                                                        "cacheCreationInputTokens": 0, "costUSD": 1.5}}}))
     return "".join(out)
 
 
@@ -92,6 +95,20 @@ for s in range(STAGES):
                 note = f"<task-notification><task-id>{aid}</task-id><status>completed</status></task-notification>"
                 parent.append(transcript_line("queue-operation", sid, NOW - 1000, operation="enqueue", content=note))
         (proj / f"{sid}.jsonl").write_text("".join(parent), encoding="utf-8")
+    if s == 0:
+        # the stage's hub: a 5 MB transcript, 4 MB of it in four assistant lines of 1 MB (a big file written by a tool call),
+        # each message 10 input + 20 output tokens = 110 weighted tokens
+        hub_sid = str(uuid.uuid4())
+        roles["hub"] = {"session": hub_sid, "cli_session_id": hub_sid, "kind": "desktop", "tag": "hub-0", "engine": "claude"}
+        usage = {"input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        msgs = []
+        for j in range(HUB_MSGS):
+            big = j % (HUB_MSGS // 4) == 0
+            body = "w" * 1_000_000 if big else PAD
+            msgs.append(transcript_line("assistant", hub_sid, NOW - 3000 + j, message={
+                "id": f"msg_h{j}", "model": "claude-opus-5-5", "role": "assistant",
+                "content": [{"type": "tool_use", "id": f"toolu_h{j}", "name": "Write", "input": {"content": body}}], "usage": usage}))
+        (proj / f"{hub_sid}.jsonl").write_text("".join(msgs), encoding="utf-8")
     (hub / stage / "roles.json").write_text(json.dumps({"version": 1, "roles": roles}), encoding="utf-8")
 
 for p in range(300):
