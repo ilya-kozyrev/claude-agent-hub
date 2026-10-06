@@ -62,13 +62,13 @@ sleep 1; $B/agent status dead > /dev/null 2>&1
 check "$(grep -c 'EXIT dead: killed (no result)' "$(J)")" 1 "a killed run: EXIT killed (no result), as before"
 check "$(ended dead)" 0 "…never ENDED"
 # the exit-note itself, fed a hand-made log: an error result with code 1, and code 0 with no result at all
-exit_note(){  # exit_note ROLE CODE [RESULT-JSON]
-python3 - "$R" "$B" "$1" "$2" "${3:-}" <<'PY'
+exit_note(){  # exit_note ROLE CODE [LOG TEXT [ENGINE]]
+python3 - "$R" "$B" "$1" "$2" "${3:-}" "${4:-claude}" <<'PY'
 import json, os, sys, subprocess
-R, B, role, code, result = sys.argv[1:]
+R, B, role, code, result, engine = sys.argv[1:]
 d = f"{R}/stage-a/agents/{role}"; os.makedirs(d, exist_ok=True)
 json.dump({"role": role, "tag": role, "stage": "stage-a", "session_id": f"s-{role}", "dir": d, "runs": [{"at": "2026-01-01T00:00:00+00:00"}],
-           "pid": 1, "model": "haiku", "engine": "claude", "cwd": R}, open(f"{d}/meta.json", "w"))
+           "pid": 1, "model": "haiku", "engine": engine, "cwd": R}, open(f"{d}/meta.json", "w"))
 open(f"{d}/log.jsonl", "w").write((result + "\n") if result else "")
 subprocess.run([f"{B}/agent", "exit-note", role, "--stage", "stage-a", "--code", code], check=True)
 PY
@@ -81,6 +81,28 @@ exit_note errc 1 '{"type": "result", "subtype": "success", "is_error": false, "n
 grep -q 'EXIT errc: .*code 1' "$(J)"; check $? 0 "a success result with a non-zero code stays EXIT"
 exit_note errok 0 '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "ok"}' > /dev/null
 grep -q 'ENDED errok: .*code 0' "$(J)"; check $? 0 "positive control: the same result with code 0 is ENDED"
+# a resumed run that exits 0 before any answer of its own: the log still ends with the PREVIOUS run's result
+OLD_RESULT='{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "ok"}'
+INIT='{"type": "system", "subtype": "init", "session_id": "s-stale"}'
+exit_note stale 0 "$OLD_RESULT
+$INIT" > /dev/null
+grep -q 'EXIT stale: no result — died or killed; code 0' "$(J)" && ! grep -q 'ENDED stale' "$(J)"; check $? 0 "claude: a resumed run with no result of its own (init after the old result) is EXIT, not ENDED"
+check "$(exits stale)" 1 "…one line, the exit-note's own"
+exit_note stale-ok 0 "$OLD_RESULT
+$INIT
+$OLD_RESULT" > /dev/null
+grep -q 'ENDED stale-ok: ' "$(J)"; check $? 0 "positive control: the same log with the resumed run's own result is ENDED"
+CDX_RUN='{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "a", "type": "agent_message", "text": "done it"}}
+{"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}'
+CDX_RESUME='{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}'
+exit_note cdx-stale 0 "$CDX_RUN
+$CDX_RESUME" codex > /dev/null
+grep -q 'EXIT cdx-stale: no result — died or killed; code 0' "$(J)" && ! grep -q 'ENDED cdx-stale' "$(J)"; check $? 0 "codex: a resumed run with no turn.completed of its own is EXIT, not ENDED"
+exit_note cdx-ok 0 "$CDX_RUN" codex > /dev/null
+grep -q 'ENDED cdx-ok: ' "$(J)"; check $? 0 "positive control: a Codex log whose last turn completed is ENDED"
 
 # 5. Codex parity: the same classification for a Codex run
 FAKE_CODEX_HOLD=1 $B/agent spawn --engine codex --role cdx --cwd $W --brief $W/b.md > /dev/null 2>&1; wait_dead cdx; sleep 1
