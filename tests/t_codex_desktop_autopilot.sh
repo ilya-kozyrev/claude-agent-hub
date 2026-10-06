@@ -32,6 +32,7 @@ def setup(name):
     home=tmp/name; stage=home/'stage-a'; stage.mkdir(parents=True)
     env['AGENT_HUB_HOME']=str(home); env['CODEX_THREAD_ID']=old
     (stage/'roles.json').write_text(json.dumps({'roles':{'hub':{'session':old,'cli_session_id':old,'tag':'hub-1','kind':'cli'}}}))
+    (stage/'stage.json').write_text(json.dumps({'goal':'Complete the fixture queue'}))
     handoff=stage/'HANDOFF-hub-test.md'
     handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #2" — stage-a\n\n## 0. First steps\nTake over\n## 2. Queue\nWrite DONE and finish. No external work remains.\n')
     return home,stage,handoff
@@ -62,6 +63,10 @@ def takeover(handoff, req, ok=True, **kwargs):
     return r
 
 home,stage,handoff=setup('desktop')
+filled=handoff.read_text(); handoff.write_text(filled.replace('Take over','TODO take over'))
+r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',ok=False)
+assert 'TODO' in r.stderr and not (stage/'auto-handoff.json').exists()
+handoff.write_text(filled)
 r=prepare(handoff)
 p=state(stage)['pending']; req=p['request_id']
 assert p['surface']=='desktop' and p['kind']=='desktop' and p['phase']=='prepared' and not p.get('id')
@@ -92,6 +97,7 @@ args=payload['create_thread']
 assert not payload['already_dispatched']
 assert args['target']=={'type':'project','projectId':'saved-project','environment':{'type':'local'}}
 assert args['model']=='gpt-6.1-sol' and args['thinking']=='high'
+assert args['title']=='Hub stage-a #2 — Complete the fixture queue'
 assert '--desktop-request '+req in args['prompt'] and 'finite' in args['prompt'] and '--for 9m' not in args['prompt']
 assert 'sandbox' not in args and 'approval' not in args
 assert json.loads(request(req).stdout)['already_dispatched']
