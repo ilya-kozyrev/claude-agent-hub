@@ -12,7 +12,7 @@ spawn(){ FAKE_HOLD=${HOLD:-60} $B/agent spawn --role "$1" --cwd $W --model haiku
 exits(){ grep -c "EXIT $1: " "$(journal stage-a)"; }          # EXIT lines of the role, whatever they say
 killed(){ grep -c "EXIT $1: killed (no result)" "$(journal stage-a)"; }
 wait_gone(){ for i in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
-trap 'for r in d1 d2 d3 d4 d5 d6 d7; do $B/agent stop $r >/dev/null 2>&1; done' EXIT
+trap 'for r in d1 d2 d3 d4 d5 d6 d7 d8; do $B/agent stop $r >/dev/null 2>&1; done' EXIT
 
 # 1. kill -9 of the whole group, two observers at once, a jwait with the hub's default match waiting
 spawn d1; check $? 0 "spawn d1"
@@ -91,4 +91,30 @@ kill -KILL -- -$P; wait_gone $P
 spawn d7; P=$(pid_of d7); kill -KILL -- -$P; wait_gone $P
 touch -t 202001010000 $R/stage-a/agents/d7/log.jsonl
 $B/agent status d7 > /dev/null 2>&1; check "$(exits d7)" 0 "a run that died long ago is not journaled on first sight"
+
+# 7. the run wrote its result and exited between the observer's read of the log and its check of the process: not killed
+spawn d8; P=$(pid_of d8)
+python3 - "$B" d8 "$P" "$R" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys, time
+b, role, pid, root = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+l = importlib.machinery.SourceFileLoader("agent_cli", b + "/agent")
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_cli", l)); l.exec_module(m)
+log = f"{root}/stage-a/agents/{role}/log.jsonl"
+real_alive = m.alive
+def alive_then_finish(meta):
+    # what the agent does right after the caller read its log: DONE + a success result, then exit
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "DONE x"}) + "\n")
+    os.killpg(pid, 9)
+    for _ in range(40):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    return False
+m.alive = alive_then_finish
+m.status_line("stage-a", role)
+PY
+check "$(exits d8)" 0 "a result written just before the exit is re-read after the process is gone: no EXIT killed"
 exit $fail

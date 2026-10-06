@@ -194,7 +194,7 @@ If a run crashes or ends without a status word, a small wrapper journals `EXIT <
 the hub's `jwait` wakes anyway. When the process is killed together with the wrapper (`kill -9` of its group), the first
 observer — `agent status` or the poll of `jwait --journal` (every 10 s) — journals `EXIT <role>: killed (no result)`
 once per run (marker under `<state dir>/agent-exits/<stage>/`); `agent stop`, a registered role only, and a death
-within the last day are the bounds. The brief and every message reach the CLI on stdin (`prompt.txt` in the agent's
+within the last day are the bounds. The brief and every message reach the CLI on stdin (`prompt-<run>.txt` in the agent's
 directory), never in argv, so a `pkill -f "<words of a brief>"` cannot hit an agent.
 
 Headless agent, foreground or background sub-agent of the hub, `claude --bg` or Desktop session — which to use when,
