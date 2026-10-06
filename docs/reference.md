@@ -73,6 +73,11 @@ optional modules for macOS with Claude Desktop.
 
 ## Quickstart
 
+`hub takeover` and `agent status` report the runtime version and `bin/` actually executing the command. A newer
+cache for the host engine adds a warning; Claude uses `CLAUDE_CONFIG_DIR` or `~/.claude`, Codex uses `CODEX_HOME`
+or `~/.codex`. The other engine's newer version is not an update warning for this host.
+
+
 Start the first message of a session with `/agent-hub:hub`, for example `/agent-hub:hub I want CSV export on the
 reports page …`. The slash command always loads the `hub` skill; a plain-language mention of it may be ignored by a
 smaller model, which then plans and codes on its own. In Codex, ask to use `agent-hub:hub` explicitly; see [Codex setup](codex.md).

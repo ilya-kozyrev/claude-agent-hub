@@ -83,7 +83,7 @@ PROJECT_KEYS += ("AGENT_HUB_POLL_GUARD", "AGENT_HUB_POLL_MAX_SLEEP", "AGENT_HUB_
                  "AGENT_HUB_WAIT_HINT", "AGENT_HUB_EFFORT_RULES")
 # Reviewers (bin/reviewers.py): the list, and the model and effort of a built-in `agent` reviewer. A repository may
 # set them all; a `check` command in a repository's list is never run (see reviewers.py).
-PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REVIEW_EFFORT")
+PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REVIEW_EFFORT", "AGENT_HUB_REVIEW_HELPER_LINES")
 # Spawn policy (bin/spawn_policy.py): the default effort per model is the repository's to set, like the default effort;
 # what needs a reason and how large a context a resume may start from are the user's own limits (hub home only).
 PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
@@ -1132,11 +1132,13 @@ def plugin_tools() -> list:
 DISPATCHER_MARKER = "# agent-hub: dispatcher"
 
 
-def plugin_version(bin_dir) -> Optional[tuple]:
+def plugin_version(bin_dir, engine=None) -> Optional[tuple]:
     """(major, minor, patch) of the plugin that owns `bin_dir`: its manifest's version (.claude-plugin or
     .codex-plugin), else a cache folder named <version>; None when neither says."""
     root = Path(bin_dir).parent
-    for manifest in (root / ".claude-plugin" / "plugin.json", root / ".codex-plugin" / "plugin.json"):
+    manifests = (".codex-plugin", ".claude-plugin") if engine == "codex" else (".claude-plugin", ".codex-plugin")
+    for folder in manifests:
+        manifest = root / folder / "plugin.json"
         try:
             raw = json.loads(manifest.read_text(encoding="utf-8")).get("version")
         except (OSError, ValueError, AttributeError):
@@ -1146,6 +1148,41 @@ def plugin_version(bin_dir) -> Optional[tuple]:
             return tuple(int(x) for x in m.groups())
     m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", root.name)
     return tuple(int(x) for x in m.groups()) if m else None
+
+
+def host_engine() -> str:
+    """Engine of this command's host, using the same selection as the launchers."""
+    return setting("AGENT_HUB_ENGINE") or ("codex" if os.environ.get("CODEX_THREAD_ID") else "claude")
+
+
+def plugin_runtime_line(engine=None) -> str:
+    """Actual runtime root/version, plus a newer cache for this engine only; read-only."""
+    engine = engine or host_engine()
+    running = BIN.resolve()
+    current = plugin_version(running, engine)
+    label = fmt_version(current) if current else "version unknown"
+    line = f"Plugin runtime: agent-hub {label} ({engine}; {running})"
+    config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") if engine == "codex" else Path(
+        os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    newer = []
+    for candidate in (config / "plugins" / "cache").glob("*/agent-hub/*/bin"):
+        if not candidate.is_dir():
+            continue
+        version = plugin_version(candidate, engine)
+        if current and version and version > current:
+            newer.append((version, str(candidate.resolve())))
+    if newer:
+        version, path = max(newer)
+        line += f"; ATTENTION: newer {engine} plugin {fmt_version(version)} installed at {path}; restart with that runtime"
+    return line
+
+
+def review_helper_lines() -> int:
+    """Changed-line threshold for judgement helpers, configurable in the usual layers."""
+    raw = setting("AGENT_HUB_REVIEW_HELPER_LINES", "300")
+    if not re.fullmatch(r"[0-9]+", raw or ""):
+        raise UsageError("AGENT_HUB_REVIEW_HELPER_LINES must be a non-negative integer")
+    return int(raw)
 
 
 def installed_plugin_bins() -> list:

@@ -577,6 +577,13 @@ def hub_notes_line(stage: str) -> str:
     return "\n".join(out)
 
 
+def wait_procedure() -> str:
+    """Wait advice for the host writing this digest or handoff."""
+    if hc.host_engine() == "codex":
+        return "Codex: use a yielded shell session and its continuation tool; keep each wait at most 60 s"
+    return "Claude: Bash `run_in_background: true`"
+
+
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
            goal: str = "") -> str:
     tag = f"hub-{n}"
@@ -585,11 +592,12 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     text = handoff.read_text(encoding="utf-8") if handoff else ""
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
+        (hc.plugin_runtime_line(), 650, ""),
         (f"Goal of stage {stage}: {goal}" if goal else "", 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
-        ("First jwait (Bash, run_in_background: true; --since = handoff time):\n"
+        (f"First jwait ({wait_procedure()}; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
         (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,
          str(handoff) if handoff else ""),
@@ -786,7 +794,7 @@ def environment_warnings(persist: bool = True) -> list:
 
 
 def resolve_self(raw: str) -> str:
-    """`--session self` = the Claude Code session running the command."""
+    """`--session self` = the current Claude or Codex host, including detached workers."""
     if raw.strip() != "self":
         return raw
     sid = hc.session_id() or os.environ.get("AGENT_SESSION_ID", "").strip()
@@ -1100,11 +1108,12 @@ def hub_sessions(stage: str, given: str, me: dict) -> list:
     another Claude Code session ($CLAUDE_CODE_SESSION_ID, a uuid), that one too: a registry that names an older
     session must not hide the caller's own sub-agents."""
     if given:
-        cli = session_by_any(given)["cli"]
+        cli = session_by_any(resolve_self(given))["cli"]
         if not subagents.UUID_RE.fullmatch(cli):
             raise hc.UsageError(f"--session {given!r}: not a session I can find — a CLI uuid, or a local_… id from the "
                                 "Desktop session metadata")
-        return [(cli, {})]
+        hit = hc.role_for_caller(stage) if given.strip() == "self" else hc.role_for_session(stage, cli)
+        return [(cli, hit[1] if hit else {})]
     out = []
     cli = me.get("cli") or (session_by_any(me["local"])["cli"] if me.get("local") else "")
     if subagents.UUID_RE.fullmatch(cli or ""):
@@ -1249,7 +1258,7 @@ Report progress against it with technical evidence separately.
 1. Name your session "{succ}"; `hub takeover --stage {stage} --session <your full session id> --handoff {out}` —
    locks ({', '.join(r['kind'] for r in held) or 'none held'}), `coordinator:` in night-queue, `roles set hub`, a journal
    line; it prints a digest and the first `jwait` command. Tell "{name}" once that you took over (`roles budget`).
-2. The first `jwait` — from the takeover digest, Bash `run_in_background: true`; start no other waiters.
+2. The first `jwait` — from the takeover digest, {wait_procedure()}; start no other waiters.
 3. Check every "owner said" below against `ask list --stage {stage}` (takeover digest); on a mismatch the register wins.
 4. TODO: background processes and script questions waiting for an answer (output file, question marker).
 
@@ -1377,6 +1386,7 @@ def cmd_succeed(a) -> int:
 # ---------------------------------------------------------------- reviewer
 
 def cmd_reviewer(a) -> int:
+    helper_lines = hc.review_helper_lines()
     loaded = reviewers.load()
     for problem in loaded.problems:
         hc.warn(problem)
@@ -1386,7 +1396,7 @@ def cmd_reviewer(a) -> int:
     start = reviewers.start_line(chosen.entry, a.stage) if chosen else None
     if a.json:
         print(json.dumps({"class": a.for_class[:reviewers.SHOWN] if a.for_class else None, "source": loaded.origin,
-                          "chosen": chosen.entry.name if chosen else None, "start": start,
+                          "chosen": chosen.entry.name if chosen else None, "start": start, "helper_threshold": helper_lines,
                           "entries": [reviewers.entry_json(v) | ({"check_output": v.output} if a.all and v.output else {})
                                       for v in verdicts],
                           "invalid": loaded.problems}, ensure_ascii=False, indent=1))
@@ -1407,6 +1417,7 @@ def cmd_reviewer(a) -> int:
         return 1
     e = chosen.entry
     print(f"reviewer: {e.name} ({reviewers.describe(e)})")
+    print(f"review helpers: no judgement team below {helper_lines} changed lines; fill this threshold in the brief")
     print(f"start: {start}")
     return 0
 
