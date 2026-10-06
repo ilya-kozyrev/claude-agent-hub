@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **The watchdog can queue a turn for a confirmed idle Codex app hub:** `watchdog_codex.py` reads runtime state and rollout activity, keeps Desktop, terminal, unknown and notLoaded threads notify-only, and never runs native `exec resume`; Codex API-error detection remains disabled (R4 is Claude-only in 0.9.1), with positive and negative controls in `t_watchdog_codex.sh`.
+- **Codex hubs are notify-only in 0.9.1: the watchdog notifies the owner.** The queue path is inert until a host producer lands (nothing records `host: codex-app` yet); `watchdog_codex.py` reads runtime state and rollout activity, keeps Desktop, terminal, unknown and notLoaded threads notify-only, and never runs native `exec resume`; Codex API-error detection remains disabled (R4 is Claude-only in 0.9.1), with positive and negative controls for queue decoding, unknown timeout outcomes, hanging proxies and missing CLIs in `t_watchdog_codex.sh`.
 
 ## 0.9.0 — 2026-10-06
 

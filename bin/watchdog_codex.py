@@ -1,4 +1,7 @@
-"""Codex watchdog boundary: read state, queue only a confirmed idle app hub.
+"""Codex watchdog boundary: read state, notify the owner for Codex hubs.
+
+The queue path is inert in 0.9.1 until a host producer lands: nothing records
+host: codex-app yet. Keep that gate; Codex hubs are notify-only in this release.
 
 The 0.160.0 scratch control proved that queue starts an idle app-server turn.
 A notLoaded reply is local to one server, not a global writer lock. Never use
@@ -72,7 +75,9 @@ def wake(stage: str, rec: dict, text: str, dry_run: bool) -> dict:
         if dry_run:
             return {"ok": True, "how": how, "detail": "dry run; no message queued"}
         proc = subprocess.run(argv, cwd=rec.get("cwd") or None, env=hc.child_env(),
-                              capture_output=True, text=True, timeout=20)
+                              capture_output=True, text=True, errors="replace", timeout=20)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "how": how, "detail": "queue outcome unknown: TimeoutExpired"}
     except (hc.Failure, hc.UsageError, OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "how": locals().get("how", "codex queue"),
                 "detail": f"queue failed: {type(exc).__name__}"}

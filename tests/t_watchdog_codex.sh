@@ -15,6 +15,7 @@ if args==['app-server','proxy']:
  if mode=='fail':sys.exit(1)
  first=json.loads(sys.stdin.readline());assert first['method']=='initialize'
  print(json.dumps({'id':first['id'],'result':{}}),flush=True)
+ if mode=='hang':time.sleep(30);sys.exit(0)
  assert json.loads(sys.stdin.readline())['method']=='initialized'
  req=json.loads(sys.stdin.readline());assert req['method']=='thread/read'
  assert req['params']['includeTurns'] is False
@@ -30,6 +31,9 @@ if args[:1]==['queue']:
  assert len(args)==5 and args[1]=='--thread' and args[3]=='--message',args
  if (root/'queue-mode').read_text().strip()=='error':
   print('queue failed on fixture',file=sys.stderr);sys.exit(7)
+ if (root/'queue-mode').read_text().strip()=='nonutf8':
+  sys.stdout.buffer.write(b'Queued message \xff\n');sys.stdout.buffer.flush()
+  sys.stderr.buffer.write(b'diagnostic \xfe\n');sys.stderr.buffer.flush();sys.exit(0)
  print('Queued message for thread '+args[2]);sys.exit(0)
 if args[:2]==['exec','resume']:
  sys.exit('native resume forbidden by the watchdog contract')
@@ -38,7 +42,7 @@ PY
 chmod +x "$CODEX_BIN"
 printf idle > "$C/mode"; printf ok > "$C/queue-mode"
 python3 - "$B" "$C" <<'PY'
-import hashlib, json, os, subprocess, sys
+import hashlib, json, os, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -85,6 +89,19 @@ for value,busy in [('active',True),('notLoaded',None),('systemError',None),('err
  result=wc.wake('stage-a',rec,'must not wake',False)
  assert not result['ok'] and result['how']=='notify' and calls()==before_calls,(value,result,calls())
 print('PASS active, notLoaded, errors and malformed/unknown statuses never wake or resume')
+# A silent proxy must respect the read deadline; missing CLI is unknown too.
+mode('hang');before_calls=calls();started=time.monotonic()
+got=wc.state('stage-a',rec,now)
+elapsed=time.monotonic()-started
+assert got['busy'] is None and got['transport']=='notify' and elapsed<7,(got,elapsed)
+assert calls()==before_calls
+print('PASS hanging proxy returns unknown within 7 seconds without a mutation')
+with patch.dict(os.environ,{'CODEX_BIN':'/nonexistent'}):
+ got=wc.state('stage-a',rec,now)
+ assert got['busy'] is None and got['transport']=='notify',got
+ result=wc.wake('stage-a',rec,'must not wake without CLI',False)
+ assert not result['ok'] and result['how']=='notify' and calls()==before_calls,result
+print('PASS missing Codex binary returns unknown and notify wake without a mutation')
 mode('idle')
 for changes in ({'host':'codex-cli'},{'host':None},{'kind':'desktop'},{'session':'local_scratch','cli_session_id':sid}):
  before_calls=calls();got=wc.state('stage-a',{**rec,**changes},now)
@@ -120,6 +137,11 @@ meta.parent.mkdir();meta.write_text(json.dumps({'engine':'codex','role':'old-hub
 assert wc.state('stage-a',rec,now)['transport']=='notify'
 meta.unlink()
 print('PASS no rollout and detached identity defer to notify or core agent-send')
+(root/'queue-mode').write_text('nonutf8');before_calls=len(calls())
+result=wc.wake('stage-a',rec,'non-UTF-8 output',False)
+assert result['ok'] and result['detail']=='Queued message \ufffd',result
+assert len(calls())==before_calls+1
+print('PASS delivered queue remains successful with non-UTF-8 stdout and stderr')
 (root/'queue-mode').write_text('error');before_calls=len(calls())
 result=wc.wake('stage-a',rec,'failure',False)
 assert not result['ok'] and result['detail']=='queue failed on fixture',result
@@ -128,10 +150,10 @@ with patch.object(wc.subprocess,'run',side_effect=subprocess.TimeoutExpired('que
  # Mock the read-only liveness query separately from the queue's process harness.
  with patch.object(wc.codex_sessions,'runtime_status',return_value='idle'):
   result=wc.wake('stage-a',rec,'timeout',False)
-  assert not result['ok'] and result['detail']=='queue failed: TimeoutExpired',result
+  assert not result['ok'] and result['detail']=='queue outcome unknown: TimeoutExpired',result
 assert all(a[:1]==['queue'] for a in calls())
 assert not any(a[:2]==['exec','resume'] for a in calls())
-print('PASS failed/timed-out queue has no exec resume, new thread or fallback')
+print('PASS failed queue and unknown timeout outcome have no exec resume, new thread or fallback')
 # Evidence that the native resume fixture would detect an accidentally added fallback.
 r=subprocess.run([str(root/'codex.py'),'exec','resume',sid,'-'],input='control',capture_output=True,text=True)
 assert r.returncode!=0 and 'forbidden' in r.stderr
