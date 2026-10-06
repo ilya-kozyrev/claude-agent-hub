@@ -714,7 +714,12 @@ def observe_death(stage: str, meta: dict, info: dict, mtime) -> str | None:
         return None
     if mtime is None or hc.now().timestamp() - mtime.timestamp() > OBSERVE_WINDOW_S:
         return None
-    if not process_gone(meta) or not claim_exit(stage, meta):
+    if not process_gone(meta):
+        return None
+    try:
+        if not claim_exit(stage, meta):
+            return None
+    except OSError:  # no marker, no certainty that it is written once: stay silent
         return None
     last = (info["last_text"] or "").strip().splitlines()
     return hc.journal_append(stage, meta["tag"], f"EXIT {meta['role']}: killed (no result); turns {turns_text(info)}"
@@ -851,7 +856,10 @@ def cmd_stop(a) -> int:
     how = "no process was running"
     if alive(meta):
         pgid = meta["pid"]
-        claim_exit(stage, meta)  # a stop is a known end: no observer reports it as "killed"
+        try:
+            claim_exit(stage, meta)  # a stop is a known end: no observer reports it as "killed"
+        except OSError:
+            pass
         try:
             os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
@@ -911,8 +919,11 @@ def cmd_exit_note(a) -> int:
     clean = a.code == 0 and r and not r.get("is_error") and r.get("subtype") == "success"
     if clean and status_seen(stage, meta["tag"], since):
         return 0
-    if not claim_exit(stage, meta):  # an observer already reported this run's end
-        return 0
+    try:
+        if not claim_exit(stage, meta):  # an observer already reported this run's end
+            return 0
+    except OSError:
+        pass  # an unwritable state dir must not cost the EXIT line
     why = "no status word in the journal" if clean else (f"{r.get('subtype')}, error" if r.get("is_error") else
                                                           (r.get("subtype") or "no result — died or killed"))
     last = (info["last_text"] or "").strip().splitlines()
