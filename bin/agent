@@ -76,6 +76,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
+import spawn_policy  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -101,8 +102,8 @@ def plan_warning(stage: str) -> str | None:
             return None
     except Exception:
         return None
-    return (f"stage {stage} has no owner-approved plan on record: after the owner's yes, "
-            f"`ask plan --stage {stage} \"<the plan in one line>\"`; spawning anyway")
+    return (f"stage {stage} has no owner-approved plan on record: show the plan to the owner; record `ask plan` "
+            f"only after the owner's yes (`ask plan --stage {stage} \"<the plan in one line>\"`); spawning anyway")
 
 
 ALIASES = hc.MODEL_ALIASES
@@ -490,12 +491,17 @@ def cmd_spawn(a) -> int:
     if problem:
         raise hc.UsageError(f"--model: {problem}")
     given, a.model = given_model, mmap.get(given_model, given_model)
-    default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
     allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
+    model_names = [n for n in dict.fromkeys([given or "CLI default", a.model or "CLI default"])]
+    default_effort = spawn_policy.default_effort(model_names, allowed_efforts, cwd)
     effective_effort = a.effort or default_effort
     if effective_effort not in allowed_efforts:
         raise hc.UsageError(f"effort {effective_effort!r} ({engine}): one of {allowed_efforts}")
     effort = None if engine == "claude" and "haiku" in a.model else effective_effort
+    reason = spawn_policy.clean_reason(a.reason)
+    above_default = spawn_policy.check_reason(model_names, effort, default_effort, allowed_efforts, reason, cwd)
+    if above_default:
+        hc.warn(above_default)
     # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
     import subagent_rules  # noqa: E402
     denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
@@ -564,9 +570,12 @@ def cmd_spawn(a) -> int:
     report = hc.work_dir(stage) / f"{tag.replace('/', '-')}-REPORT.md"
     meta = {"role": a.role, "tag": tag, "stage": stage, "session_id": str(uuid.uuid4()) if engine == "claude" else "", "model": a.model,
             "effort": effort, "permission_mode": pmode, "cwd": str(cwd), "dir": str(d), "brief": str(brief),
-            "title": a.title or f"agent {a.role} ({stage})", "report": str(report),
+            "title": a.title or spawn_policy.brief_title(a.role, stage, brief.read_text(encoding="utf-8")),
+            "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
     meta["engine"] = engine
+    if reason:
+        meta["reason"] = reason
     if engine == "codex":
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
         if policy:
@@ -594,20 +603,23 @@ def cmd_spawn(a) -> int:
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
-                               + (f", worktree {wt['path']} ({wt['branch']})" if wt else ""))
+                               + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
+                               + (f", reason: {reason}" if reason else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
     return 0
 
 
 def read_log(path: Path) -> dict:
     """What the log of every run of the agent says: model turns (all runs, and the last run's), the last assistant
-    text, the last result, whether a run started after it."""
-    turns, run_turns, last_text, results, last_type = set(), set(), "", [], ""
+    text, the last result, whether a run started after it, the context size (the last model call's input: input plus
+    cache tokens of the last main-thread assistant message — what agent-top shows as ctx; 0 when the log has none)."""
+    turns, run_turns, last_text, results, last_type, ctx = set(), set(), "", [], "", 0
     started_after_result = False
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return {"turns": 0, "run_turns": 0, "last_text": "", "result": None, "events": 0, "running_after_result": False}
+        return {"turns": 0, "run_turns": 0, "last_text": "", "result": None, "events": 0, "running_after_result": False,
+                "ctx": 0}
     n = 0
     with fh:
         for raw in fh:
@@ -638,6 +650,10 @@ def read_log(path: Path) -> dict:
                     run_turns = set()
                 elif t == "assistant":
                     msg = ev.get("message") or {}
+                    usage = msg.get("usage")
+                    if isinstance(usage, dict) and not ev.get("parent_tool_use_id"):  # a sub-agent's call is not this context
+                        ctx = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens",
+                                                                   "cache_creation_input_tokens")) or ctx
                     turns.add(msg.get("id") or n)
                     run_turns.add(msg.get("id") or n)
                     for block in msg.get("content") or []:
@@ -649,7 +665,7 @@ def read_log(path: Path) -> dict:
                 last_type = t
     return {"turns": len(turns), "run_turns": len(run_turns), "last_text": last_text,
             "result": results[-1] if results else None, "events": n, "running_after_result": started_after_result,
-            "last_type": last_type}
+            "last_type": last_type, "ctx": ctx}
 
 
 def turns_text(info: dict) -> str:
@@ -841,7 +857,8 @@ def status_line(stage: str, role: str) -> str:
     text = info["last_text"][:220] + ("…" if len(info["last_text"]) > 220 else "")
     wt = meta.get("worktree")
     return (f"{role} [{meta['tag']}] {model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
-            f"turns {turns_text(info)}; last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
+            f"turns {turns_text(info)}; " + (f"ctx {spawn_policy.fmt_tokens(info['ctx'])}; " if info["ctx"] else "")
+            + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
 
 
 def cmd_status(a) -> int:
@@ -878,6 +895,10 @@ def _send_locked(stage: str, a, msg: str) -> int:
         raise hc.Failure(f"agent {a.role} was stopped (role retired); start a new one with agent spawn")
     if not alive(meta) and meta.get("engine", "claude") == "claude":
         bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
+    if not alive(meta) and not a.resume_anyway:
+        limit, ctx = spawn_policy.resume_max_ctx(meta["cwd"]), read_log(Path(meta["dir"]) / "log.jsonl")["ctx"]
+        if limit and ctx > limit:  # refused before the message is queued
+            raise hc.Failure(spawn_policy.resume_refusal(a.role, ctx, limit))
     t = hc.now()
     if msg:
         with open(Path(meta["dir"]) / "inbox.md", "a", encoding="utf-8") as fh:
@@ -1034,7 +1055,7 @@ def main(argv: list) -> int:
     s.add_argument("--sandbox-policy", help="Codex rollout sandbox JSON; preserve supported roots/network/temp restrictions")
     s.add_argument("--model", help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
                    "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
-    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")
+    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high; ignored for haiku")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
@@ -1043,7 +1064,9 @@ def main(argv: list) -> int:
     s.add_argument("--base", metavar="REF", help="with --worktree: start a new branch from REF (default: origin's default "
                    "branch after a fetch; --base HEAD is the checked-out commit of --cwd)")
     s.add_argument("--tag")
-    s.add_argument("--title")
+    s.add_argument("--title", help="default: <role> — <the brief's first heading> (<stage>)")
+    s.add_argument("--reason", help="why the work needs an effort or a model above the default "
+                   "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS); journaled and kept in meta.json")
     st = sub.add_parser("status", help="alive or not, model, last event age, turns")
     st.add_argument("role", nargs="?")
     st.add_argument("--stage")
@@ -1052,6 +1075,8 @@ def main(argv: list) -> int:
     se.add_argument("role")
     se.add_argument("text", nargs="*", help="text; without text, resume with the unread inbox messages")
     se.add_argument("--stage")
+    se.add_argument("--resume-anyway", action="store_true",
+                    help="resume a stopped agent although its context is above AGENT_HUB_RESUME_MAX_CTX")
     sp = sub.add_parser("stop", help="stop the agent and retire its role")
     sp.add_argument("role")
     sp.add_argument("--stage")

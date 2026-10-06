@@ -84,6 +84,10 @@ PROJECT_KEYS += ("AGENT_HUB_POLL_GUARD", "AGENT_HUB_POLL_MAX_SLEEP", "AGENT_HUB_
 # Reviewers (bin/reviewers.py): the list, and the model and effort of a built-in `agent` reviewer. A repository may
 # set them all; a `check` command in a repository's list is never run (see reviewers.py).
 PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REVIEW_EFFORT")
+# Spawn policy (bin/spawn_policy.py): the default effort per model is the repository's to set, like the default effort;
+# what needs a reason and how large a context a resume may start from are the user's own limits (hub home only).
+PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
+HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
 BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
 # Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their
 # permission mode.
@@ -95,7 +99,7 @@ BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
              "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
-JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP",)
+JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_HUB_REASON_MODELS")
 
 
 # ---------------------------------------------------------------- the hub home
