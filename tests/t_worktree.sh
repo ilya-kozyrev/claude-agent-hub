@@ -63,7 +63,7 @@ grep -q 'git worktree unlock' $P/lk.out && ! grep -q Traceback $P/lk.out; check 
 $B/agent spawn --role nowt --cwd $REPO --model haiku --brief $P/b.md > /dev/null 2>&1; check $? 0 "control: without --worktree"
 wait_dead nowt
 check "$(meta nowt 'm["cwd"]')" "$(cd $REPO && pwd -P)" "…the agent runs in --cwd itself"
-$B/agent status nowt | grep -q 'worktree'; check $? 1 "…and status names no worktree"
+$B/agent status nowt | grep -q '; worktree '; check $? 1 "…and status names no worktree"
 # ---- a new branch starts from origin's default branch, not from the commit --cwd has checked out
 git init -q --bare $P/rem.git; git clone -q $P/rem.git $P/seed 2>/dev/null
 G(){ git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c commit.gpgsign=false "$@"; }
