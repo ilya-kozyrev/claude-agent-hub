@@ -103,6 +103,9 @@ ctx s1 300000
 AGENT_HUB_RESUME_MAX_CTX=0 $B/agent send s1 "no limit" > $R/rs4.out 2>&1; check $? 0 "AGENT_HUB_RESUME_MAX_CTX=0: no limit"; wait_dead s1
 ctx s1 300000
 $B/agent send s1 --resume-anyway "override" > $R/rs5.out 2>&1; check $? 0 "--resume-anyway overrides"; wait_dead s1
+ctx s1 300000
+$B/agent send --resume-anyway s1 "flag first" > $R/rs5b.out 2>&1; check $? 0 "--resume-anyway before the role works too"; wait_dead s1
+$B/agent send s1 --nonsense "x" > $R/rs5c.out 2>&1; check $? 2 "negative: an unknown option is still a usage error"
 ctx s1 900000 sub   # a sub-agent's call (parent_tool_use_id) is not this agent's context
 python3 - $R/stage-a/agents/s1/log.jsonl <<'PY'
 import json, sys

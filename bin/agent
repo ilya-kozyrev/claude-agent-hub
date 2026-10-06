@@ -1092,7 +1092,11 @@ def main(argv: list) -> int:
     en.add_argument("role")
     en.add_argument("--stage")
     en.add_argument("--code", type=int, default=0)
-    a = p.parse_args(argv)
+    a, extra = p.parse_known_args(argv)
+    if extra:  # `agent send R --resume-anyway "text"`: older argparse stops the positional text at an option; take the rest
+        if a.cmd != "send" or any(x.startswith("-") for x in extra):
+            p.error("unrecognized arguments: " + " ".join(extra))
+        a.text = a.text + extra
     return {"spawn": cmd_spawn, "status": cmd_status, "send": cmd_send, "stop": cmd_stop,
             "exit-note": cmd_exit_note}[a.cmd](a)
 
