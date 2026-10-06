@@ -38,7 +38,7 @@
   to spawn a fresh agent from a handoff file; `--resume-anyway` overrides, `agent status` shows the size (`ctx 300k`;
   a Codex log carries none, so Codex resumes are not limited). The registered title is `<role> — <the brief's first
   heading> (<stage>)`, not "agent wp23 (hub-09)". The no-plan warning now says to show the plan to the owner and record
-  `ask plan` only after the owner's yes. Tests: `t_spawn_policy.sh` (fails on 0.8.4's code in 42 checks).
+  `ask plan` only after the owner's yes. Tests: `t_spawn_policy.sh` (42 of its checks fail without the change).
 
 ## 0.8.6 — 2026-10-06
 
