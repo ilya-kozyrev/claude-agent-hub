@@ -89,8 +89,8 @@
   are none. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
   them before a merge, deploy or release question and forbids invented gates. Design: `docs/standing-permissions.md`.
   Tests: `tests/t_permissions.sh` (same stage, another stage on the same repository, another repository's stage
-  naming `--repo`, scopes stage and all, expiry, revocation, refusal and override, the digest; 40 of its checks fail
-  on 0.8.4).
+  naming `--repo`, scopes stage and all, expiry, revocation, refusal and override, the digest; 41 of its 50 checks fail
+  on 0.8.5).
 
 ## 0.8.5 — 2026-10-06
 
