@@ -12,7 +12,7 @@
   today's title). New `hub rename --stage OLD --to NEW [--dry-run]` renames a stage none of whose agents is alive: directory,
   `roles.json`, agent metas, the question register's heading and the board's lock notes; otherwise it exits 2 and lists
   the live agents. The skill tells the hub to name the stage and the roles after the work. The suite and scripts opt
-  out with `AGENT_HUB_NO_NAMING=1`. Tests: `tests/t_naming.sh` (27 of its checks fail on 0.8.5's code).
+  out with `AGENT_HUB_NO_NAMING=1`. Tests: `tests/t_naming.sh` (27 of its checks fail without the change).
 
 ## 0.8.6 — 2026-10-06
 
