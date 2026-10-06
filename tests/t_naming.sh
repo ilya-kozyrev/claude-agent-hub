@@ -37,7 +37,7 @@ CLAUDE_CODE_SESSION_ID=$H1 $B/hub handoff --stage retro-fixes --out $R/retro-fix
 grep -q '^# Handoff "Hub retro-fixes #1" → "Hub retro-fixes #2"' $R/retro-fixes/coordinator/HANDOFF-hub-retro-fixes-1.md; check $? 0 "…its title keeps the plain 'Hub <stage> #N' the numbers are read from"
 grep -q "^Goal of the stage: Fix what the retro found" $R/retro-fixes/coordinator/HANDOFF-hub-retro-fixes-1.md; check $? 0 "…and the goal is on a line of its own"
 CLAUDE_CODE_SESSION_ID=$H2 $B/hub takeover --stage retro-fixes --session $H2 > $P.tk.out 2>&1; check $? 0 "takeover of the stage"
-[ "$(roles_json retro-fixes hub title | cut -c1-29)" = "Hub retro-fixes #2 — Fix what" ]; check $? 0 "…the new hub's title carries the goal"
+case "$(roles_json retro-fixes hub title)" in "Hub retro-fixes #2 — Fix what"*) r=0;; *) r=1;; esac; check $r 0 "…the new hub's title carries the goal"
 grep -q "^Goal of stage retro-fixes:" $P.tk.out; check $? 0 "…and its digest"
 CLAUDE_CODE_SESSION_ID=$H2 $B/hub takeover --stage retro-fixes --session $H3 --goal "New goal" > $P.tk3.out 2>&1; check $? 0 "takeover --goal replaces the goal"
 [ "$(roles_json retro-fixes hub title)" = "Hub retro-fixes #3 — New goal" ]; check $? 0 "…title of #3"
