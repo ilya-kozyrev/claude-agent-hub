@@ -56,6 +56,7 @@ import os
 import re
 import sys
 import tempfile
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -422,15 +423,25 @@ class Repo:
 
 
 def normalize_url(url: str) -> str:
-    """host/owner/repo of a git remote (scheme, user, port-less ':' form, '.git' and trailing '/' dropped, host
-    lower-cased); a local remote (a path, file://) → "file:" + its real path."""
+    """host[:port]/owner/repo of a git remote: scheme, user, '.git' and trailing '/' dropped, the host lower-cased, an
+    explicit port kept (ssh://host:2222/… and ssh://host:3333/… are two repositories; the scp-like git@host:path form
+    has no port); a local remote (a path, file://) → "file:" + its real path."""
     u = url.strip()
     if u.startswith("file://"):
         u = u[len("file://"):]
     if u.startswith(("/", "~", ".")):
         return "file:" + os.path.realpath(os.path.expanduser(u)).removesuffix(".git")
-    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)(?:\.git)?/*$", u, re.I)
-    return f"{m.group(1).lower()}/{m.group(2)}" if m else u
+    if "://" in u:
+        parts = urllib.parse.urlsplit(u)
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        host = (parts.hostname or "").lower() + (f":{port}" if port else "")
+        path = parts.path.strip("/").removesuffix(".git").rstrip("/")
+        return f"{host}/{path}" if host and path else u
+    m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.+?)(?:\.git)?/*$", u)
+    return f"{m.group(1).lower()}/{m.group(2).lstrip('/')}" if m else u
 
 
 def url_repo(url: str) -> Repo:

@@ -58,6 +58,13 @@ allow --stage stage-z --class merge --words "сайт мержи" "merge site"
 grep -q "^- repo-id: $SITE\$" $R/stage-z/questions.md; check $? 0 "a repository without a remote: the main clone's path is its id"
 add --stage stage-x --repo site --class merge "Merge site?"; check $? 3 "a short name only one known repository has → resolved"
 
+# ---- an explicit port is part of the id (the scp-like git@host:path form has none)
+allow --stage stage-p --repo ssh://git@git.example.com:2222/team/tool.git --class merge --words "«мержи tool»" "merge tool"
+grep -q '^- repo-id: git.example.com:2222/team/tool$' $R/stage-p/questions.md; check $? 0 "the id keeps the port"
+add --stage stage-p --repo ssh://git@git.example.com:3333/team/tool.git --class merge "Merge tool on 3333?"; check $? 0 "another port is another repository: not covered"
+add --stage stage-p --repo ssh://git@Git.Example.com:2222/team/tool --class merge "Merge tool on 2222?"; check $? 3 "the same port (host case, .git aside) → refused"
+for id in $($B/ask allow --list --stage stage-p --repo ssh://git@git.example.com:2222/team/tool.git | grep -E '^A-P-[0-9]+ .* — merge tool' | cut -d' ' -f1); do $B/ask revoke $id > /dev/null; done
+
 # ---- every class and every repository must be covered; sensitive classes need a permission that names them
 allow --stage stage-y --class deploy --words "«на стейдж выкатывай»" "deploy to staging"
 add --stage stage-x --class "deploy, migration" "Deploy and migrate?"; check $? 0 "a deploy permission does not cover a deploy + migration question"
