@@ -36,35 +36,6 @@ def codex_bin(cwd=None):
     return found
 
 
-def configured_model(cwd=None):
-    """The model `codex exec` uses when no -m is passed: `model` of the nearest project `.codex/config.toml` from `cwd`
-    upward, else of $CODEX_HOME/config.toml (default ~/.codex), a selected `profile` overriding the top level. None when
-    no readable config names one (the spawn policy then cannot see the model)."""
-    try:
-        import tomllib
-    except ImportError:  # Python < 3.11: codex_bin refuses such a runtime anyway
-        return None
-    files = []
-    if cwd:
-        for d in (Path(cwd).resolve(), *Path(cwd).resolve().parents):
-            if (d / ".codex" / "config.toml").is_file():
-                files.append(d / ".codex" / "config.toml")
-                break
-    files.append(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml")
-    for f in files:
-        try:
-            data = tomllib.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        profile = data.get("profile")
-        prof = (data.get("profiles") or {}).get(profile) if isinstance(profile, str) else None
-        for src in (prof, data):
-            model = src.get("model") if isinstance(src, dict) else None
-            if isinstance(model, str) and model.strip():
-                return model.strip()
-    return None
-
-
 def model_map(cwd=None):
     raw = hc.setting("AGENT_HUB_CODEX_MODEL_MAP", cwd=cwd)
     if not raw:

@@ -501,8 +501,7 @@ def cmd_spawn(a) -> int:
         raise hc.UsageError(f"--model: {problem}")
     given, a.model = given_model, mmap.get(given_model, given_model)
     allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
-    cli_model = engines.configured_model(cwd) if engine == "codex" and not a.model else None  # what the CLI will run
-    model_names = [n for n in dict.fromkeys([given or cli_model or "CLI default", a.model or cli_model or "CLI default"])]
+    model_names = [n for n in dict.fromkeys([given or "CLI default", a.model or "CLI default"])]
     default_effort = spawn_policy.default_effort(model_names, allowed_efforts, cwd)
     effective_effort = a.effort or default_effort
     if effective_effort not in allowed_efforts:
@@ -510,12 +509,12 @@ def cmd_spawn(a) -> int:
     effort = None if engine == "claude" and "haiku" in a.model else effective_effort
     reason = spawn_policy.clean_reason(a.reason)
     above_default = spawn_policy.check_reason(model_names, effort, default_effort, allowed_efforts, reason, cwd,
-                                              model_unknown=engine == "codex" and not a.model and not cli_model)
+                                              model_unknown=engine == "codex" and not a.model)
     if above_default:
         hc.warn(above_default)
     # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
     import subagent_rules  # noqa: E402
-    denied = subagent_rules.check_spawn(given or cli_model or "CLI default", a.model or cli_model or "CLI default", effort, cwd)
+    denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
     if denied:
         raise hc.UsageError(denied)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
@@ -1071,6 +1070,8 @@ def parse_send(argv: list) -> argparse.Namespace:
                     raise hc.UsageError("--stage needs a value")
                 w = "--stage=" + rest.pop(0)
             stage = w.split("=", 1)[1]
+            if stage.startswith("-"):
+                raise hc.UsageError(f"--stage needs a stage name, got {stage!r}")
         elif w.startswith("-") and w != "-" and not words and not w.startswith("- "):
             raise hc.UsageError(f"agent send: unknown option {w!r} (a message goes after the role)")
         else:

@@ -38,8 +38,8 @@
   to spawn a fresh agent from a handoff file; `--resume-anyway` overrides, `agent status` shows the size (`ctx 300k`;
   a Codex log carries none, so Codex resumes are not limited). The registered title is `<role> — <the brief's first
   heading> (<stage>)`, not "agent wp23 (hub-09)". The no-plan warning now says to show the plan to the owner and record
-  `ask plan` only after the owner's yes. A Codex spawn without `--model` is checked against the model of the Codex
-  config; `hub succeed` passes its own reason, so `AGENT_HUB_REASON_POLICY=refuse` does not stop the autopilot chain.
+  `ask plan` only after the owner's yes. A Codex spawn without `--model` has an unknown model: with `AGENT_HUB_REASON_MODELS` set it is refused
+  (`refuse`, "pass --model") or warned about (`warn`); `hub succeed` passes its own reason, so `AGENT_HUB_REASON_POLICY=refuse` does not stop the autopilot chain.
   Tests: `t_spawn_policy.sh` (many of its checks fail without the change), `t_autopilot.sh`, `t_codex_autopilot.sh`.
 
 ## 0.8.6 — 2026-10-06

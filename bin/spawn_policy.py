@@ -59,26 +59,30 @@ def check_reason(names: list, effort: Optional[str], default: str, allowed: tupl
     policy = (hc.setting("AGENT_HUB_REASON_POLICY", cwd=cwd) or "warn").strip().lower()
     if policy not in REASON_POLICIES:
         raise hc.UsageError(f"AGENT_HUB_REASON_POLICY {policy!r}: one of {', '.join(REASON_POLICIES)}")
-    if policy == "off" or reason:
+    if policy == "off":
+        return None
+    models = hc.setting_json("AGENT_HUB_REASON_MODELS", [], cwd=cwd)
+    models = [models] if isinstance(models, str) else models
+    if model_unknown and models:
+        # Without --model (or AGENT_HUB_CODEX_DEFAULT_MODEL) the Codex CLI picks the model from layers of its own config
+        # that the plugin does not reproduce: the model is unknown, and a reason does not make it known.
+        text = "the model the Codex CLI will choose cannot be checked: pass --model"
+        if policy == "refuse":
+            raise hc.UsageError(text)
+        hc.warn(f"{text} (AGENT_HUB_REASON_MODELS check skipped); spawning anyway")
+    if reason:
         return None
     above = []
     if effort and default in allowed and effort in allowed and allowed.index(effort) > allowed.index(default):
         above.append(f"effort {effort} is above the default {default}")
-    models = hc.setting_json("AGENT_HUB_REASON_MODELS", [], cwd=cwd)
-    models = [models] if isinstance(models, str) else models
-    if isinstance(models, list):
+    if isinstance(models, list) and not model_unknown:
         hit = [m for m in models if isinstance(m, str) and pattern_matches(m, names)]
         if hit:
             above.append(f"model {names[0]} is above the default (AGENT_HUB_REASON_MODELS: {hit[0]})")
-    if model_unknown and models:
-        above.append("the model the Codex CLI will use is not named by --model, AGENT_HUB_CODEX_DEFAULT_MODEL or a "
-                     "readable Codex config, so AGENT_HUB_REASON_MODELS cannot be checked")
     if not above:
         return None
-    text = (f"{' and '.join(above)}: pass --model, or say why the work needs it with --reason \"…\" (a short sentence; "
-            "it goes into the journal and meta.json)") if model_unknown and models else \
-        (f"{' and '.join(above)}: say why the work needs it with --reason \"…\" (a short sentence; it goes into the "
-         "journal and meta.json)")
+    text = (f"{' and '.join(above)}: say why the work needs it with --reason \"…\" (a short sentence; it goes into the "
+            "journal and meta.json)")
     if policy == "refuse":
         raise hc.UsageError(text)
     return text + "; spawning anyway"

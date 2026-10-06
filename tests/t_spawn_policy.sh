@@ -79,24 +79,26 @@ check "$(meta x3 'm["reason"]')" "hard diagnosis" "codex: the reason is in meta.
 AGENT_HUB_REASON_POLICY=refuse spawn x4 --engine codex --model gpt-fixture --effort max; check $? 2 "codex: policy refuse"
 unset AGENT_HUB_EFFORT_DEFAULTS
 
-# the CLI's own configured model (no --model, no AGENT_HUB_CODEX_DEFAULT_MODEL)
+# a Codex spawn without --model: the model the CLI will choose is unknown, the plugin does not read the Codex config
 export CODEX_HOME=$R/codexhome; mkdir -p $CODEX_HOME
-printf 'model = "gpt-6-big"\nmodel_reasoning_effort = "high"\n' > $CODEX_HOME/config.toml
+printf 'model = "gpt-6-big"\n' > $CODEX_HOME/config.toml   # present, and deliberately not read
 export AGENT_HUB_REASON_MODELS='["big"]'
-spawn y1 --engine codex; check $? 0 "codex without --model: spawn goes on (warn)"
-grep -q 'model gpt-6-big is above the default' $R/y1.err; check $? 0 "…the policy sees the model of the Codex config"; wait_dead y1
-AGENT_HUB_REASON_POLICY=refuse spawn y2 --engine codex; check $? 2 "…and refuses it under policy refuse"
-AGENT_HUB_REASON_POLICY=refuse spawn y3 --engine codex --reason "needed"; check $? 0 "…accepts it with a reason"; wait_dead y3
-AGENT_HUB_EFFORT_DEFAULTS='{"big": "low"}' spawn y4 --engine codex; wait_dead y4
-grep -q 'model_reasoning_effort=.*low' $W/codex-argv.jsonl; check $? 0 "…and applies the per-model default effort to it"
-printf 'profile = "p"\nmodel = "gpt-6-big"\n[profiles.p]\nmodel = "gpt-6-small"\n' > $CODEX_HOME/config.toml
-AGENT_HUB_REASON_POLICY=refuse spawn y5 --engine codex; check $? 0 "a selected profile's model is the one that counts"; wait_dead y5
-rm $CODEX_HOME/config.toml
-AGENT_HUB_REASON_POLICY=refuse spawn y6 --engine codex; check $? 2 "unreadable config, REASON_MODELS set, policy refuse: refused"
-grep -q 'pass --model' $R/y6.err; check $? 0 "…saying to pass --model"
-AGENT_HUB_REASON_POLICY=refuse spawn y7 --engine codex --model gpt-fixture; check $? 0 "…a given --model is fine"; wait_dead y7
-unset AGENT_HUB_REASON_MODELS CODEX_HOME
-AGENT_HUB_REASON_POLICY=refuse spawn y8 --engine codex; check $? 0 "no REASON_MODELS: nothing to check, no refusal"; wait_dead y8
+spawn y1 --engine codex; check $? 0 "codex without --model, REASON_MODELS set, policy warn: spawn goes on"
+grep -q 'cannot be checked: pass --model' $R/y1.err && grep -q 'check skipped' $R/y1.err; check $? 0 "…with a warning that the model check was skipped"
+[ "$(grep -c 'cannot be checked' $R/y1.err)" = 1 ]; check $? 0 "…exactly one"
+grep -q 'model gpt-6-big' $R/y1.err; check $? 1 "negative: the Codex config file is not guessed at"; wait_dead y1
+AGENT_HUB_REASON_POLICY=refuse spawn y2 --engine codex; check $? 2 "policy refuse: refused"
+grep -q 'the model the Codex CLI will choose cannot be checked: pass --model' $R/y2.err; check $? 0 "…saying to pass --model"
+[ ! -e $R/stage-a/agents/y2 ]; check $? 0 "…nothing was started"
+AGENT_HUB_REASON_POLICY=refuse spawn y3 --engine codex --reason "needed"; check $? 2 "…a reason does not make the model known"
+AGENT_HUB_REASON_POLICY=refuse spawn y4 --engine codex --model gpt-fixture; check $? 0 "a given --model is checked and fine"; wait_dead y4
+AGENT_HUB_REASON_POLICY=off spawn y5 --engine codex; check $? 0 "policy off: nothing is checked"; wait_dead y5
+AGENT_HUB_EFFORT_DEFAULTS='{"big": "low"}' spawn y6 --engine codex; wait_dead y6
+tail -1 $W/codex-argv.jsonl | grep -qF 'model_reasoning_effort=\"high\"'; check $? 0 "the effort default of an unknown model is the general one"
+unset AGENT_HUB_REASON_MODELS
+AGENT_HUB_REASON_POLICY=refuse spawn y7 --engine codex; check $? 0 "REASON_MODELS empty (the default): nothing changes"; wait_dead y7
+spawn y8 --engine codex; grep -q 'cannot be checked' $R/y8.err; check $? 1 "…and no warning"; wait_dead y8
+unset CODEX_HOME
 
 # ---- 4. the resume limit
 spawn s1 --model haiku; wait_dead s1
@@ -124,6 +126,9 @@ ctx s1 300000
 $B/agent send s1 --resume-anyway "override" > $R/rs5.out 2>&1; check $? 0 "--resume-anyway overrides"; wait_dead s1
 ctx s1 300000
 $B/agent send --resume-anyway s1 "flag first" > $R/rs5b.out 2>&1; check $? 0 "--resume-anyway before the role works too"; wait_dead s1
+$B/agent send --stage --bogus --stage stage-a s1 "x" > $R/rs5g.out 2>&1; check $? 2 "--stage followed by a flag is an argument error"
+grep -q 'needs a stage name' $R/rs5g.out; check $? 0 "…saying so"
+$B/agent send --stage=-x s1 "x" > /dev/null 2>&1; check $? 2 "--stage=-x too"
 $B/agent send --nonsense s1 "x" > $R/rs5c.out 2>&1; check $? 2 "negative: an unknown option before the role is a usage error"
 ctx s1 300000
 $B/agent send s1 --resume-anyway -- -dashed-text > $R/rs5d.out 2>&1; check $? 0 "after --: a word that starts with a dash is the message"; wait_dead s1
