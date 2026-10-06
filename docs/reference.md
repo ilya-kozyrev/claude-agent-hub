@@ -247,6 +247,28 @@ visible, contestable. The plan the owner approved is recorded with `ask plan` �
 none: show the plan to the owner first); `ask add|decided|plan --print-id` prints just the new id, for scripts. At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
 hub home, in repositories with `.agent-hub/` and for hub agents.
 
+### Standing permissions
+
+The owner's word that a class of action needs no question each time — "merge after green CI and a review", "deploy to
+staging" — is recorded once and read by the hubs of every stage:
+
+```bash
+ask allow --stage web --class "merge, release" --words "«merge them, no need to ask»" --source "chat 06.10" \
+    "merge a PR after green CI and one review; cut the release"     # → A-WEB-001, bound to the stage's repository
+ask allow --list --stage web          # in force for web and its repository, recorded in any stage (--all: revoked too)
+ask add --stage api --repo webapp --class release "Release webapp?"   # exit 3: covered by A-WEB-001 (chat 06.10)
+ask revoke A-WEB-001 --reason "…"
+```
+
+A permission is bound to the repository the action touches (`--scope repo`, the default: the stage's recorded
+repository, or `--repo`), to one stage (`--scope stage`) or to every repository (`--scope all`); it lasts until
+revoked unless `--until` ends it. `ask add` refuses a question whose `--class` shares a keyword with a permission in
+force for its `--repo` (the repository the action touches; default the stage's) and prints `covered by A-… (<source>)`;
+`--override "why"` adds it anyway and records why. A permission keyword found only in the question's text gives a
+warning, not a refusal. The `hub start` / `hub takeover` digest lists the permissions in force for the stage, or says
+in one line that there are none. Record format, storage and matching rules: [Standing permissions](standing-permissions.md).
+`skills/setup` proposes them after reading the project and the person; it ships no fixed list.
+
 ## Team use
 
 - **One hub home belongs to one person on one machine.** The board, the journal and the registers are local files, so

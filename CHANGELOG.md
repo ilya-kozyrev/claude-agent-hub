@@ -80,6 +80,18 @@
   and resume), `tests/t_agent_dead.sh` (three concurrent observers write one line; the wrapper's own EXIT is not
   doubled; a result written just before the exit is not "killed"), `tests/t_agent_send_race.sh`; all fail on 0.8.4.
 
+- **A hub no longer asks the owner again for what the owner already allowed, even in another stage.** `ask allow`
+  records a standing permission (`A-<prefix>-NNN`: the class of action, keywords, the owner's words, scope, optional
+  `--until`) bound to the repository the action touches; `ask allow --list` and `ask revoke` manage them, and every
+  stage's register is read. `ask add --class … [--repo …]` refuses a question a permission in force covers (exit 3,
+  "covered by A-… (<source>)") unless `--override "why"` is given, and warns on a keyword found only in the text. The
+  `hub start` / `hub takeover` digest lists the permissions for the stage's repository from every stage, or says there
+  are none. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
+  them before a merge, deploy or release question and forbids invented gates. Design: `docs/standing-permissions.md`.
+  Tests: `tests/t_permissions.sh` (same stage, another stage on the same repository, another repository's stage
+  naming `--repo`, scopes stage and all, expiry, revocation, refusal and override, the digest; 40 of its checks fail
+  on 0.8.4).
+
 ## 0.8.5 — 2026-10-06
 
 - **`hub start` and `hub takeover` no longer take the main-merge lock from a live hub of another stage.** With

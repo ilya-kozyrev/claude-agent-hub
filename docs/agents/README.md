@@ -50,6 +50,7 @@ Load only the branch reference needed for the next action:
 |---|---|
 | Decide native versus detached launch | [Launch modes](../launch-modes.md) |
 | Select or configure a reviewer | [Reviewers](../reviewers.md) |
+| Record or check what the owner allowed without asking each time | [Standing permissions](../reference.md#standing-permissions) |
 | Configure a setting, migrate home, inspect lifecycle or limits | [Reference](../reference.md) (matching heading); CLI `--help` for exact syntax |
 | Inspect progress or diagnose a missing pane | [Monitoring](../monitoring.md); [Codex monitor](../codex.md#terminal-monitor-and-older-installations) |
 | End a shift | [Handoff skill](../../skills/handoff/SKILL.md) |

@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up agent-hub for a repository — ask which shared resources the project has (protected branches, environments, deploys, migrations, anything else), which commands touch each, write <repo>/.agent-hub/lock-rules.json and config.json, and prove the lock hook with positive and negative checks. Use right after installing the plugin, when a repository has no .agent-hub/ yet, or when the project gains a new shared resource.
+description: Set up agent-hub for a repository — ask which shared resources the project has (protected branches, environments, deploys, migrations, anything else), which commands touch each, write <repo>/.agent-hub/lock-rules.json and config.json, prove the lock hook with positive and negative checks, then propose standing permissions from what the project and the person show. Use right after installing the plugin, when a repository has no .agent-hub/ yet, or when the project gains a new shared resource.
 argument-hint: "[repository path] [--defaults]"
 ---
 
@@ -9,6 +9,9 @@ argument-hint: "[repository path] [--defaults]"
 Run bundled commands with the host's shell tool. Resolve the plugin root from `PLUGIN_ROOT`,
 `CLAUDE_PLUGIN_ROOT`, or this skill's installed path; use `<plugin-root>/bin/<tool>` when PATH is missing
 or shadowed. Session identity comes from the current host; use `self` where supported.
+
+Two outcomes: lock rules for the shared resources (§§ 1–4), and standing permissions — which merges, deploys and
+releases the hubs may do without asking each time (§ 5).
 
 The lock hook refuses a command that touches a shared resource while another session holds that resource's lock.
 It knows one resource by itself — `main-merge`: merges into, and pushes to, the protected branches. Everything else
@@ -113,10 +116,42 @@ touches the real board. Every line must exit 0. A failed positive means the rege
 negative means it catches too much — fix the rule (`lock rules add` the corrected `--match`, then remove the wrong one
 from the file by hand) and re-run all checks.
 
-## 5. Report
+## 5. Standing permissions: read the project and the person, then grill
+
+A standing permission is the owner's word that a class of action needs no question each time ("merge after green CI
+and a review", "deploy to staging") — recorded once with `ask allow`, bound to the repository the action touches and
+seen by the hubs of every stage (`<plugin-root>/docs/standing-permissions.md`). There is no fixed list to offer: the
+classes come from this project and this person. A hub whose stage's repository has no permission runs this section
+too, as one grilling round.
+
+1. **Read the project** (reuse § 1): what gates a merge (required CI checks, reviews, branch protection); which
+   environments exist and how each is reached (deploy on merge, a manual job, a script); how a release is cut and
+   published; migrations and who applies them; code that touches money (payments, billing, payroll, invoices) and
+   anything that leaves the company (mail, messages to customers, publishing a package, external APIs).
+2. **Read the person**: their level and how they like to work — the global instructions (`~/.claude/CLAUDE.md`;
+   Codex: `~/.codex/AGENTS.md`), the project's `AGENTS.md` / `CLAUDE.md`, a profile in memory if there is one. A person
+   who reviews every merge gets different recommendations from one who wants to hear only about production.
+3. **Check what is on record**: `ask allow --list --repo <repository>` and `ask search merge deploy release` (and the
+   person's own words for them). What is recorded is not asked again.
+4. **Grill**: rounds of numbered questions, one per class of action you found, each with a recommendation and the
+   evidence (the CI file, the deploy job). Recommend the scope (the repository by default; one stage; all
+   repositories) and an end date only when the person hints at one. Money and anything that leaves the company get no
+   recommended permission: ask about them only if the project has them, and recommend they stay with the person.
+5. **Record each yes** with the person's own words, from the stage you run in (outside a stage, `--stage setup`):
+   ```bash
+   ask allow --stage <S> --repo <repository> --class "merge" --words "«…their reply…»" --source "setup, <date>" \
+       "merge a PR after green CI and one review"
+   ```
+   `--class` is a few comma-separated keywords; questions about the same class are asked with `ask add --class` and
+   the same keywords, so say them in the report. `ask allow --list --repo <repository>` must show every entry.
+
+`--defaults` (or headless, nobody to answer): record no permission — a permission needs the person's words. List the
+proposed ones, with the `ask allow` lines, in the report for the person to confirm.
+
+## 6. Report
 
 A short table: resource — what it guards — the checks that passed — and the answers you took by default that the
-user should confirm. Then suggest committing `.agent-hub/` (it is the team's shared convention); commit only if the
-user asked you to. Other files there are optional: `brief-footer.md`, `hub-rules.md`, `HUB-NOTES.md`,
+user should confirm; then the standing permissions recorded (§ 5, `ask allow --list`) or proposed. Then suggest
+committing `.agent-hub/` (it is the team's shared convention); commit only if the user asked you to. Other files there are optional: `brief-footer.md`, `hub-rules.md`, `HUB-NOTES.md`,
 `handoff-facts.sh`, `takeover.sh` — see `<plugin-root>/docs/reference.md#configuration-layers`. Locks themselves live on the board, not in the repository:
 `lock take <resource> --until … --why …` when work starts.
