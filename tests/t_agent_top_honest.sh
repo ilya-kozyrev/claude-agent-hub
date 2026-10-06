@@ -7,7 +7,10 @@ new_home
 export PYTHONDONTWRITEBYTECODE=1 CLAUDE_CONFIG_DIR=$AGENT_HUB_HOME/claude AGENT_TOP_CACHE=0
 python3 - "$B" "$AGENT_HUB_HOME" <<'PY'
 import datetime as dt
+import importlib.machinery
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +45,8 @@ def init(sid):
 def result(sid, cost, usage=None):
     ev = {'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': sid, 'total_cost_usd': cost,
           'num_turns': 1, 'result': 'DONE'}
+    if sid is None:
+        del ev['session_id']
     if usage:
         ev['modelUsage'] = {OPUS: usage}
     return ev
@@ -56,6 +61,10 @@ agent('forked', 'claude', SID_F1, [init(SID_F1), result(SID_F1, 1.0), init(SID_F
 agent('priced', 'claude', SID_PRICED, [init(SID_PRICED), result(SID_PRICED, 5.0, {
     'inputTokens': 1_000_000, 'outputTokens': 0, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0, 'costUSD': 5.0})])
 
+# A result that names no session belongs to the session of the latest init: two sessions, two counters.
+agent('nosid', 'claude', SID_F1, [init(SID_F1), result(None, 1.0), init(SID_F2), result(None, 0.5)])
+agent('nosid2', 'claude', SID_F1, [init(SID_F1), result(None, 1.0), init(SID_F1), result(None, 1.5)])
+
 # 2. A Codex thread resumed: every turn.completed carries the thread's cumulative count; a second thread has its own.
 def completed(i, c, o):
     return {'type': 'turn.completed', 'usage': {'input_tokens': i, 'cached_input_tokens': c, 'output_tokens': o}}
@@ -67,6 +76,9 @@ agent('cdx2', 'codex', THREAD, [
     {'type': 'thread.started', 'thread_id': THREAD}, completed(1000, 800, 10),
     {'type': 'thread.started', 'thread_id': THREAD}, completed(2500, 2000, 25),
     {'type': 'thread.started', 'thread_id': THREAD2}, completed(400, 300, 4)])
+
+# A count read before any init (a log scanned from its tail) is the same thread's older count: not added to its later one.
+agent('cdx3', 'codex', THREAD, [completed(1000, 800, 10), {'type': 'thread.started', 'thread_id': THREAD}, completed(2500, 2000, 25)])
 
 # 3. The hub wrote yesterday and today (the tag is the same): its age is today's line, not yesterday's last one.
 now = dt.datetime.now(dt.timezone.utc)
@@ -100,6 +112,9 @@ assert agents['priced']['cost_usd'] == 5.0
 assert agents['cdx']['usage_tokens']['input_tokens'] == 2500, agents['cdx']['usage_tokens']   # the old sum said 3500
 assert agents['cdx']['usage_tokens']['output_tokens'] == 25 and agents['cdx']['usage_scope'] == 'session'
 assert agents['cdx2']['usage_tokens']['input_tokens'] == 2900 and agents['cdx2']['usage_scope'] == 'sessions'
+assert agents['cdx3']['usage_tokens']['input_tokens'] == 2500 and agents['cdx3']['usage_scope'] == 'session', agents['cdx3']['usage_tokens']
+assert agents['nosid']['cost_usd'] == 1.5, agents['nosid']['cost_usd']       # the shared '' key said 0.5
+assert agents['nosid2']['cost_usd'] == 1.5, agents['nosid2']['cost_usd']
 
 roles = {r['role']: r for r in snap['roles']['stage-a']}
 age = roles['hub']['journal_age_s']
@@ -107,19 +122,34 @@ assert age is not None and age < 1800, f'hub journal age {age}s is not from toda
 
 # hub: m1 400k + 20k*5 = 500k weighted, m2 100k, the unpriced model is left out (and flagged) -> 600k * 5e-6 = $3.00
 spend = snap['spend']['stage-a']
-assert spend['agents_usd'] == 9.0, spend                                   # 2.5 + 1.5 + 5.0
+assert spend['agents_usd'] == 12.0, spend                                  # 2.5 + 1.5 + 5.0 + 1.5 + 1.5
 assert spend['hub_usd'] == 3.0 and spend['hub_basis'] == 'estimate' and spend['hub_partial'] is True, spend
-assert spend['hub_share'] == 0.25, spend                                   # 3 / (3 + 9)
+assert spend['hub_share'] == 0.2, spend                                    # 3 / (3 + 12)
 once = subprocess.run([str(binpath / 'agent-top'), '--once', '--all', '--stage', 'stage-a', '--width', '160'],
                       capture_output=True, text=True, check=True).stdout
-assert 'spend: hub ≈$3.00 + agents $9.00 — the hub is ≈25 % of the stage' in once, once
+assert 'spend: hub ≈$3.00 + agents $12.00 — the hub is ≈20 % of the stage' in once, once
 
-# A headless hub logs exact dollars: they are the hub's, not an estimate, and not the agents'.
-agent('hub', 'claude', 'abababab-1111-4111-8111-111111111111', [init('abababab-1111-4111-8111-111111111111'),
-                                                                 result('abababab-1111-4111-8111-111111111111', 3.0)])
+# A hub's archived predecessor (a headless folder of the same role) is an agent like the others: its dollars are the
+# stage's, it is not the hub, and --all does not let it replace the current hub's estimate.
+old_hub = 'a0a0a0a0-1111-4111-8111-111111111111'
+agent('hub.20261001-120000', 'claude', old_hub, [init(old_hub), result(old_hub, 4.0)])
 spend = json.loads(subprocess.run([str(binpath / 'agent-top'), '--json', '--all', '--stage', 'stage-a'],
                                   capture_output=True, text=True, check=True).stdout)['spend']['stage-a']
-assert spend['hub_usd'] == 3.0 and spend['hub_basis'] == 'logged' and spend['agents_usd'] == 9.0, spend
+assert spend['hub_usd'] == 3.0 and spend['hub_basis'] == 'estimate' and spend['agents_usd'] == 16.0, spend
+
+# A headless hub logs exact dollars: they are the hub's, matched by the registered hub session, not an estimate, and
+# not the agents'.
+hub_sid = 'abababab-1111-4111-8111-111111111111'
+agent('hub', 'claude', hub_sid, [init(hub_sid), result(hub_sid, 3.5)])
+roles_file = stage / 'roles.json'
+roles_data = json.loads(roles_file.read_text())
+roles_data['roles']['hub']['cli_session_id'] = hub_sid
+roles_file.write_text(json.dumps(roles_data))
+spend = json.loads(subprocess.run([str(binpath / 'agent-top'), '--json', '--all', '--stage', 'stage-a'],
+                                  capture_output=True, text=True, check=True).stdout)['spend']['stage-a']
+assert spend['hub_usd'] == 3.5 and spend['hub_basis'] == 'logged' and spend['agents_usd'] == 16.0, spend
+roles_data['roles']['hub']['cli_session_id'] = HUB_SID
+roles_file.write_text(json.dumps(roles_data))
 
 # No transcript and no log: the hub's cost is unknown, never a made-up number.
 (root / 'claude' / 'projects' / 'proj' / f'{HUB_SID}.jsonl').unlink()
@@ -127,6 +157,60 @@ assert spend['hub_usd'] == 3.0 and spend['hub_basis'] == 'logged' and spend['age
 spend = json.loads(subprocess.run([str(binpath / 'agent-top'), '--json', '--all', '--stage', 'stage-a'],
                                   capture_output=True, text=True, check=True).stdout)['spend']['stage-a']
 assert spend['hub_usd'] is None and spend['hub_share'] is None, spend
+# What the list hides by age is spend all the same: the hub's share does not change with the filter. Stage b: a recent
+# agent that also tells the price (1.5 $ for 300k weighted tokens: a price with cents), one finished two days ago
+# (2.5 $), and a hub whose transcript is 200k weighted tokens (1.0 $): 1 / (1 + 4) with the old agent counted, 1 / (1 + 1.5) without.
+stage_b, HUB_B = root / 'stage-b', '88888888-1111-4111-8111-111111111111'
+for role, sid, cost, usage in (('recent', 'b1b1b1b1-1111-4111-8111-111111111111', 1.5, {
+        'inputTokens': 300_000, 'outputTokens': 0, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0, 'costUSD': 1.5}),
+        ('old', 'b2b2b2b2-1111-4111-8111-111111111111', 2.5, None)):
+    folder = stage_b / 'agents' / role
+    write(folder / 'log.jsonl', [init(sid), result(sid, cost, usage)])
+    (folder / 'meta.json').write_text(json.dumps({'role': role, 'engine': 'claude', 'session_id': sid, 'model': 'x',
+                                                 'cwd': str(root), 'pid': 99999999, 'runs': [{}]}))
+two_days = dt.datetime.now().timestamp() - 2 * 86400
+os.utime(stage_b / 'agents' / 'old' / 'log.jsonl', (two_days, two_days))
+(stage_b / 'roles.json').write_text(json.dumps({'version': 1, 'roles': {
+    'hub': {'kind': 'desktop', 'tag': 'hub-b', 'cli_session_id': HUB_B, 'engine': 'claude'}}}))
+write(root / 'claude' / 'projects' / 'proj' / f'{HUB_B}.jsonl', [line('b1', 200_000, 0)])
+by_filter = {}
+for flag in ([], ['--all']):
+    out = json.loads(subprocess.run([str(binpath / 'agent-top'), '--json', '--stage', 'stage-b', *flag],
+                                    capture_output=True, text=True, check=True).stdout)
+    by_filter[bool(flag)] = (out['spend']['stage-b'], sorted(a['role'] for a in out['agents']))
+assert by_filter[False][1] == ['recent'] and by_filter[True][1] == ['old', 'recent'], by_filter   # the filter did hide it
+assert by_filter[False][0] == by_filter[True][0], by_filter
+assert by_filter[True][0]['agents_usd'] == 4.0 and by_filter[True][0]['hub_usd'] == 1.0 and by_filter[True][0]['hub_share'] == 0.2
+
+# A transcript line of any size is read in pieces: only the start and the end of a long line are kept (its usage follows
+# its content), a read stops near its byte budget, and the state it leaves mid-line is what the disk cache can hold.
+sys.path.insert(0, str(binpath))
+import topcache
+loader = importlib.machinery.SourceFileLoader('agent_top', str(binpath / 'agent-top'))
+top = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(top)
+top.LINE_CHUNK = 4096
+big = {'type': 'assistant', 'parentUuid': None, 'message': {'id': 'msg_big', 'model': OPUS, 'role': 'assistant', 'content': [
+    {'type': 'tool_use', 'name': 'Write', 'input': {'content': 'z' * 60_000 + ' "usage": {"input_tokens": 999999999}'}}],
+    'usage': {'input_tokens': 5, 'output_tokens': 7, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 13,
+              'cache_creation': {'ephemeral_5m_input_tokens': 13}}}}
+tpath = root / 'long.jsonl'
+with open(tpath, 'w') as fh:
+    fh.write(json.dumps(line('s1', 1, 0)) + '\n')
+    fh.write(json.dumps(big) + '\n')
+    fh.write(json.dumps(line('s2', 100, 0)) + '\n')
+tr = top.Transcript(tpath)
+tr.update(10_000)                                    # a small budget: stops inside the 60 KB line, not after it
+assert 10_000 <= tr.offset <= 10_000 + top.LINE_CHUNK and not tr.complete, tr.offset
+topcache.dumps(topcache.state_of(tr))                # mid-line state is cacheable
+mid = top.Transcript(tpath)
+topcache.load_into(mid, json.loads(json.dumps(topcache.state_of(tr))))
+for reader in (tr, mid):
+    for _ in range(50):
+        reader.update(10_000)
+    assert reader.complete and reader.long is None
+    t = reader.totals()[OPUS]
+    assert t == {'input_tokens': 106, 'output_tokens': 7, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 13}, t
 print('PASS honest agent-top: resumed Claude cost, resumed Codex tokens, two-day journal age, the hub\'s spend share')
 PY
 check $? 0 "honest agent-top fixtures"

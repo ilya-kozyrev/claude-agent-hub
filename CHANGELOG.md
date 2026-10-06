@@ -20,10 +20,10 @@
   count of each thread is now the latest one (`usage_scope` is `session`, or `sessions` for several threads; it was
   `logged_runs`). The hub's "journal" age is its newest line across yesterday's and today's journal (today's was
   shadowed by yesterday's when the tag wrote on both days). `agent-top --json` carries `spend` per stage — the agents'
-  logged dollars, the hub's dollars (logged for a headless hub, else estimated from the tokens of its transcript at
+  logged dollars (every agent folder of the stage, whatever the list hides), the hub's dollars (logged for a headless hub, else estimated from the tokens of its transcript at
   the per-model price the agents' results show, flagged `hub_basis: "estimate"`), and `hub_share`; `--once` prints it.
-  Tests: `tests/t_agent_top_honest.sh` (a resumed Claude log, a resumed Codex log, a two-day journal, the share; it
-  fails on 0.8.4's code).
+  Tests: `tests/t_agent_top_honest.sh` (a resumed Claude log, a resumed Codex log, a two-day journal, the share, a
+  hub transcript read in pieces; it fails on 0.8.4's code) and a hub with a 5 MB transcript in `tests/t_agent_top_perf.sh`.
 
 ## 0.8.5 — 2026-10-06
 

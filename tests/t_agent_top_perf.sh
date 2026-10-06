@@ -54,6 +54,11 @@ n_head = sum(1 for a in cold.get("agents", []) if a["kind"] == "headless")
 n_sub = sum(1 for a in cold.get("agents", []) if a["kind"] == "subagent")
 chk(f"first run lists 60 agents and 160 sub-agents ({n_head}, {n_sub}); grow1 has {turns} turns", n_head == 60 and n_sub == 160
     and (grow1(cold) or {}).get("turns") == turns)
+# the stage's hub: its 5 MB transcript (four lines of 1 MB) is read in pieces and priced from the agents' results (5e-6 $
+# per weighted token): 2000 messages x 110 tokens
+hub_usd = (cold.get("spend", {}).get("perf-00") or {}).get("hub_usd")
+chk(f"the hub's transcript with 1 MB lines is read to its end and priced ({hub_usd} = 1.1)",
+    hub_usd == 1.1 and not cold["spend"]["perf-00"]["hub_partial"])
 runs = [run() for _ in range(3)]
 warm, warm_wall, warm_cpu = min(runs, key=lambda r: r[2])
 # what the logs cost: a run's CPU less the fixed cost
@@ -66,6 +71,7 @@ fresh, _, _ = run({"AGENT_TOP_CACHE": "0"})
 diff = [k for k in picture(fresh) if picture(fresh)[k] != picture(warm).get(k)] + [k for k in picture(warm) if k not in picture(fresh)]
 chk(f"the cached run agrees with one that reads everything afresh ({len(diff)} agents differ{': ' + str(diff[:3]) if diff else ''})",
     not diff and len(picture(fresh)) == 220)
+chk("the cached run's spend agrees with the fresh one's", warm.get("spend") == fresh.get("spend") and fresh["spend"]["perf-00"]["hub_usd"] == 1.1)
 
 # appended: a resumed run of grow1 (init, 5 turns, a result) is counted once, from where the cache left off
 log = os.path.join(os.environ["AGENT_HUB_HOME"], "perf-00", "agents", "grow1", "log.jsonl")

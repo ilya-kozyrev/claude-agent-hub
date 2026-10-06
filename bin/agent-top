@@ -312,6 +312,7 @@ class LogState:
         self.ctx = 0
         self.last_result, self.n_results = None, 0
         self.cost_by_sid = {}             # session id -> the last `total_cost_usd`: the CLI reports it cumulative for the whole session
+        self.init_sid = ""                # the session of the latest init: the owner of a `result` that names none
         self.running = False              # an init after the last result: a run is (or was) in progress
         self.inbox_touch, self.done_at = -1, -1
         self.truncated = False
@@ -412,9 +413,7 @@ class LogState:
             # Codex counts are cumulative per thread, and a resumed run logs the same thread again: keep the latest
             # count of each thread, never add runs of one thread together.
             self.usage_by_sid[self.codex_sid] = dict(usage)
-            counts = list(self.usage_by_sid.values())
-            self.usage_tokens = {key: sum(num(u.get(key)) for u in counts) for key in dict.fromkeys(k for u in counts for k in u)}
-            self.usage_scope = "session" if len(self.usage_by_sid) == 1 else "sessions"
+            self._sum_usage()
         if isinstance(ev.get("context_tokens"), int):
             # Codex's total input usage sums every model call. Only the most
             # recent call's input size is comparable to Claude's context metric.
@@ -427,6 +426,12 @@ class LogState:
             self.codex_run_turns = 0
             if isinstance(ev.get("session_id"), str):
                 self.codex_sid = ev["session_id"]
+                if "" in self.usage_by_sid:
+                    # a count read before any init (a log scanned from its tail) is the latest of the thread that follows it:
+                    # filed under it, a later count of that thread replaces it instead of adding to it
+                    self.usage_by_sid.setdefault(self.codex_sid, self.usage_by_sid[""])
+                    del self.usage_by_sid[""]
+                    self._sum_usage()
         if typ == "result" and not ev.get("result"):
             errors = ev.get("errors") or []
             detail = "; ".join(str(err.get("message") or err) if isinstance(err, dict) else str(err)
@@ -434,6 +439,11 @@ class LogState:
             ev = {**ev, "result": detail or self.last_text}
         if typ in ("assistant", "user", "result", "system"):
             self._legacy_feed(pos, json.dumps(ev).encode(), str(typ).encode())
+
+    def _sum_usage(self) -> None:
+        counts = list(self.usage_by_sid.values())
+        self.usage_tokens = {key: sum(num(u.get(key)) for u in counts) for key in dict.fromkeys(k for u in counts for k in u)}
+        self.usage_scope = "session" if len(self.usage_by_sid) == 1 else "sessions"
 
     def _legacy_feed(self, pos, line, typ):
         if typ == b"assistant":
@@ -453,7 +463,7 @@ class LogState:
                 self.n_results += 1
                 cost = ev.get("total_cost_usd")
                 if isinstance(cost, (int, float)):
-                    self.cost_by_sid[str(ev.get("session_id") or "")] = cost
+                    self.cost_by_sid[str(ev.get("session_id") or self.init_sid)] = cost
                 if isinstance(ev.get("modelUsage"), dict):
                     self.model_usage = ev["modelUsage"]
                 if _DONE_RE.search(str(ev.get("result") or "")):
@@ -469,6 +479,8 @@ class LogState:
                 ev = _loads(line)
                 if isinstance(ev, dict) and isinstance(ev.get("model"), str):
                     self.model = ev["model"]
+                if isinstance(ev, dict) and isinstance(ev.get("session_id"), str):
+                    self.init_sid = ev["session_id"]
         elif typ == b"rate_limit_event":
             ev = _loads(line)
             if ev and isinstance(ev.get("rate_limit_info"), dict):
@@ -536,6 +548,10 @@ TOKEN_WEIGHTS = (("inputTokens", "input_tokens", 1.0), ("cacheCreationInputToken
                  ("cacheReadInputTokens", "cache_read_input_tokens", 0.1), ("outputTokens", "output_tokens", 5.0))
 
 
+LINE_CHUNK = 256 * 1024           # a transcript line longer than this is read in pieces, keeping only its ends
+LONG_HEAD, LONG_TAIL = 4096, 16384
+
+
 def weighted_tokens(usage: dict, snake: bool) -> float:
     return sum(num(usage.get(s if snake else c)) * w for c, s, w in TOKEN_WEIGHTS)
 
@@ -551,6 +567,7 @@ class Transcript:
         self.ino, self.offset, self.size = None, 0, 0
         self.by_model = {}                # model -> usage of the messages already closed {"input_tokens": ..}
         self.cur_id, self.cur_model, self.cur = None, None, {}
+        self.long = None                  # a line over LINE_CHUNK in progress: [its first LONG_HEAD bytes, its last LONG_TAIL so far] as latin-1 text
 
     @property
     def complete(self) -> bool:
@@ -571,6 +588,37 @@ class Transcript:
                 acc[s] = acc.get(s, 0) + num(self.cur.get(s))
         self.cur_id, self.cur_model, self.cur = None, None, {}
 
+    def _apply(self, mid, model, usage) -> None:
+        if not isinstance(usage, dict) or not isinstance(model, str) or model.startswith("<"):
+            return
+        if mid != self.cur_id or not mid:
+            self._close()
+        self.cur_id, self.cur_model, self.cur = mid, model, usage
+
+    def _line(self, line: bytes) -> None:
+        if b'"usage"' not in line or b'"assistant"' not in line:
+            return
+        ev = _loads(line)
+        msg = ev.get("message") if isinstance(ev, dict) else None
+        if isinstance(msg, dict) and ev.get("type") == "assistant" and not ev.get("parent_tool_use_id"):
+            self._apply(msg.get("id"), msg.get("model"), msg.get("usage"))
+
+    def _long_line(self, head: bytes, tail: bytes) -> None:
+        """A line over LINE_CHUNK is never held whole (a big tool result or file write): its usage is read from its end
+        (the message's usage follows its content) and its id and model from its start."""
+        if not re.search(rb'"type"\s*:\s*"assistant"', head + tail) or re.search(rb'"parent_tool_use_id"\s*:\s*"', head + tail):
+            return
+        mid, model = re.search(rb'"id"\s*:\s*"(msg_[^"]+)"', head), re.search(rb'"model"\s*:\s*"([^"]+)"', head)
+        text, usage = tail.decode("utf-8", "replace"), None
+        at = text.rfind('"usage"')
+        if at >= 0 and (colon := text.find(":", at)) >= 0:
+            rest = text[colon + 1:]
+            try:
+                usage = json.JSONDecoder().raw_decode(text, colon + 1 + len(rest) - len(rest.lstrip()))[0]
+            except ValueError:
+                usage = None
+        self._apply(mid.group(1).decode() if mid else None, model.group(1).decode("utf-8", "replace") if model else None, usage)
+
     def update(self, budget: int) -> None:
         try:
             st = os.stat(self.path)
@@ -585,22 +633,23 @@ class Transcript:
                 fh.seek(self.offset)
                 end = self.offset + budget
                 while self.offset < end:
-                    line = fh.readline()
-                    if not line or not line.endswith(b"\n"):
+                    chunk = fh.readline(LINE_CHUNK)
+                    if not chunk:
                         break
-                    self.offset += len(line)
-                    if b'"usage"' not in line or b'"assistant"' not in line:
-                        continue
-                    ev = _loads(line)
-                    msg = ev.get("message") if isinstance(ev, dict) else None
-                    if not isinstance(msg, dict) or ev.get("type") != "assistant" or ev.get("parent_tool_use_id"):
-                        continue
-                    usage, mid = msg.get("usage"), msg.get("id")
-                    if not isinstance(usage, dict) or not isinstance(msg.get("model"), str) or msg["model"].startswith("<"):
-                        continue
-                    if mid != self.cur_id or not mid:
-                        self._close()
-                    self.cur_id, self.cur_model, self.cur = mid, msg["model"], usage
+                    whole = chunk.endswith(b"\n")
+                    if self.long is None and whole:
+                        self.offset += len(chunk)
+                        self._line(chunk)
+                    elif self.long is None and len(chunk) < LINE_CHUNK:
+                        break                   # a line still being written: wait for the rest
+                    else:                       # a line over LINE_CHUNK: keep its start and its end, not the line
+                        self.offset += len(chunk)
+                        head, tail = (self.long[0].encode("latin-1"), self.long[1].encode("latin-1")) if self.long else (chunk[:LONG_HEAD], b"")
+                        tail = (tail + chunk)[-LONG_TAIL:]
+                        self.long = [head.decode("latin-1"), tail.decode("latin-1")]    # str: the disk cache holds JSON
+                        if whole:
+                            self._long_line(head, tail)
+                            self.long = None
         except OSError:
             return
 
@@ -854,8 +903,9 @@ class Collector:
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
         locks = self._locks(now)
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
-        rates = self.token_rates()
-        spend = {s: self._spend(rs, [a for a in agents if a["stage"] == s], rates) for s, rs in roles_by_stage.items()}
+        costs = {s: self._stage_costs(s, rs) for s, rs in roles_by_stage.items()}   # reads every log of the stage first:
+        rates = self.token_rates()                                                  # prices must not depend on the list's filter
+        spend = {s: self._spend(rs, rates, *costs[s]) for s, rs in roles_by_stage.items()}
         out = {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
                "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
                "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
@@ -993,8 +1043,9 @@ class Collector:
         cost, tokens = {}, {}
         for ls in self.logs.values():
             for model, u in (ls.model_usage or {}).items() if isinstance(ls.model_usage, dict) else []:
-                if isinstance(u, dict) and num(u.get("costUSD")) > 0:
-                    cost[model] = cost.get(model, 0.0) + num(u["costUSD"])
+                dollars = u.get("costUSD") if isinstance(u, dict) else None
+                if isinstance(dollars, (int, float)) and dollars > 0:      # (num() would truncate 1.5 to 1)
+                    cost[model] = cost.get(model, 0.0) + dollars
                     tokens[model] = tokens.get(model, 0.0) + weighted_tokens(u, snake=False)
         return {m: cost[m] / tokens[m] for m in cost if tokens[m] > 0}
 
@@ -1016,17 +1067,33 @@ class Collector:
             self.store.put("transcript", str(path), tr)
         return tr
 
-    def _spend(self, roles: dict, agents: list, rates: dict) -> dict:
-        """{"hub_usd", "hub_basis", "hub_partial", "agents_usd", "hub_share"} of one stage. The agents' dollars are
-        logged (Claude headless only; Codex logs carry tokens, so those agents add nothing). The hub's are logged
-        when it is a headless agent too, else estimated from the tokens in its transcript; None when it cannot be."""
-        hub_agent = next((a for a in agents if a["role"] == "hub" and a["kind"] == "headless"), None)
-        agents_usd = sum(a["cost_usd"] or 0.0 for a in agents if a["kind"] == "headless" and a is not hub_agent)
-        out = {"hub_usd": None, "hub_basis": None, "hub_partial": False, "agents_usd": round(agents_usd, 4), "hub_share": None}
+    def _stage_costs(self, stage: str, roles: dict) -> tuple:
+        """(the hub's logged dollars or None, the other agents' logged dollars) over every agent folder of the stage:
+        what the list hides by age or archive is spend all the same. Only Claude headless logs carry dollars (a Codex
+        agent adds nothing). The hub's are those of the agent registered as the hub's session, when it is a headless one
+        too; a predecessor's archived folder is an agent like the others."""
         rec = roles.get("hub") or {}
+        hub_sids = {v for v in (rec.get("cli_session_id"), rec.get("session")) if isinstance(v, str) and v}
+        hub_cost, agents_usd, base = None, 0.0, hc.root() / stage / "agents"
+        for mp in sorted(base.glob("*/meta.json")) if base.is_dir() else []:
+            meta = read_json(mp)
+            if not isinstance(meta, dict):
+                continue
+            cost = self.log_state(mp.parent / "log.jsonl").cost_sum
+            if meta.get("session_id") in hub_sids and not ARCHIVE_RE.match(mp.parent.name) and cost is not None:
+                hub_cost = cost
+            elif cost is not None:
+                agents_usd += cost
+        return hub_cost, agents_usd
+
+    def _spend(self, roles: dict, rates: dict, hub_cost, agents_usd: float) -> dict:
+        """{"hub_usd", "hub_basis", "hub_partial", "agents_usd", "hub_share"} of one stage. The hub's dollars are the
+        logged ones, else an estimate from the tokens in the hub's transcript; None when neither exists."""
+        rec = roles.get("hub") or {}
+        out = {"hub_usd": None, "hub_basis": None, "hub_partial": False, "agents_usd": round(agents_usd, 4), "hub_share": None}
         sid = rec.get("cli_session_id") or rec.get("session") or ""
-        if hub_agent and hub_agent["cost_usd"] is not None:
-            out.update(hub_usd=hub_agent["cost_usd"], hub_basis="logged")
+        if hub_cost is not None:
+            out.update(hub_usd=round(hub_cost, 4), hub_basis="logged")
         elif rec.get("engine", "claude") == "claude" and isinstance(sid, str) and UUID_RE.fullmatch(sid):
             tr = self.transcript(sid)
             if tr is not None:
