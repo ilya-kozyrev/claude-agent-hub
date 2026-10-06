@@ -89,13 +89,13 @@
   are none. A question is covered only when every class keyword it names, as written, (and, on top, money,
   migrations or permissions/RBAC mentioned anywhere in it, `AGENT_HUB_SENSITIVE_CLASSES`) is covered on every
   repository it touches, and the refusal prints the owner's words in full; a repository is its normalized `origin`
-  URL with an explicit port, else its main clone's path, so two checkouts named `shop` stay apart; an entry without
+  URL with an explicit port and IPv6 brackets, else its main clone's path, so two checkouts named `shop` stay apart; an entry without
   the owner's words, with an `until` that is not exactly a date or date and time, or without a `repo-id` covers
   nothing and is listed as `INVALID`. `skills/setup` reads the project and the person and proposes permissions by grilling; `skills/hub` checks
   them before a merge, deploy or release question and forbids invented gates. Design: `docs/standing-permissions.md`.
   Tests: `tests/t_permissions.sh` (same stage, another stage on the same repository, another repository's stage
   naming `--repo`, two repositories of one name, every class and every repository, sensitive classes, invalid entries,
-  scopes, expiry, revocation, refusal and override, the digest after § 0 with "K more"; 80 of its 91 checks fail on
+  scopes, expiry, revocation, refusal and override, the digest after § 0 with "K more"; 86 of its 97 checks fail on
   0.8.6).
 
 ## 0.8.5 — 2026-10-06

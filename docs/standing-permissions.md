@@ -34,8 +34,9 @@ next to the question its words answered; an older plugin skips the unknown `A-` 
 A shared file would add a second lock and a second format for the same kind of record.
 
 **Repository identity.** `repo-id` is the repository's `origin` URL normalized to `host[:port]/owner/repo` (scheme,
-user, `.git` and the `git@host:` form dropped, an explicit port kept), else the absolute path of its main clone; a linked worktree resolves
-through git's common directory to its main clone. Two checkouts named `shop` of different owners are two
+user, `.git` and the `git@host:` form dropped; an explicit port, the brackets of an IPv6 host and the leading `/` of an
+absolute `git@host:/path` kept — distinct spellings stay distinct when unsure), else the absolute path of its main
+clone; a linked worktree resolves through git's common directory to its main clone. Two checkouts named `shop` of different owners are two
 repositories. `--repo` takes a path, a remote URL, or a short name that exactly one known repository has (the
 repositories of every stage's `stage.json` and of every permission); an ambiguous or unknown short name is refused
 with the candidates.

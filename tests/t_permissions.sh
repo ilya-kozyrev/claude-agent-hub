@@ -63,6 +63,14 @@ allow --stage stage-p --repo ssh://git@git.example.com:2222/team/tool.git --clas
 grep -q '^- repo-id: git.example.com:2222/team/tool$' $R/stage-p/questions.md; check $? 0 "the id keeps the port"
 add --stage stage-p --repo ssh://git@git.example.com:3333/team/tool.git --class merge "Merge tool on 3333?"; check $? 0 "another port is another repository: not covered"
 add --stage stage-p --repo ssh://git@Git.Example.com:2222/team/tool --class merge "Merge tool on 2222?"; check $? 3 "the same port (host case, .git aside) → refused"
+allow --stage stage-p --repo 'ssh://git@[2001:db8::1]:2222/team/tool.git' --class deploy --words "«выкатывай tool»" "deploy tool"
+grep -q '^- repo-id: \[2001:db8::1\]:2222/team/tool$' $R/stage-p/questions.md; check $? 0 "an IPv6 host keeps its brackets in the id"
+add --stage stage-p --repo 'ssh://git@[2001:db8::1:2222]/team/tool.git' --class deploy "Deploy tool on the other host?"; check $? 0 "…so [2001:db8::1]:2222 and [2001:db8::1:2222] are two repositories"
+add --stage stage-p --repo 'ssh://git@[2001:db8::1]:2222/team/tool' --class deploy "Deploy tool?"; check $? 3 "…the same host and port → refused"
+allow --stage stage-p --repo git@git.example.com:/srv/tool.git --class release --words "«релизь tool»" "release tool"
+grep -q '^- repo-id: git.example.com//srv/tool$' $R/stage-p/questions.md; check $? 0 "an absolute scp-like path keeps its leading /"
+add --stage stage-p --repo git@git.example.com:srv/tool.git --class release "Release the home-relative tool?"; check $? 0 "…so host:srv/tool (under the user's home) is another repository"
+add --stage stage-p --repo git@git.example.com:/srv/tool --class release "Release tool?"; check $? 3 "…the same absolute path → refused"
 for id in $($B/ask allow --list --stage stage-p --repo ssh://git@git.example.com:2222/team/tool.git | grep -E '^A-P-[0-9]+ .* — merge tool' | cut -d' ' -f1); do $B/ask revoke $id > /dev/null; done
 
 # ---- every class and every repository must be covered; sensitive classes need a permission that names them

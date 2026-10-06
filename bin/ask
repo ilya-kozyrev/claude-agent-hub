@@ -425,7 +425,8 @@ class Repo:
 def normalize_url(url: str) -> str:
     """host[:port]/owner/repo of a git remote: scheme, user, '.git' and trailing '/' dropped, the host lower-cased, an
     explicit port kept (ssh://host:2222/… and ssh://host:3333/… are two repositories; the scp-like git@host:path form
-    has no port); a local remote (a path, file://) → "file:" + its real path."""
+    has no port), an IPv6 host in brackets, the leading '/' of an absolute scp path kept (host//srv/x); when unsure,
+    distinct spellings stay distinct — the worst outcome is one more question to the owner; a local remote (a path, file://) → "file:" + its real path."""
     u = url.strip()
     if u.startswith("file://"):
         u = u[len("file://"):]
@@ -437,11 +438,15 @@ def normalize_url(url: str) -> str:
             port = parts.port
         except ValueError:
             port = None
-        host = (parts.hostname or "").lower() + (f":{port}" if port else "")
+        host = (parts.hostname or "").lower()
+        if ":" in host:   # IPv6: keep the brackets, or [2001:db8::1]:2222 and [2001:db8::1:2222] would read alike
+            host = f"[{host}]"
+        host += f":{port}" if port else ""
         path = parts.path.strip("/").removesuffix(".git").rstrip("/")
         return f"{host}/{path}" if host and path else u
     m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.+?)(?:\.git)?/*$", u)
-    return f"{m.group(1).lower()}/{m.group(2).lstrip('/')}" if m else u
+    # an absolute scp path keeps its '/': host:/srv/x is under the root, host:srv/x under the user's home
+    return f"{m.group(1).lower()}/{m.group(2)}" if m else u
 
 
 def url_repo(url: str) -> Repo:
