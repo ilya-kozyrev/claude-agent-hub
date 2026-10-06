@@ -16,6 +16,9 @@ unset HUB_TAG HUB_STAGE CLAUDE_CODE_SESSION_ID AGENT_SESSION_ID AGENT_BOARD_FILE
 # throw-away directories with no repository, so they opt out the way a scripted environment does. t_location.sh and
 # t_project_warn.sh unset it.
 export AGENT_HUB_NO_PROJECT=1
+# `hub start` refuses a stage name with no word about the work and wants --goal; the scripts start stages called s1, web,
+# stage-a, so they opt out the same way. t_naming.sh unsets it.
+export AGENT_HUB_NO_NAMING=1
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
 new_home(){ export AGENT_HUB_HOME="$(mktemp -d)"; }

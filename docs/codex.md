@@ -145,7 +145,7 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
 
 ## Coordination and platform differences
 
-- Use `hub start --session self` and `hub takeover --session self` in either host. An ordinary shell must supply an
+- Use `hub start --goal "<what the stage delivers>" --session self` and `hub takeover --session self` in either host. An ordinary shell must supply an
   actual session id. The Codex identity is `CODEX_THREAD_ID`; a detached worker also receives `AGENT_SESSION_ID`.
 - Run one `jwait` through Codex's shell execution session and continuation tools. Keep individual blocking waits
   bounded so the coordinator can still respond; use its returned exit status. Claude's `run_in_background` and

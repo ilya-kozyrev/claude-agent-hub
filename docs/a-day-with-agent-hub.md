@@ -1,17 +1,17 @@
 # A day with agent-hub
 
-A synthetic example: stage `stage-a` — a stream of work, here a payments release — on the day of its third hub shift.
+A synthetic example: stage `payments` — a stream of work, here a payments release — on the day of its third hub shift.
 The hub is an interactive Claude Code session; every command below is what the hub (Claude, with the `hub` skill
 loaded) runs in Bash.
 
 Set-up behind the example: the repository ran `agent-hub:setup` once, so `.agent-hub/lock-rules.json` names the
 project's shared resources, and the first hub of the stage began with
-`hub start --stage stage-a --session "$CLAUDE_CODE_SESSION_ID"`. A day that needs less can drop `ask`, `lock` and the
+`hub start --stage payments --goal "Ship the payments release" --session "$CLAUDE_CODE_SESSION_ID"`. A day that needs less can drop `ask`, `lock` and the
 handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#minimal-mode)).
 
 1. **Morning: take over the shift.** Yesterday's hub left a handoff.
    ```bash
-   hub takeover --stage stage-a --session "$CLAUDE_CODE_SESSION_ID"
+   hub takeover --stage payments --session "$CLAUDE_CODE_SESSION_ID"
    ```
    The shift number is derived (the registered hub's plus one, here 3; `--n` overrides it). The previous hub's locks move
    to you, `roles.json` names you `hub` with tag `hub-3`, the journal gets a start line, and a ≤ 3 KB digest prints § 0
@@ -20,7 +20,7 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#mi
 2. **Check what the owner already decided** before planning anything that touches it.
    ```bash
    ask search export
-   ask list --stage stage-a --pending      # answers given but not yet executed
+   ask list --stage payments --pending      # answers given but not yet executed
    ```
 
 3. **Start the long work as headless agents**, one brief each (`templates/brief-executor-template.md`). An agent that
@@ -33,14 +33,14 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#mi
 
 4. **Wait without polling.** One background waiter; the harness wakes the hub when it exits.
    ```bash
-   jwait --journal --stage stage-a --tag hub-3 --tag hub \
+   jwait --journal --stage payments --tag hub-3 --tag hub \
          --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION)\b' --for 55m --note "scheduled round"
    ```
 
 5. **An agent asks.** The journal shows `[hub-3-reviewer] @hub QUESTION is the Parquet export on by default?` and
    the reviewer ends its turn with `BLOCKED`. The owner has not decided this yet:
    ```bash
-   ask add --stage stage-a --blocks "PR 41" --default "ship with the flag off" --due 2026-10-01T18:00 \
+   ask add --stage payments --blocks "PR 41" --default "ship with the flag off" --due 2026-10-01T18:00 \
            "Turn the new export on by default?"
    agent send reviewer "Not decided yet (Q-A-001): review assuming the flag is off by default."
    ```
@@ -65,16 +65,16 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#mi
    ask done Q-A-001 --evidence "flag flipped in PR 43"
    ```
 
-9. **Evening, optional (macOS + Claude Desktop): leave work for the night** in `stage-a/night-queue.md`
+9. **Evening, optional (macOS + Claude Desktop): leave work for the night** in `payments/night-queue.md`
    (`templates/night-queue-template.md`), each line with a stop condition and a permission class, then check it:
    ```bash
-   nightq check --stage stage-a
+   nightq check --stage payments
    ```
    Skip this step unless you run the hub overnight on a Mac with Claude Desktop.
 
 10. **Hand over.** The context is getting long; write the handoff and stop.
     ```bash
-    hub handoff --stage stage-a              # fill the TODOs, then tell the owner the path
+    hub handoff --stage payments              # fill the TODOs, then tell the owner the path
     ```
     The agents keep running. Finished worktrees are removed by hand (`git worktree list`, `git worktree remove <path>`).
     Tomorrow's hub starts at step 1 and becomes `hub-4` without being told.

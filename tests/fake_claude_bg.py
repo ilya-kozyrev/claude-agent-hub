@@ -9,6 +9,7 @@ FAKE_BG=untrusted         `--bg` exits 1 "Workspace not trusted" unless the cwd 
 FAKE_BG=noid              `--bg` prints nothing; `agents --json` lists the session
 FAKE_BG=hang              `--bg` sleeps FAKE_HANG seconds (5) and prints nothing
 FAKE_AGENTS (late|stale|none|prev|prevbusy|prevgone|fail), FAKE_PREV_SID, FAKE_AGENTS_SEQ, FAKE_ON_LOGS: see the `agents` and `logs` branches
+FAKE_AGENT_NAME           the name of the late/stale rows (default stage-a-hub-2)
 FAKE_STOP=fail            `stop` exits 1
 FAKE_LOGIN=no             `auth status` says loggedIn false
 FAKE_LOGS=link (default)  `logs` prints ANSI screen text with a Remote Control link
@@ -50,8 +51,8 @@ elif cmd == "agents":
         lines = open(seq).read().splitlines()
         which, rest = (lines[0], lines[1:]) if lines else ("none", [])
         open(seq, "w").write("\n".join(rest))
-    old = {"kind": "background", "id": "bg-older", "sessionId": "o", "name": "stage-a-hub-2", "startedAt": 1}
-    new = {"kind": "background", "id": "bg-from-list", "sessionId": "s", "name": "stage-a-hub-2",
+    old = {"kind": "background", "id": "bg-older", "sessionId": "o", "name": os.environ.get("FAKE_AGENT_NAME", "stage-a-hub-2"), "startedAt": 1}
+    new = {"kind": "background", "id": "bg-from-list", "sessionId": "s", "name": os.environ.get("FAKE_AGENT_NAME", "stage-a-hub-2"),
            "startedAt": int(time.time() * 1000)}
     # prev: an idle background session with a pid (state done), sessionId $FAKE_PREV_SID (the hub a takeover replaced);
     # prevbusy: the same but busy and working; prevgone: the same without a pid, state done; fail: no JSON, exit 1

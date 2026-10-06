@@ -164,6 +164,9 @@ check "$(cd $S/plain && HOME=$M hh $S/plain)" "default $N" "after the move the u
 A=$S/ma/.claude/agent-hub; mkdir -p $A/stage-a; echo '{"chain": 1, "pending": null}' > $A/stage-a/auto-handoff.json
 (cd $S/plain && HOME=$S/ma FAKE_AGENTS=stale $B/hub home migrate --apply > $S/m6.out 2>&1); check $? 1 "negative: --apply while a background hub of a source stage runs"
 grep -q 'stage-a-hub-2 (bg-older' $S/m6.out && [ -d $A ] && [ ! -e $S/ma/agent-hub ]; check $? 0 "…names it (claude stop) and copies nothing"
+# a successor titled with the stage's goal ("Hub <stage> #N — <goal>"), no pending id in auto-handoff.json: still caught
+(cd $S/plain && HOME=$S/ma FAKE_AGENTS=stale FAKE_AGENT_NAME='Hub stage-a #2 — Fix "quotes" and more' $B/hub home migrate --apply > $S/m6b.out 2>&1); check $? 1 "negative: a live successor titled 'Hub <stage> #N — <goal>' is caught too"
+grep -q 'Hub stage-a #2 — Fix "quotes" and more (bg-older' $S/m6b.out && [ -d $A ] && [ ! -e $S/ma/agent-hub ]; check $? 0 "…named, and nothing copied"
 (cd $S/plain && HOME=$S/ma FAKE_AGENTS=none $B/hub home migrate --apply > $S/m7.out 2>&1); check $? 0 "control: with no background hub running, it migrates"
 # a copy that fails half-way: nothing at the target (it would become the live home), the source untouched
 F=$S/mf/.claude/agent-hub; mkdir -p $F/s1 $F/s2; echo a > $F/s1/a.md; echo b > $F/s2/b.md; chmod 000 $F/s2/b.md

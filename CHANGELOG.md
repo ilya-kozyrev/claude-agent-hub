@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`hub start` now insists on a stage name that says what the work is, and the goal travels with the hub.** A stage
+  called `hub-09` showed as "Hub hub-09 #1" and signed `hub-09-hub-1` in other journals; nothing said what it did.
+  `hub start` exits 2 for a name made only of generic words (hub, stage, wave, wp, task, work, test, tmp, new, default,
+  stream, sprint — the hub-wide `AGENT_HUB_GENERIC_STAGE_WORDS` replaces the list), numbers and single letters, and for a
+  start without `--goal "<one line>"`. The goal is kept in `stage.json`; the hub's registered title is
+  `Hub <stage> #N — <goal>`, and `takeover`, `succeed`, the handoff draft, the digest and `agent-top`'s hub row show it
+  (`takeover --goal` sets one for an older stage, which `takeover` never refuses on its name; a stage without a goal keeps
+  today's title). New `hub rename --stage OLD --to NEW [--dry-run]` renames a stage none of whose agents is alive: directory,
+  `roles.json`, agent metas, the question register's heading and the board's lock notes; otherwise it exits 2 and lists
+  the live agents; it reads and checks every file before the first write and rolls back a failed write. The skill tells the hub to name the stage and the roles after the work. The suite and scripts opt
+  out with `AGENT_HUB_NO_NAMING=1`. Tests: `tests/t_naming.sh` (its checks fail without the change).
+
 ## 0.8.6 — 2026-10-06
 
 - **A hub's wait is now shorter than the prompt cache's life, and the plugin's own service lines no longer wake it.**

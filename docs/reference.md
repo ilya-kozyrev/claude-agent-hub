@@ -54,7 +54,8 @@ flowchart LR
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
-| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). |
+| `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). |
+| `hub rename` | `hub rename --stage OLD --to NEW [--dry-run]`: rename a stage none of whose agents is alive (otherwise exit 2, the live ones listed): its directory, the names and paths in its json files, the question register's heading and the board's lock notes that name it. |
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
 | `nightq` | Optional (macOS + Claude Desktop): a night queue with a permission matrix, for work that may continue while the owner sleeps. |
@@ -78,10 +79,10 @@ smaller model, which then plans and codes on its own. In Codex, ask to use `agen
 Or run the following Claude-worker example yourself (substitute your project and brief paths):
 
 ```bash
-export HUB_STAGE=stage-a                      # one directory per stream of work under the hub home
+export HUB_STAGE=csv-export                   # one directory per stream of work under the hub home
 
 # 1. once per stage: register this session as hub 1 (creates the stage directory, prints the first jwait)
-hub start --stage stage-a --session self
+hub start --stage csv-export --goal "Export the table as CSV" --session self
 
 # 2. write a brief (template: templates/brief-executor-template.md) and start an agent in its own worktree
 agent spawn --engine claude --role builder --cwd ~/code/webapp --model sonnet --worktree --brief ./brief-builder.md
@@ -107,6 +108,17 @@ fetch fails; the local main/master without an origin), not from the commit `--cw
 chooses another start (`--base HEAD`: the old behaviour). Two agents writing
 in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
 branch is merged, `git worktree remove <path>`.
+
+**Names.** A stage called `hub-09` shows as "Hub hub-09 #1", signs `hub-09-hub-1` in other stages' journals and puts
+"(hub-09)" on every agent title, and nothing says what it does. `hub start` therefore exits 2 for a stage name made only
+of generic words (`hub`, `stage`, `wave`, `wp`, `task`, `work`, `test`, `tmp`, `new`, `default`, `stream`, `sprint`;
+the hub-wide setting `AGENT_HUB_GENERIC_STAGE_WORDS` replaces the list), numbers and single letters (`hub-09`, `stage-2`,
+`wave-a`, `wp3`) and asks for a name of 1–3 words about the goal (`retro-fixes`, `yc-move`). It also requires `--goal
+"<one line: what the stage delivers, in the owner's words>"`, kept in `<stage>/stage.json`. The hub's registered title
+becomes `Hub <stage> #N — <goal>` (the goal cut at 60 characters); `hub takeover`, `hub succeed`, the handoff draft, the
+takeover digest and `agent-top`'s hub row carry the goal. A stage without a stored goal keeps the title `Hub <stage> #N`;
+`takeover` never refuses on a name, and `takeover --goal "…"` sets or replaces the goal. The environment variable
+`AGENT_HUB_NO_NAMING=1` skips both start checks silently, for scripted environments and the test suite (environment only).
 
 **Where a hub runs.** `hub start` and `hub takeover` check their location before they register, journal or lock
 anything. A hub works in a linked worktree of its project that has the project's `.agent-hub/` — not in the project's
@@ -356,6 +368,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
+| `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
 | `AGENT_HUB_JWAIT_FOR` | `55m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `55m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `55m`). The default stays inside the one-hour prompt cache, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
 

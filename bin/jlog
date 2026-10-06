@@ -32,7 +32,7 @@ def main(argv: list) -> int:
     tag = args.tag or hc.signing_tag(stage)
     if not tag:
         raise hc.UsageError("no tag: pass --tag, set $HUB_TAG or register this session (the first hub of a stage: "
-                            "`hub start --stage S --session $CLAUDE_CODE_SESSION_ID`; anyone else: "
+                            "`hub start --stage S --goal \"<what the stage delivers>\" --session $CLAUDE_CODE_SESSION_ID`; anyone else: "
                             "`roles set <role> <session id> --tag …`)")
     try:
         line = hc.journal_append(stage, tag, " ".join(args.text))

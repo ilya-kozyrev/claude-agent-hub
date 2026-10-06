@@ -1114,8 +1114,12 @@ class Collector:
                 for i in range(1, len(parts) + 1):
                     newest.setdefault("/".join(parts[:i]), (day_off, hhmm))
         out = []
+        goal = hc.title_goal(hc.stage_goal(stage))
         for name, rec in roles.items():
             tag = rec.get("tag") or name
+            title = rec.get("title") or ""
+            if name == "hub" and goal and goal not in title:  # a hub registered before the goal was set, or by --name
+                title = f"{title} — {goal}" if title else goal
             last = None
             if tag in newest:
                 day_off, hhmm = newest[tag]
@@ -1123,7 +1127,7 @@ class Collector:
                 day = hc.now().date() - dt.timedelta(days=day_off)
                 last = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
             ag = next((a for a in agents if a["stage"] == stage and a["dir_name"] == name), None)
-            out.append({"role": name, "kind": rec.get("kind"), "tag": tag, "title": rec.get("title") or "",
+            out.append({"role": name, "kind": rec.get("kind"), "tag": tag, "title": title,
                         "pid": rec.get("pid"), "state": ag["state"] if ag else None,
                         "journal_age_s": None if last is None else max(0, int(now - last))})
         out.sort(key=lambda r: (r["role"] != "hub", r["role"]))

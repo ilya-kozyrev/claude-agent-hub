@@ -135,7 +135,7 @@ def _live_successors(src: Path) -> tuple:
         if isinstance(pend, dict) and pend.get("id"):
             ids.add(str(pend["id"]))
     alt = "|".join(map(re.escape, stages))
-    names = re.compile(rf"^(?:(?:{alt})-hub-\d+|Hub (?:{alt}) #\d+)$")
+    names = re.compile(rf"^(?:(?:{alt})-hub-\d+|Hub (?:{alt}) #\d+(?: — .*)?)$")  # a title may carry the stage's goal
     try:
         cli = hc.find_claude(persist=False)
     except hc.Failure as e:

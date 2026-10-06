@@ -49,7 +49,7 @@ MODEL_ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 MODEL_VALUE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@\[\]/-]{0,199}")
 # Settings that only the hub home's config.json may set: every tool sharing a hub home must agree on them.
 HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT_HUB_HANDOFF_MAX_BYTES",
-                 "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_JWAIT_FOR", "AGENT_HUB_SCOPE_DIRS")
+                 "AGENT_HUB_JWAIT_MATCH", "AGENT_HUB_JWAIT_FOR", "AGENT_HUB_SCOPE_DIRS", "AGENT_HUB_GENERIC_STAGE_WORDS")
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
@@ -340,7 +340,7 @@ def project_warnings(cwd=None) -> list:
 # place is refreshed, a bad one gets a fresh worktree of origin's default branch and the order to move there (exit 4).
 
 NO_PROJECT_ENV = "AGENT_HUB_NO_PROJECT"  # environment only (a cloned repository must not switch the rule off)
-STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}
+STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"}
 LOCATION_EXIT = 4
 FETCH_TIMEOUT_S = 30
 HUB_WORKTREES = ".claude/worktrees"  # <repo>/…/<stage>-hub-<n>, where Claude Code puts its own worktrees
@@ -429,6 +429,67 @@ def record_stage_project(stage: str, repo: Optional[Path]) -> None:
         want.pop("repo", None)
     if want != data:
         atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
+
+
+# ---------------------------------------------------------------- the stage's name and goal
+
+# A stage name made only of these words (plus numbers and one-letter marks: `hub-09`, `stage-2`, `wave-a`, `wp3`) says
+# nothing about the work. $AGENT_HUB_GENERIC_STAGE_WORDS (comma or space separated, hub-wide) replaces the list.
+GENERIC_STAGE_WORDS = ("hub", "stage", "wave", "wp", "task", "work", "test", "tmp", "new", "default", "stream", "sprint")
+NAMING_OFF_ENV = "AGENT_HUB_NO_NAMING"  # environment only, like NO_PROJECT_ENV: scripted environments and the test suite
+GOAL_MAX = 200  # characters kept of a stage's goal
+TITLE_GOAL_MAX = 60  # characters of it in a hub's title
+
+
+def generic_stage_words() -> frozenset:
+    raw = setting("AGENT_HUB_GENERIC_STAGE_WORDS")
+    words = re.split(r"[\s,]+", raw.lower()) if raw else GENERIC_STAGE_WORDS
+    return frozenset(w for w in words if w)
+
+
+def naming_enforced() -> bool:
+    return not truthy(os.environ.get(NAMING_OFF_ENV))
+
+
+def stage_name_problem(stage: str) -> Optional[str]:
+    """Why `stage` names no work (None: it does). A word is empty once its digits are removed, a single letter, or one
+    of the generic words."""
+    generic = generic_stage_words()
+    for word in re.split(r"[-_]+", stage):
+        rest = re.sub(r"\d+", "", word)
+        if len(rest) > 1 and rest not in generic:
+            return None
+    return (f"stage name {stage!r} says nothing about the work: it holds only generic words ({', '.join(sorted(generic))}), "
+            "numbers and single letters — name the goal in 1–3 words (retro-fixes, yc-move)")
+
+
+def clean_goal(raw) -> str:
+    """A goal as one line, whitespace collapsed, cut to GOAL_MAX characters."""
+    text = " ".join(str(raw or "").split())
+    return text if len(text) <= GOAL_MAX else text[:GOAL_MAX - 1].rstrip() + "…"
+
+
+def title_goal(goal) -> str:
+    """The goal as a hub's title carries it: cleaned, cut to TITLE_GOAL_MAX characters."""
+    goal = clean_goal(goal)
+    return goal if len(goal) <= TITLE_GOAL_MAX else goal[:TITLE_GOAL_MAX - 1].rstrip() + "…"
+
+
+def stage_goal(stage: str) -> str:
+    return clean_goal(stage_record(stage).get("goal"))
+
+
+def record_stage_goal(stage: str, goal: str) -> None:
+    data = stage_record(stage)
+    if goal and data.get("goal") != goal:
+        atomic_write(root() / stage / STAGE_FILE, json.dumps(dict(data, goal=goal), ensure_ascii=False, indent=1) + "\n")
+
+
+def hub_title(stage: str, n: int, goal: Optional[str] = None) -> str:
+    """The registered title of hub #n: `Hub <stage> #N`, plus ` — <goal>` (trimmed) when the stage has a goal. Handoff
+    titles and the successor's number stay on the plain `Hub <stage> #N`."""
+    goal = title_goal(stage_goal(stage) if goal is None else goal)
+    return f"Hub {stage} #{n}" + (f" — {goal}" if goal else "")
 
 
 def refresh_worktree(top, ref: str) -> str:
