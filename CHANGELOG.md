@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.6 — 2026-10-06
+
 - **A hub's wait is now shorter than the prompt cache's life, and the plugin's own service lines no longer wake it.**
   `jwait` waited 2 h by default; the cache lives 1 h, so every wake after a long sleep re-wrote the hub's whole context
   into it. The default is now `55m`, set by the new hub-wide `AGENT_HUB_JWAIT_FOR` (environment or the hub home's
