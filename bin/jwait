@@ -32,6 +32,8 @@ Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone
 tomorrow) or --for 6h; default --for 55m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
 sleeps longer pays for re-writing its whole context at every wake; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
+With --journal it marks itself in <root>/.jwait-state/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
+waiter is not woken).
 With --journal it also looks, every 10 s, for a headless agent of the stage whose process is gone without a result
 (killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
@@ -46,6 +48,8 @@ import importlib.util
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -228,6 +232,92 @@ class Filter:
         return any(hc.tag_is(tag, t) or hc.mentions(text, t, self.stage) for t in self.tags)
 
 
+def hub_filter(stage: str, tag: str) -> Filter:
+    """The Filter of the digest `jwait` that `hub takeover` prints for the hub signing `tag` (bin/hub jwait_command):
+    its own tag and `hub`, the status words, the hub's own lines left out in both signatures. The watchdog asks the
+    same question with it ("which lines wait for this hub"), so there is one matcher."""
+    args = argparse.Namespace(match=[hc.status_pattern()], tag=[tag, "hub"], exclude_tag=[], include_own=True)
+    flt = Filter(args, None, stage)
+    flt.exclude += [tag, f"{stage}-{tag}"]
+    return flt
+
+
+# A running journal waiter marks itself in <root>/.jwait-state/<caller>.armed.json, so that the watchdog can tell a hub
+# that waits from one that sleeps without a waiter. It is removed when jwait ends, also on SIGTERM / SIGHUP; a file that
+# a SIGKILL left behind fails the pid check of armed_live().
+ARMED_GRACE_S = 120  # a waiter may overrun its deadline by the settle time of a last batch
+
+
+def armed_path(caller: str) -> Path:
+    path = state_path(caller)
+    return path.with_name(path.stem + ".armed.json")
+
+
+def write_armed(caller: str, stage: str, tags: list, deadline: dt.datetime) -> None:
+    rec = {"pid": os.getpid(), "caller": caller, "stage": stage, "tags": tags, "host_session": hc.session_id(),
+           "started": hc.now().isoformat(timespec="seconds"), "deadline": deadline.isoformat(timespec="seconds")}
+    try:
+        hc.atomic_write(armed_path(caller), json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # a read-only home: the waiter works, the watchdog just cannot see it
+
+
+def clear_armed(caller: str) -> None:
+    """Remove this process's own armed file (another jwait of the same caller may have replaced it since)."""
+    path = armed_path(caller)
+    try:
+        if json.loads(path.read_text(encoding="utf-8")).get("pid") == os.getpid():
+            path.unlink()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def pid_runs_jwait(pid: int):
+    """True / False, or None when the process table cannot be read (a sandbox that hides other processes)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    try:
+        cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return ("jwait" in cmd) if cmd.strip() else None
+
+
+def armed_live(caller: str, stage: str, at=None, reap: bool = True):
+    """The armed record of `caller`'s journal waiter on `stage` when that waiter lives (its pid runs a jwait and its
+    deadline has not passed), else None. A stale file (dead pid, a pid that now runs something else, a passed
+    deadline) is removed when `reap`; a process table that cannot be read counts as alive (never wake blind)."""
+    path = armed_path(caller)
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict):
+        return None
+    try:
+        late = (at or hc.now()) - dt.datetime.fromisoformat(rec["deadline"]) > dt.timedelta(seconds=ARMED_GRACE_S)
+        runs = pid_runs_jwait(int(rec["pid"]))
+    except (KeyError, TypeError, ValueError):
+        late, runs = True, False
+    if late or runs is False:
+        if reap:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        return None
+    return rec if rec.get("stage") == stage else None
+
+
+def _terminate(signum, frame) -> None:
+    raise SystemExit(128 + signum)  # unwinds through the `finally` that removes the armed file
+
+
 def since_cutoff(raw: str, base: dt.datetime) -> dt.datetime:
     """HH:MM (today, hub time zone) or an ISO datetime (naive = hub time zone)."""
     raw = raw.strip()
@@ -353,6 +443,10 @@ def main(argv: list) -> int:
     what += [f"file {f}" for f in args.file]
     if has_source:
         scan()  # the baseline read comes first: the line below means "armed", what is written after it is news
+    if args.journal:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, _terminate)
+        write_armed(caller, stage, args.tag, deadline)
     print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {fmt_deadline(deadline)}", flush=True)
 
     watch = DeadAgentWatch(stage) if args.journal else None
@@ -377,6 +471,9 @@ def main(argv: list) -> int:
             time.sleep(POLL_S)
     except KeyboardInterrupt:
         return 130
+    finally:
+        if args.journal:
+            clear_armed(caller)
 
 
 def fmt_deadline(t) -> str:

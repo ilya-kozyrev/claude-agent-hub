@@ -1,0 +1,1154 @@
+#!/usr/bin/env python3
+"""Watchdog: a job that looks at every stage of the hub home every few minutes and wakes a hub that sleeps.
+
+One run is one tick: it reads, acts and exits. No daemon, no model. Run it by hand, by launchd (macOS) or by cron:
+
+  watchdog run [--dry-run] [--stage S] [--json]   one tick; --dry-run prints `[plan] …` and writes nothing
+  watchdog install | uninstall [--scheduler launchd|cron]   the 5-minute job (launchd on macOS, cron elsewhere)
+  watchdog status                                  the job, the last tick, each stage's episode, markers, channels
+  watchdog notify-test                             send `agent-hub: test notification` through every channel
+  watchdog quiet [--stage S] --reason "…" [--until ISO|HH:MM | --for 8h]   pause the wake-ups of a stage
+  watchdog quiet --stage S --clear                 lift the pause; `watchdog quiet` alone lists every marker
+
+Rules, per stage and tick (docs/monitoring.md has the long form):
+  R1  an agent whose process is gone without a result → the existing `EXIT <role>: killed (no result)` line
+  R2  an open question past its due time that has a default → one `[watchdog] @hub OVERDUE Q-…` line
+  R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
+      AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it
+  R4  a Claude hub whose last turn ended on an API error >= 15 min ago → wake it
+How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
+`claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
+terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
+
+Settings (hub home config.json or the environment; all hub-wide): AGENT_HUB_WATCHDOG (on/off, `install` sets it),
+AGENT_HUB_WATCHDOG_EVERY (5m), _WAKE_AFTER (15m), _BACKOFF_MAX (4h), _NIGHT_QUEUE (on), _API_ERROR (on),
+AGENT_HUB_NOTIFY_LOCAL (on), AGENT_HUB_NOTIFY_CMD (a JSON argv with {message}; empty = no remote channel).
+What leaves the machine: the stage name, minutes, counts and the event word. Never line text, session ids, tags, paths.
+Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick.
+Exit: 0 ok (also: another tick is running, the watchdog is off), 1 failure, 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import plistlib
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+import autopilot  # noqa: E402
+import session_effort  # noqa: E402
+
+TAG = "watchdog"  # the journal tag of the watchdog's own lines
+KEYS = ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
+        "AGENT_HUB_WATCHDOG_BACKOFF_MAX", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
+        "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD")
+VERIFY_AFTER_S = 300  # a wake that shows no activity of the hub this long afterwards has failed
+LOG_MAX = 1 << 20
+TAIL_BYTES = 4 << 20
+CLAUDE_LIVE_STATUSES = ("busy", "idle", "waiting", "running")
+CLAUDE_BUSY_STATUSES = ("busy", "waiting", "running")
+JOB_LABEL_PREFIX = "io.agent-hub.watchdog."
+CRON_MARKER = "# agent-hub-watchdog"
+NOTIFY_TIMEOUT_S = 20
+
+
+# ---------------------------------------------------------------- settings and the clock
+
+def duration_setting(name: str, default: str, minimum_s: int, maximum_s: int = 7 * 86400) -> dt.timedelta:
+    raw = (hc.setting(name) or "").strip()
+    if raw:
+        try:
+            d = hc.parse_duration(raw)
+            if minimum_s <= d.total_seconds() <= maximum_s:
+                return d
+        except (hc.UsageError, OverflowError):
+            pass
+        hc.warn(f"{name}={raw!r} is not a duration between {minimum_s} s and {maximum_s // 3600} h; using {default}")
+    return hc.parse_duration(default)
+
+
+def enabled() -> bool:
+    return hc.truthy(hc.setting("AGENT_HUB_WATCHDOG"))
+
+
+def flag(name: str, default: str = "on") -> bool:
+    return hc.truthy(hc.setting(name, default))
+
+
+def every() -> dt.timedelta:
+    return duration_setting("AGENT_HUB_WATCHDOG_EVERY", "5m", 60, 24 * 3600)
+
+
+def wake_after() -> dt.timedelta:
+    return duration_setting("AGENT_HUB_WATCHDOG_WAKE_AFTER", "15m", 60)
+
+
+def backoff_max() -> dt.timedelta:
+    return duration_setting("AGENT_HUB_WATCHDOG_BACKOFF_MAX", "4h", 60)
+
+
+def clock() -> dt.datetime:
+    """The tick's clock: hc.now(), or AGENT_HUB_WATCHDOG_NOW (an ISO time, test-only)."""
+    raw = os.environ.get("AGENT_HUB_WATCHDOG_NOW", "").strip()
+    if raw:
+        try:
+            t = dt.datetime.fromisoformat(raw)
+            return t.replace(tzinfo=hc.TZ) if t.tzinfo is None else t.astimezone(hc.TZ)
+        except ValueError:
+            pass
+    return hc.now()
+
+
+def parse_ts(raw):
+    """An ISO time as an aware datetime in the hub time zone; None when it cannot be read."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        t = dt.datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t.replace(tzinfo=hc.TZ) if t.tzinfo is None else t.astimezone(hc.TZ)
+
+
+def iso(t: dt.datetime) -> str:
+    return t.isoformat(timespec="seconds")
+
+
+def mtime_of(path):
+    try:
+        return dt.datetime.fromtimestamp(Path(path).stat().st_mtime, hc.TZ)
+    except (OSError, TypeError):
+        return None
+
+
+def newest(*times):
+    times = [t for t in times if t is not None]
+    return max(times) if times else None
+
+
+def minutes(delta: dt.timedelta) -> int:
+    return max(0, int(delta.total_seconds() // 60))
+
+
+_TOOLS: dict = {}
+
+
+def tool(name: str):
+    """A sibling command (a script without .py) loaded as a module, the way jwait loads `agent`."""
+    if name not in _TOOLS:
+        loader = importlib.machinery.SourceFileLoader(f"{name}_cli", str(hc.BIN / name))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(f"{name}_cli", loader))
+        sys.modules[f"{name}_cli"] = mod  # the dataclasses of `ask` look their module up here
+        loader.exec_module(mod)
+        _TOOLS[name] = mod
+    return _TOOLS[name]
+
+
+def codex_module():
+    """bin/watchdog_codex.py (state(), wake()), or None when this install has none: Codex hubs are then notify-only."""
+    try:
+        import watchdog_codex
+        return watchdog_codex
+    except ImportError:
+        return None
+
+
+# ---------------------------------------------------------------- state, log, lock
+
+def wd_dir() -> Path:
+    return hc.state_dir() / "watchdog"
+
+
+def load_state() -> dict:
+    try:
+        data = json.loads((wd_dir() / "state.json").read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("stages", {})
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"stages": {}}
+
+
+def save_state(state: dict) -> None:
+    hc.atomic_write(wd_dir() / "state.json", json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
+
+
+class TickLock:
+    """A single tick at a time: flock(LOCK_EX | LOCK_NB) on <state>/watchdog/lock; `held` says whether it was taken."""
+
+    def __init__(self, take: bool = True):
+        self.take, self.held, self.fh = take, False, None
+
+    def __enter__(self):
+        if not self.take:
+            self.held = True
+            return self
+        path = wd_dir() / "lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(path, "a")
+        try:
+            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.held = True
+        except OSError:
+            self.fh.close()
+            self.fh = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+
+
+def trim(path: Path, limit: int = LOG_MAX) -> None:
+    try:
+        if path.stat().st_size > limit:
+            data = path.read_bytes()[-(limit // 2):]
+            path.write_bytes(data[data.find(b"\n") + 1:])
+    except OSError:
+        pass
+
+
+class Tick:
+    """What one run knows: the clock, the state, the mode, and what it did (`actions`, in order)."""
+
+    def __init__(self, dry: bool, as_json: bool):
+        self.dry, self.as_json = dry, as_json
+        self.now = clock()
+        self.state = load_state()
+        self.actions: list = []
+        self.wake_after, self.backoff_max = wake_after(), backoff_max()
+        self.rows = None  # `claude agents --json`, read once per tick when a Claude hub needs it
+        self.rows_read = False
+
+    def say(self, stage: str, rule: str, text: str, **extra) -> None:
+        """One action of the tick: a `[plan]` line in a dry run, else a line of the job output and of log.md."""
+        self.actions.append(dict(stage=stage, rule=rule, text=text, **extra))
+        if self.as_json:
+            return
+        if self.dry:
+            print(f"[plan] {stage}: {text}")
+            return
+        print(f"[{self.now:%Y-%m-%d %H:%M}] {stage}: {text}")
+        try:
+            log = wd_dir() / "log.md"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"- {self.now:%Y-%m-%d %H:%M} {stage}: {text}\n")
+            trim(log)
+        except OSError:
+            pass
+
+    def notify(self, stage: str, rule: str, message: str) -> None:
+        sent = notify(message, self.dry)
+        self.say(stage, rule, f"notify \"{message}\" via " + (", ".join(f"{n} {'ok' if ok else 'failed'}" for n, ok, _ in sent)
+                                                          or "no channel"))
+
+    def journal(self, stage: str, text: str) -> None:
+        """A line of the watchdog's own, in the stage journal: no status word, no @ (it must not count as waiting)."""
+        if not self.dry:
+            try:
+                hc.journal_append(stage, TAG, scrub(text))
+            except OSError:
+                pass
+
+
+def scrub(text: str) -> str:
+    """A text the journal will carry without waking anyone: status words lower-cased, no @."""
+    text = hc.one_line(text).replace("@", "at ")
+    return re.sub(hc.status_pattern(), lambda m: m.group(0).lower(), text)
+
+
+def short(text: str) -> str:
+    """Ids shortened to 8 characters (a uuid or a long hex id)."""
+    return re.sub(r"\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", r"\1", text)
+
+
+def first_line(text: str, limit: int = 160) -> str:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return hc.one_line(line)[:limit]
+    return ""
+
+
+# ---------------------------------------------------------------- notifications
+
+def notify_message(stage: str, kind: str, silent_min: int = 0, lines: int = 0) -> str:
+    """The only text that leaves the machine: the stage name, minutes, a count and an event word."""
+    if kind == "silent":
+        tail = f"hub silent {silent_min} min" + (f", {lines} lines waiting" if lines else "")
+    else:
+        tail = {"turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck"}[kind]
+    return f"agent-hub: {stage} — {tail}"
+
+
+def local_notifier(message: str):
+    if not flag("AGENT_HUB_NOTIFY_LOCAL"):
+        return None
+    if sys.platform == "darwin":
+        exe = shutil.which("osascript")
+        if not exe:
+            return None
+        text = message.replace("\\", "\\\\").replace('"', '\\"')
+        return "local", [exe, "-e", f'display notification "{text}" with title "agent-hub"']
+    exe = shutil.which("notify-send")
+    return ("local", [exe, "agent-hub", message]) if exe else None
+
+
+def remote_notifier(message: str):
+    raw = hc.setting_json("AGENT_HUB_NOTIFY_CMD")
+    if not raw:
+        return None
+    if not (isinstance(raw, list) and raw and all(isinstance(x, str) for x in raw)):
+        hc.warn("AGENT_HUB_NOTIFY_CMD must be a JSON list of strings (with {message}); no remote notification")
+        return None
+    return "remote", [x.replace("{message}", message) for x in raw]
+
+
+def notify(message: str, dry: bool) -> list:
+    """Send `message` through every channel; [(channel, ok, detail)]. A dry run sends nothing."""
+    out = []
+    for chan in (local_notifier(message), remote_notifier(message)):
+        if chan is None:
+            continue
+        name, argv = chan
+        if dry:
+            out.append((name, True, "not sent (dry run)"))
+            continue
+        try:
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=NOTIFY_TIMEOUT_S, env=hc.child_env(),
+                                 stdin=subprocess.DEVNULL)
+            out.append((name, res.returncode == 0, f"exit {res.returncode}" if res.returncode else "sent"))
+        except (OSError, subprocess.SubprocessError) as e:
+            out.append((name, False, type(e).__name__))
+    return out
+
+
+# ---------------------------------------------------------------- do-not-wake marker
+
+def marker_path(stage: str) -> Path:
+    return hc.root() / hc.check_stage(stage) / "do-not-wake.json"
+
+
+def read_marker(stage: str, now: dt.datetime):
+    """(marker, expired): the stage's do-not-wake record and whether its `until` has passed."""
+    try:
+        rec = json.loads(marker_path(stage).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, False
+    if not isinstance(rec, dict):
+        return None, False
+    until = parse_ts(rec.get("until"))
+    return rec, bool(until and until <= now)
+
+
+def marker_text(stage: str, rec: dict) -> str:
+    until = parse_ts(rec.get("until"))
+    return (f"wake-ups of stage {stage} are paused by {rec.get('by') or '?'} "
+            + (f"until {until:%Y-%m-%d %H:%M}" if until else "until cleared")
+            + (f": {rec.get('reason')}" if rec.get("reason") else ""))
+
+
+def marker_line(stage: str) -> str:
+    """One line for the takeover digest: an active marker of the stage, or ''."""
+    rec, expired = read_marker(stage, clock())
+    return f"{marker_text(stage, rec)} — `watchdog quiet --stage {stage} --clear` lifts it" if rec and not expired else ""
+
+
+def status_line(stage: str) -> str:
+    """One line for the takeover digest: what the watchdog does for this hub, or '' when it is off."""
+    if not enabled():
+        return ""
+    return (f"watchdog is on (a tick every {minutes(every())} min): a hub that is silent while lines addressed to it "
+            f"wait {minutes(wake_after())} min is woken; keep one `jwait`, and `watchdog quiet --stage {stage} "
+            f"--reason \"…\"` pauses it")
+
+
+# ---------------------------------------------------------------- what a hub is, and what it did last
+
+def callers_of(rec: dict) -> list:
+    out = []
+    for c in (rec.get("tag") or "hub", rec.get("session"), rec.get("cli_session_id")):
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def dead_turn(path):
+    """(time, error) when the last main-thread turn record of a Claude transcript is an assistant record that died on an
+    API error (`isApiErrorMessage`), else None. A user record after it (the owner or a wake typed again) ends it."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - TAIL_BYTES))
+            lines = f.read().split(b"\n")
+    except (OSError, TypeError):
+        return None
+    for line in reversed(lines):
+        if b'"assistant"' not in line and b'"user"' not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(o, dict) or o.get("type") not in ("assistant", "user") or o.get("isSidechain") is True:
+            continue
+        if o.get("type") == "assistant" and o.get("isApiErrorMessage") is True:
+            err = re.sub(r"[^\w .:-]", "", str(o.get("error") or "api error"))[:40] or "api error"
+            return parse_ts(o.get("timestamp")) or mtime_of(path), err
+        return None
+    return None
+
+
+def running_row(rows, sid: str):
+    """The `claude agents --json` row of a session that runs (a pid, or a live status and not done), else None."""
+    for r in rows or []:
+        if sid in (r.get("sessionId"), r.get("id")) or (len(sid) > 8 and r.get("id") == sid[:8]):
+            if r.get("pid") or (r.get("state") != "done" and r.get("status") in CLAUDE_LIVE_STATUSES):
+                return r
+    return None
+
+
+def bg_started(stage: str, rec: dict, sid: str, pend) -> bool:
+    """Whether a Claude hub that is not listed was started as a background session (so it may be resumed as one):
+    the record's `host`, else the pending record of `hub succeed` that started it."""
+    host = rec.get("host")
+    if host:
+        return host == "bg"
+    return bool(pend and pend.get("kind") == "bg" and pend.get("id") and sid.startswith(str(pend["id"])))
+
+
+def pending_handoff(stage: str):
+    """The pending successor record of auto-handoff.json that has not taken over, else None."""
+    try:
+        pend = autopilot.load_state(stage).get("pending")
+    except (OSError, ValueError):
+        return None
+    return pend if isinstance(pend, dict) and not pend.get("taken_over") else None
+
+
+def observe(tick: Tick, stage: str, rec: dict) -> dict:
+    """What the watchdog can tell about the hub: host kind, busy (True/False/None = unknown), last activity, a dead
+    last turn, and how it may be woken."""
+    o = {"host": "unknown", "busy": None, "last": None, "dead": None, "transport": "notify", "why": "", "meta": None,
+         "row": None, "sid": rec.get("cli_session_id") or rec.get("session") or "", "cwd": None, "transcript": None,
+         "pend": None}
+    meta = hc.detached(stage, rec)
+    engine = str(rec.get("engine") or "claude")
+    if meta:
+        ag = tool("agent")
+        o.update(host="detached", meta=meta, busy=bool(ag.alive(meta)), transport="agent-send",
+                 last=mtime_of(Path(meta["dir"]) / "log.jsonl"))
+        if str(meta.get("engine") or "claude") != "codex":
+            o["sid"] = meta.get("session_id") or o["sid"]
+            claude_transcript(o)
+        return o
+    if rec.get("kind") == "desktop" or str(rec.get("session") or "").startswith("local_"):
+        o.update(host="desktop", why="a Desktop session cannot be woken from outside")
+        claude_transcript(o)
+        return o
+    if engine == "codex":
+        o["host"] = "codex-thread"
+        mod = codex_module()
+        if mod is None:
+            o["why"] = "no Codex wake path in this install"
+            return o
+        try:
+            st = mod.state(stage, rec, tick.now)
+        except Exception as e:  # noqa: BLE001 — a Codex reader must not stop the tick
+            o["why"] = f"watchdog_codex.state failed: {type(e).__name__}"
+            return o
+        o.update(busy=st.get("busy"), last=st.get("last_activity"), transport=st.get("transport") or "notify",
+                 why=str(st.get("why") or ""))
+        if st.get("dead_turn"):
+            o["dead"] = (st.get("last_activity") or tick.now, str(st["dead_turn"]))
+        return o
+    # a Claude session: terminal, background or gone
+    claude_transcript(o)
+    o["pend"] = pend = pending_handoff_record(stage)
+    rows = claude_rows(tick)
+    if rows is None:
+        o.update(host="claude-unknown", why="`claude agents --json` failed: busy unknown")
+        return o
+    job = session_effort.job_record(o["sid"])  # the daemon's saved options of a background session
+    o["cwd"] = (job[1].get("cwd") if job else None) or o["cwd"]
+    row = running_row(rows, o["sid"])
+    if row is not None:
+        o["row"], o["cwd"] = row, row.get("cwd") or o["cwd"]
+        o["busy"] = row.get("status") in CLAUDE_BUSY_STATUSES if row.get("status") in CLAUDE_LIVE_STATUSES else None
+        if row.get("kind") != "background":
+            o.update(host="claude-term", why="a terminal session cannot be woken from outside")
+        elif row.get("status") == "idle" and job:
+            o.update(host="claude-bg", transport="claude-bg-resume")
+        else:
+            o.update(host="claude-bg", why=f"the background session is {row.get('status')}" if job else
+                     "the background session has no saved options (jobs/<id>/state.json) to resume with")
+        return o
+    o["busy"] = False
+    if not bg_started(stage, rec, o["sid"], pend):
+        o.update(host="claude-gone", why="the session is not running and was not started in the background")
+    elif not job:
+        o.update(host="claude-gone-bg", why="the background session has no saved options (jobs/<id>/state.json) to resume with")
+    else:
+        o.update(host="claude-gone-bg", transport="claude-bg-resume")
+    return o
+
+
+def pending_handoff_record(stage: str):
+    try:
+        pend = autopilot.load_state(stage).get("pending")
+    except (OSError, ValueError):
+        return None
+    return pend if isinstance(pend, dict) else None
+
+
+def claude_transcript(o: dict) -> None:
+    """Fill the transcript-derived fields: last activity, a dead last turn, the working directory."""
+    path = session_effort.find_transcript(o["sid"])
+    if path is None:
+        return
+    o["transcript"] = path
+    o["last"] = newest(o["last"], mtime_of(path))
+    o["dead"] = dead_turn(path) if flag("AGENT_HUB_WATCHDOG_API_ERROR") else None
+    last = session_effort.last_assistant(path)
+    o["cwd"] = (last or {}).get("cwd") or o["cwd"]
+
+
+def claude_rows(tick: Tick):
+    if not tick.rows_read:
+        tick.rows_read = True
+        try:
+            cli = hc.find_claude(persist=False)
+        except hc.Failure:
+            cli = None
+        tick.rows = autopilot.list_agents(cli.path) if cli else None
+    return tick.rows
+
+
+# ---------------------------------------------------------------- what waits for the hub
+
+def waiting_lines(tick: Tick, stage: str, rec: dict) -> list:
+    """[(stamp, key, text)] of the journal lines the hub's own digest `jwait` would deliver (jwait.hub_filter), that no
+    `jwait` of the hub has consumed (its seen-state, under either of its caller names), stamped after the hub took
+    over and at least WAKE_AFTER ago."""
+    jw = tool("jwait")
+    flt = jw.hub_filter(stage, rec.get("tag") or "hub")
+    states = [jw.load_state(c) for c in callers_of(rec)]
+    set_at = parse_ts(rec.get("set_at"))
+    set_at = set_at.replace(second=0, microsecond=0) if set_at else None
+    out = []
+    for back in (1, 0):
+        day = (tick.now - dt.timedelta(days=back)).date()
+        sid = f"journal:{stage}:{day.isoformat()}"
+        seen = set()
+        for s in states:
+            seen |= set((s.get(sid) or {}).get("seen", []))
+        for key, text in jw.Source(sid, hc.journal_path(stage, day), "journal", True).poll():
+            parsed = hc.parse_journal_line(text)
+            if key in seen or not parsed or not flt.accepts(text):
+                continue
+            hh, mm = map(int, parsed[0].split(":"))
+            stamp = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ)
+            if (set_at and stamp < set_at) or tick.now - stamp < tick.wake_after:
+                continue
+            out.append((stamp, key, text))
+    return sorted(out)
+
+
+def night_work(tick: Tick, stage: str):
+    """(since, queue) when open night-queue items have waited inside AGENT_HUB_NIGHT for WAKE_AFTER, else None."""
+    if not flag("AGENT_HUB_WATCHDOG_NIGHT_QUEUE"):
+        return None
+    nq = tool("nightq")
+    if not nq.in_night(tick.now.replace(tzinfo=None)):
+        return None
+    try:
+        queue = nq.read_queue(stage)
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not queue.get("open"):
+        return None
+    day = tick.now.date() if tick.now.time() >= nq.NIGHT_START else tick.now.date() - dt.timedelta(days=1)
+    start = dt.datetime.combine(day, nq.NIGHT_START, tzinfo=hc.TZ)
+    since = newest(start, mtime_of(hc.root() / stage / nq.QUEUE))
+    return (since, queue) if tick.now - since >= tick.wake_after else None
+
+
+def live_waiter(tick: Tick, stage: str, rec: dict):
+    jw = tool("jwait")
+    for caller in callers_of(rec):
+        armed = jw.armed_live(caller, stage, at=tick.now, reap=not tick.dry)
+        if armed:
+            return armed
+    return None
+
+
+# ---------------------------------------------------------------- the rules
+
+def rule_r1(tick: Tick, stage: str) -> None:
+    ag = tool("agent")
+    if tick.dry:
+        for meta, _ in ag.dead_candidates(stage):
+            tick.say(stage, "R1", f"would write `EXIT {meta['role']}: killed (no result)`")
+        return
+    for line in ag.observe_dead(stage):
+        tick.say(stage, "R1", f"wrote: {line}")
+
+
+def rule_r2(tick: Tick, stage: str, st: dict) -> None:
+    """An open question past its due time that has a default: one `@hub` line per (id, due)."""
+    ask = tool("ask")
+    _, entries = ask.load(stage)
+    sent = st.setdefault("r2_sent", {})
+    now = tick.now.replace(second=0, microsecond=0, tzinfo=None)
+    for e in entries:
+        due, default = e.fields.get("due", "").strip(), (e.fields.get("default") or "").strip()
+        if e.kind_letter != "Q" or not e.overdue(now) or default.lower() in ask.NO_VALUE or sent.get(e.id) == due:
+            continue
+        text = f"@hub OVERDUE {e.id} (due {due}) default: {hc.one_line(default)[:200]}"
+        tick.say(stage, "R2", f"journal: {text}")
+        if not tick.dry:
+            hc.journal_append(stage, TAG, text)
+            sent[e.id] = due
+
+
+def wake_text(stage: str, o: dict, lines: list, dead, night, bg: bool) -> str:
+    parts = []
+    if dead:
+        parts.append(f"[agent-hub watchdog] {stage}: your last turn ended on an API error at {dead[0]:%H:%M} "
+                     f"({dead[1]}); continue where you stopped.")
+    if lines:
+        since = f"{lines[0][0]:%H:%M}" if lines[0][0].date() == dt.datetime.now(hc.TZ).date() else f"{lines[0][0]:%Y-%m-%dT%H:%M}"
+        parts.append(("" if dead else f"[agent-hub watchdog] {stage}: ") + f"{len(lines)} journal lines addressed to you "
+                     f"have waited since {since} and no jwait of yours is running. Run your digest jwait with "
+                     f"--since {since}, handle what it shows, and keep one waiter.")
+    if night:
+        queue = night[1]
+        parts.append(("" if parts else f"[agent-hub watchdog] {stage}: ") + f"Night queue: continue with "
+                     f"{hc.root() / stage / 'night-queue.md'} (open {queue['open']}, next: {queue.get('next') or '—'}). "
+                     "The permission matrix is in the file; anything outside it — `ask add` with a default action, "
+                     "then move on." + (f" The queue format is broken: `nightq check --stage {stage}`."
+                                        if queue.get("invalid") else ""))
+    if bg:
+        parts.append("Background commands of your last turn were stopped; re-arm what you need.")
+    parts.append(f"Stop these wake-ups: watchdog quiet --stage {stage} --reason \"…\".")
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------- waking
+
+def run(argv: list, timeout: int, cwd=None, extra_env=None):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                              env=autopilot.child_env() if extra_env is None else {**autopilot.child_env(), **extra_env},
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", f"{argv[0]} did not finish in {timeout} s")
+    except OSError as e:
+        return subprocess.CompletedProcess(argv, 127, "", str(e))
+
+
+def wake_agent_send(stage: str, o: dict, text: str, dry: bool) -> dict:
+    role = o["meta"]["role"]
+    argv = [sys.executable, str(hc.BIN / "agent"), "send", "--stage", stage, role, text]
+    how = f"agent send --stage {stage} {role}"
+    if dry:
+        return {"ok": True, "how": how, "detail": "not run (dry run)"}
+    res = run(argv, 200)
+    out = first_line(res.stderr or res.stdout)
+    detail = (f"exit {res.returncode}: {out}" if res.returncode else out)
+    if res.returncode and "resume-anyway" in (res.stderr or ""):
+        detail += " — the owner chooses: `agent send --resume-anyway`, or a handoff"
+    return {"ok": res.returncode == 0, "how": how, "detail": detail}
+
+
+def started_copy(out: str):
+    """The id a `claude --bg --resume` announced for a copy ("… so this started a copy as d335c079"), else None."""
+    m = re.search(r"started a copy as ([0-9A-Za-z_-]+)", out)
+    return m.group(1) if m else None
+
+
+def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
+    """`claude stop` when the session is listed (idle), then `claude --bg --resume <same id> "<text>"` with no other
+    flag: a background session keeps its own saved options (model, effort, permission mode, remote control), and flags
+    make the CLI start a copy instead (probed on 2.1.289, docs/monitoring.md). Never a copy, never blind."""
+    sid8 = o["sid"][:8]
+    how = (f"claude stop {sid8}; " if o["row"] is not None else "") + f"claude --bg --resume {sid8} \"<text>\""
+    try:
+        cli = hc.find_claude(persist=False)
+    except hc.Failure:
+        cli = None
+    if cli is None:
+        return {"ok": False, "how": how, "detail": "the claude CLI was not found"}
+    cwd = o["cwd"] if o["cwd"] and os.path.isdir(o["cwd"]) else None
+    if cwd is None:
+        return {"ok": False, "how": how, "detail": "the hub's working directory cannot be found"}
+    if tick.dry:
+        return {"ok": True, "how": how, "detail": "not run (dry run)"}
+    # the state right before the resume, not the tick's reading: never a copy of a session that runs
+    rows = autopilot.list_agents(cli.path, cwd)
+    if rows is None:
+        return {"ok": False, "how": how, "detail": "`claude agents --json` failed: not resuming blind"}
+    row = running_row(rows, o["sid"])
+    if row is not None:
+        if row.get("status") != "idle":
+            return {"ok": False, "how": how, "detail": f"the hub is {row.get('status')} now: not woken"}
+        stop = run([cli.path, "stop", row.get("id") or sid8], 30, cwd)
+        if stop.returncode != 0:
+            return {"ok": False, "how": how, "detail": f"claude stop exit {stop.returncode}: {first_line(stop.stderr or stop.stdout)}"}
+        rows = autopilot.list_agents(cli.path, cwd)
+        if rows is None or running_row(rows, o["sid"]) is not None:
+            return {"ok": False, "how": how, "detail": "the hub is still listed after claude stop: not resuming"}
+    before = {r.get("id") for r in rows}
+    res = run([cli.path, "--bg", "--resume", o["sid"], text], 90, cwd)
+    out = autopilot.clean((res.stdout or "") + "\n" + (res.stderr or ""))
+    after = autopilot.list_agents(cli.path, cwd) or []
+    copies = {started_copy(out)} - {None} | {r.get("id") for r in after
+                                              if r.get("id") not in before and r.get("sessionId") not in (None, o["sid"])}
+    if copies or re.search(r"\bcopy\b", out, re.I):
+        for cid in copies:
+            run([cli.path, "stop", cid], 30, cwd)
+        return {"ok": False, "how": how, "detail": "the CLI started a copy of the session" + ("; the copy was stopped" if copies else "")}
+    return {"ok": res.returncode == 0, "how": how,
+            "detail": f"exit {res.returncode}: {first_line(out)}" if res.returncode else first_line(out)}
+
+
+def wake_hub(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
+    t = o["transport"]
+    if t == "agent-send" and o.get("meta"):
+        return wake_agent_send(stage, o, text, tick.dry)
+    if t == "claude-bg-resume":
+        return wake_claude(tick, stage, rec, o, text)
+    mod = codex_module()
+    if t in ("codex-queue", "codex-resume") and mod is not None:
+        try:
+            res = mod.wake(stage, rec, text, tick.dry)
+            return {"ok": bool(res.get("ok")), "how": str(res.get("how") or t), "detail": str(res.get("detail") or "")}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "how": t, "detail": f"watchdog_codex.wake failed: {type(e).__name__}"}
+    return {"ok": False, "how": t, "detail": "no wake path"}
+
+
+# ---------------------------------------------------------------- one stage
+
+def quick_dead(stage: str, rec: dict):
+    """The dead-turn marker of a Claude hub's transcript, read before anything dearer is asked."""
+    if not flag("AGENT_HUB_WATCHDOG_API_ERROR"):
+        return None
+    meta = hc.detached(stage, rec)
+    sid = (meta or {}).get("session_id") or rec.get("cli_session_id") or rec.get("session") or ""
+    path = session_effort.find_transcript(sid)
+    return dead_turn(path) if path else None
+
+
+def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
+    """R3 and R4: whether this hub needs waking now, the episode and its backoff, the wake or the notification."""
+    now, tag = tick.now, rec.get("tag") or "hub"
+    hs = st.get("hub")
+    if not isinstance(hs, dict) or hs.get("session") != rec.get("session"):
+        hs = st["hub"] = {"session": rec.get("session")}  # a replaced hub starts clean
+    lines, night = waiting_lines(tick, stage, rec), night_work(tick, stage)
+    codex = str(rec.get("engine") or "claude") == "codex"
+    maybe_dead = quick_dead(stage, rec) if not codex else None
+    if not (lines or night or codex or (maybe_dead and now - maybe_dead[0] >= tick.wake_after)):
+        if not maybe_dead:  # a young API-error record may still belong to an episode that is going on
+            hs["episode"] = None  # nothing waits: the dearer questions (is it busy, which host) are not asked
+        return
+    o = observe(tick, stage, rec)
+    ep = hs.get("episode")
+    acted = parse_ts((ep or {}).get("acted_at"))
+    raw_dead = o["dead"] if flag("AGENT_HUB_WATCHDOG_API_ERROR") else None
+    if acted and o["last"] and o["last"] > acted and not (raw_dead and raw_dead[0] > acted):
+        # the hub showed activity after the last action: that episode is over. A new API-error record is activity of
+        # a hub that is still failing, not recovery: that episode goes on with its backoff.
+        ep = hs["episode"] = None
+    last = o["last"] or parse_ts(rec.get("set_at")) or now
+    silent = o["busy"] is not True and now - last >= tick.wake_after
+    dead = raw_dead if raw_dead and now - raw_dead[0] >= tick.wake_after else None
+    armed = live_waiter(tick, stage, rec)
+    if armed and lines and not dead and (tick.dry or hs.get("mismatch") != lines[0][1]):
+        hs["mismatch"] = lines[0][1]
+        tick.journal(stage, f"{tag}'s jwait does not match {len(lines)} lines addressed to it, waiting since "
+                            f"{lines[0][0]:%H:%M}")
+        tick.say(stage, "R3", f"{tag} has a live jwait that does not match {len(lines)} waiting lines: not woken")
+    if not (silent and (dead or ((lines or night) and not armed))):
+        if ep and not (lines or night or raw_dead):
+            hs["episode"] = None
+        return
+    if ep is None:
+        ep = hs["episode"] = {"start": iso(now), "attempts": 0, "acted_at": None, "next_try_at": None,
+                              "result": None, "since": iso(lines[0][0]) if lines else None}
+    if ep.get("result") == "pending" and acted and not tick.dry and now - acted >= dt.timedelta(seconds=VERIFY_AFTER_S):
+        ep["result"] = "failed: no activity of the hub after the wake"
+        tick.journal(stage, f"wake of {tag} failed (no activity of the hub within {VERIFY_AFTER_S // 60} min); owner notified")
+        tick.say(stage, "R3", f"wake of {tag} showed no activity")
+        tick.notify(stage, "R3", notify_message(stage, "wake-failed"))
+    nxt = parse_ts(ep.get("next_try_at"))
+    if nxt and now < nxt:
+        return
+    do_act(tick, stage, rec, o, ep, lines, dead, night, minutes(now - last))
+
+
+def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, dead, night, silent_min: int) -> None:
+    now, tag = tick.now, rec.get("tag") or "hub"
+    attempts = int(ep.get("attempts") or 0) + 1
+    delay = min(tick.wake_after * (2 ** (attempts - 1)), tick.backoff_max)
+    wakeable = o["transport"] != "notify" and o["busy"] is False
+    bg = o["host"] in ("claude-bg", "claude-gone-bg") and o["row"] is not None
+    if not tick.dry:
+        ep.update(attempts=attempts, acted_at=iso(now), next_try_at=iso(now + delay))
+    if not wakeable:
+        kind = "turn" if dead and not lines and not night else "silent"
+        why = o["why"] or ("busy state unknown" if o["busy"] is None else f"{o['host']} host")
+        tick.say(stage, "R4" if dead else "R3", f"{tag} ({o['host']}) is not woken: {why}")
+        tick.notify(stage, "R4" if dead else "R3", notify_message(stage, kind, silent_min, len(lines)))
+        if not tick.dry:
+            ep["result"] = "notified"
+        return
+    text = wake_text(stage, o, lines, dead, night, bg)
+    res = wake_hub(tick, stage, rec, o, text)
+    rule = "R4" if dead else "R3"
+    n = f"{len(lines)} lines waiting since {lines[0][0]:%H:%M}" if lines else ("night queue" if night else "dead turn")
+    if res["ok"]:
+        tick.say(stage, rule, f"{'would wake' if tick.dry else 'woke'} {tag} ({res['how']}): {n}", argv=res["how"])
+        tick.journal(stage, f"woke {tag} ({res['how']}, attempt {attempts}): {n}")
+        if not tick.dry:
+            ep["result"] = "pending"
+    else:
+        tick.say(stage, rule, f"wake of {tag} failed ({res['how']}): {res['detail']}", argv=res["how"])
+        tick.journal(stage, f"wake of {tag} failed ({res['how']}, {res['detail']}); owner notified")
+        tick.notify(stage, rule, notify_message(stage, "wake-failed"))
+        if not tick.dry:
+            ep["result"] = f"failed: {res['detail'][:120]}"
+
+
+def run_stage(tick: Tick, stage: str) -> None:
+    st = tick.state["stages"].setdefault(stage, {})
+    if (hc.root() / stage / "agents").is_dir():
+        rule_r1(tick, stage)
+    rec = hc.roles_load(stage)["roles"].get("hub")
+    if not rec:
+        return
+    rule_r2(tick, stage, st)
+    marker, expired = read_marker(stage, tick.now)
+    if marker and expired and not tick.dry:
+        try:
+            marker_path(stage).unlink()
+        except OSError:
+            pass
+    elif marker and not expired:
+        return
+    pend = pending_handoff(stage)
+    if pend:
+        age = (tick.now - (parse_ts(pend.get("at")) or tick.now)).total_seconds()
+        if age > autopilot.takeover_timeout() + tick.wake_after.total_seconds() and st.get("stuck") != pend.get("at"):
+            st["stuck"] = pend.get("at")
+            tick.say(stage, "R3", f"handoff to hub-{pend.get('n')} pending for {int(age // 60)} min: nothing is started")
+            tick.notify(stage, "R3", notify_message(stage, "stuck"))
+        return
+    rule_hub(tick, stage, st, rec)
+
+
+def stage_names(only=None) -> list:
+    root = hc.root()
+    try:
+        dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    names = [p.name for p in dirs if hc.STAGE_RE.fullmatch(p.name) and ((p / "roles.json").is_file() or (p / "agents").is_dir())]
+    if only:
+        if only not in names:
+            raise hc.Failure(f"no stage {only!r} with a registry or agents in {root}")
+        return [only]
+    return names
+
+
+def cmd_run(a) -> int:
+    if not a.dry_run and not enabled():
+        print("watchdog is off (AGENT_HUB_WATCHDOG): nothing done — `watchdog install` turns it on")
+        return 0
+    tick_lock = TickLock(take=not a.dry_run)
+    with tick_lock:
+        if not tick_lock.held:
+            print("another tick is running")
+            return 0
+        tick = Tick(a.dry_run, a.json)
+        if not a.dry_run:
+            trim(wd_dir() / "job.log")
+        for stage in stage_names(a.stage):
+            try:
+                run_stage(tick, stage)
+            except Exception as e:  # noqa: BLE001 — one broken stage must not stop the others
+                tick.say(stage, "error", f"{type(e).__name__}: {first_line(str(e))}")
+        if not a.dry_run:
+            tick.state["last_tick"] = iso(tick.now)
+            save_state(tick.state)
+        if a.json:
+            print(json.dumps({"dry_run": a.dry_run, "at": iso(tick.now), "actions": tick.actions}, ensure_ascii=False))
+        elif a.dry_run and not tick.actions:
+            print("[plan] nothing to do")
+    return 0
+
+
+# ---------------------------------------------------------------- quiet
+
+def cmd_quiet(a) -> int:
+    now = clock()
+    if a.clear or a.reason:
+        stage = hc.check_stage(a.stage or hc.default_stage())
+        if not (hc.root() / stage).is_dir():
+            raise hc.Failure(f"no stage {stage!r} in {hc.root()}")
+        path = marker_path(stage)
+        if a.clear:
+            try:
+                path.unlink()
+                print(f"stage {stage}: wake-ups resume")
+            except FileNotFoundError:
+                print(f"stage {stage}: no marker")
+            return 0
+        if a.until and a.for_:
+            raise hc.UsageError("--until and --for exclude each other")
+        until = hc.parse_deadline(a.until, now) if a.until else (now + hc.parse_duration(a.for_) if a.for_ else None)
+        rec = {"by": hc.caller_tag(stage) or "owner", "at": iso(now), "until": iso(until) if until else None,
+               "reason": hc.one_line(a.reason)}
+        hc.atomic_write(path, json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"stage {stage}: {marker_text(stage, rec)}")
+        return 0
+    stages = [hc.check_stage(a.stage)] if a.stage else [s for s in stage_names()]
+    shown = 0
+    for stage in stages:
+        rec, expired = read_marker(stage, now)
+        if rec:
+            shown += 1
+            print(f"{stage}: {marker_text(stage, rec)}" + (" (expired: removed by the next tick)" if expired else ""))
+    if not shown:
+        print("no do-not-wake markers" + (f" in stage {a.stage}" if a.stage else ""))
+    return 0
+
+
+# ---------------------------------------------------------------- the job (install, uninstall, status)
+
+def job_label() -> str:
+    return JOB_LABEL_PREFIX + hashlib.sha1(str(hc.root()).encode()).hexdigest()[:8]
+
+
+def default_scheduler() -> str:
+    return "launchd" if sys.platform == "darwin" else "cron"
+
+
+def plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{job_label()}.plist"
+
+
+def shim_path() -> Path:
+    return wd_dir() / "run.sh"
+
+
+def render_shim() -> str:
+    env = {"AGENT_HUB_HOME": str(hc.root()), "PATH": os.environ.get("PATH", "")}
+    for name in ("AGENT_HUB_TZ", "AGENT_HUB_NIGHT", "AGENT_HUB_STATE_DIR", "CLAUDE_CONFIG_DIR", "CODEX_HOME") + KEYS:
+        if os.environ.get(name):  # what the installing shell set; config.json is read by the job itself
+            env[name] = os.environ[name]
+    try:
+        cli = hc.find_claude(persist=False)
+        if cli:
+            env["CLAUDE_BIN"] = cli.path
+    except hc.Failure:
+        pass
+    codex = shutil.which(hc.setting("CODEX_BIN") or "codex")
+    if codex:
+        env["CODEX_BIN"] = codex
+    lines = ["#!/bin/sh", "# agent-hub watchdog: written by `watchdog install`; run it again after a plugin update",
+             f"# bin: {hc.BIN}"] + [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
+    lines.append(f"exec {shlex.quote(sys.executable)} {shlex.quote(str(hc.BIN / 'watchdog'))} run")
+    return "\n".join(lines) + "\n"
+
+
+def cron_line(shim: Path, minutes_: int) -> str:
+    if minutes_ < 60:
+        spec = f"*/{minutes_} * * * *"
+    elif minutes_ % 60 == 0 and minutes_ // 60 < 24:
+        spec = f"0 */{minutes_ // 60} * * *"
+    else:
+        raise hc.UsageError("cron runs the job every 1-59 minutes or a whole number of hours (AGENT_HUB_WATCHDOG_EVERY)")
+    return f"{spec} {shlex.quote(str(shim))}  {CRON_MARKER} {hc.root()}"
+
+
+def read_crontab() -> list:
+    res = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    return res.stdout.splitlines() if res.returncode == 0 else []
+
+
+def write_crontab(lines: list) -> None:
+    res = subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n" if lines else "", capture_output=True, text=True)
+    if res.returncode != 0:
+        raise hc.Failure(f"crontab - failed: {first_line(res.stderr)}")
+
+
+def own_cron(line: str) -> bool:
+    return line.rstrip().endswith(f"{CRON_MARKER} {hc.root()}")
+
+
+def set_home_flag(on: bool) -> None:
+    """AGENT_HUB_WATCHDOG in the hub home's config.json (the other keys stay as they are)."""
+    path = hc.root() / "config.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        raise hc.Failure(f"{path} is not a JSON object: fix it, then run install again") from None
+    data["AGENT_HUB_WATCHDOG"] = on
+    hc.atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def cmd_install(a) -> int:
+    scheduler = a.scheduler or default_scheduler()
+    wd_dir().mkdir(parents=True, exist_ok=True)
+    hc.atomic_write(shim_path(), render_shim())
+    os.chmod(shim_path(), 0o700)  # it may carry the notification channel's address
+    interval = int(every().total_seconds())
+    if scheduler == "launchd":
+        plist = {"Label": job_label(), "ProgramArguments": [str(shim_path())], "StartInterval": interval,
+                 "RunAtLoad": False, "StandardOutPath": str(wd_dir() / "job.log"),
+                 "StandardErrorPath": str(wd_dir() / "job.log")}
+        path = plist_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        hc.atomic_write(path, plistlib.dumps(plist).decode("utf-8"))
+        domain = f"gui/{os.getuid()}"
+        subprocess.run(["launchctl", "bootout", f"{domain}/{job_label()}"], capture_output=True, text=True)
+        res = subprocess.run(["launchctl", "bootstrap", domain, str(path)], capture_output=True, text=True)
+        if res.returncode != 0:
+            path.unlink(missing_ok=True)  # a failed install leaves no job definition behind
+            raise hc.Failure(f"launchctl bootstrap failed (exit {res.returncode}): {first_line(res.stderr or res.stdout)}")
+        where = f"launchd job {job_label()} ({path})"
+    else:
+        line = cron_line(shim_path(), interval // 60)
+        lines = [x for x in read_crontab() if not own_cron(x)] + [line]
+        write_crontab(lines)
+        where = f"cron line `{line}`"
+    set_home_flag(True)
+    print(f"watchdog installed: {where}; every {interval // 60} min; shim {shim_path()}; AGENT_HUB_WATCHDOG on in "
+          f"{hc.root() / 'config.json'}")
+    print("after a plugin update run `watchdog install` again: the job points at the plugin version that was installed")
+    return 0
+
+
+def cmd_uninstall(a) -> int:
+    scheduler = a.scheduler or default_scheduler()
+    if scheduler == "launchd":
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{job_label()}"], capture_output=True, text=True)
+        plist_path().unlink(missing_ok=True)
+        what = f"launchd job {job_label()}"
+    else:
+        write_crontab([x for x in read_crontab() if not own_cron(x)])
+        what = "the cron line of this hub home"
+    shim_path().unlink(missing_ok=True)
+    set_home_flag(False)
+    print(f"watchdog uninstalled: {what} removed; AGENT_HUB_WATCHDOG off in {hc.root() / 'config.json'}")
+    return 0
+
+
+def shim_bin():
+    try:
+        for line in shim_path().read_text(encoding="utf-8").splitlines():
+            if line.startswith("# bin: "):
+                return line[7:].strip()
+    except OSError:
+        pass
+    return None
+
+
+def cmd_status(a) -> int:
+    scheduler = a.scheduler or default_scheduler()
+    now, state = clock(), load_state()
+    if scheduler == "launchd":
+        loaded = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{job_label()}"], capture_output=True, text=True)
+        installed = plist_path().exists() and loaded.returncode == 0
+        how = f"launchd {job_label()}"
+    else:
+        installed = any(own_cron(x) for x in read_crontab())
+        how = "cron"
+    print(f"job: {'installed (' + how + ')' if installed else 'not installed — `watchdog install`'}; setting "
+          f"AGENT_HUB_WATCHDOG {'on' if enabled() else 'off'}; interval {minutes(every())} min "
+          f"(wake after {minutes(wake_after())} min, backoff up to {minutes(backoff_max()) // 60} h)")
+    recorded = shim_bin()
+    if installed and recorded and Path(recorded).resolve() != hc.BIN.resolve():
+        print(f"job runs the plugin at {recorded}, this tool is {hc.BIN}: install again")
+    tick = parse_ts(state.get("last_tick"))
+    if tick:
+        late = now - tick > 3 * every()
+        print(f"last tick: {tick:%Y-%m-%d %H:%M} ({hc.age(tick, now)} ago)" + (" — late: the job may not be running" if late else ""))
+    else:
+        print("last tick: never")
+    for stage in stage_names():
+        rec, expired = read_marker(stage, now)
+        hs = (state["stages"].get(stage) or {}).get("hub") or {}
+        ep = hs.get("episode")
+        parts = []
+        if rec:
+            parts.append(marker_text(stage, rec) + (" (expired)" if expired else ""))
+        if ep:
+            nxt = parse_ts(ep.get("next_try_at"))
+            since = parse_ts(ep.get("start"))
+            parts.append(f"episode since {since:%H:%M}" if since else "episode")
+            parts[-1] += (f", attempts {ep.get('attempts')}, last result "
+                         f"{ep.get('result') or '—'}" + (f", next try {nxt:%H:%M}" if nxt else ""))
+        print(f"stage {stage}: " + ("; ".join(parts) if parts else "no episode"))
+    local = "on" if flag("AGENT_HUB_NOTIFY_LOCAL") else "off"
+    remote = hc.setting_json("AGENT_HUB_NOTIFY_CMD")
+    print(f"notifications: local {local}; remote " + (f"AGENT_HUB_NOTIFY_CMD ({len(remote)} args)" if isinstance(remote, list) and remote else "none"))
+    return 0
+
+
+def cmd_notify_test(a) -> int:
+    results = notify("agent-hub: test notification", False)
+    if not results:
+        print("no channel: local notifications are off or the system has none, and AGENT_HUB_NOTIFY_CMD is empty")
+        return 1
+    for name, ok, detail in results:
+        print(f"{name}: {'ok' if ok else 'FAILED'} ({detail})")
+    return 0 if all(ok for _, ok, _ in results) else 1
+
+
+# ---------------------------------------------------------------- command line
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="watchdog", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run", help="one tick")
+    r.add_argument("--dry-run", action="store_true", help="print [plan] lines; write nothing")
+    r.add_argument("--stage", default=None)
+    r.add_argument("--json", action="store_true")
+    for name in ("install", "uninstall", "status"):
+        s = sub.add_parser(name)
+        s.add_argument("--scheduler", choices=("launchd", "cron"), default=None, help="default: launchd on macOS, cron elsewhere")
+    sub.add_parser("notify-test", help="send a test notification through every channel")
+    q = sub.add_parser("quiet", help="pause the wake-ups of a stage (a do-not-wake marker)")
+    q.add_argument("--stage", default=None)
+    q.add_argument("--reason", default=None)
+    q.add_argument("--until", default=None, help="HH:MM or an ISO time")
+    q.add_argument("--for", dest="for_", default=None, help="a duration: 8h")
+    q.add_argument("--clear", action="store_true")
+    a = p.parse_args(argv)
+    return {"run": cmd_run, "install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status,
+            "notify-test": cmd_notify_test, "quiet": cmd_quiet}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))
