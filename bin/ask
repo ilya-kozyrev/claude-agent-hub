@@ -689,7 +689,8 @@ def check_covered(args) -> int:
     if covering and not one_line(args.override):
         for e in covering:
             print(f"ask: covered by {e.id} ({perm_source(e)}): {clip(e.title, 100)}", file=sys.stderr)
-            print(f"ask:   the owner's words: {clip(e.fields.get('words', ''), 300)}", file=sys.stderr)
+            print(f"ask:   the owner's words: {e.fields.get('words', '')}", file=sys.stderr)   # in full: a limit
+            # often comes last ("…but production still needs my word")
         print("ask: act under it only if these words cover this case — its environment and scope (staging is not "
               "production); journal the id. If they do not, pass --override \"why\"", file=sys.stderr)
         return COVERED_EXIT

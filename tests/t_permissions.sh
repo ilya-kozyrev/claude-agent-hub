@@ -77,7 +77,11 @@ add --stage stage-x --class migration-data "Run the data migration?"; check $? 0
 add --stage stage-x --class migration-schema "Run the schema migration?"; check $? 3 "…the same keyword covers"
 allow --stage stage-y --class release-notes --words "«заметки пиши сам»" "release notes"
 add --stage stage-x --class release-notes "Publish the release notes, and the billing change?"; check $? 0 "a covered keyword plus money in the text: still not covered"
-for id in $($B/ask allow --list --stage stage-y | grep -E '^A-Y-[0-9]+ .* — (read RBAC|schema migr|release notes)' | cut -d' ' -f1); do $B/ask revoke $id > /dev/null; done
+LONG="«выкатывай на стейдж сам, $(printf 'и так далее %.0s' $(seq 1 30))но прод по-прежнему только с моего согласия»"
+allow --stage stage-y --class deploy-preview --words "$LONG" "deploy previews"
+add --stage stage-x --class deploy-preview "Deploy the preview?"; check $? 3 "a long permission covers"
+grep -q 'но прод по-прежнему только с моего согласия»$' $P.add.err; check $? 0 "…and the refusal prints the owner's words in full, the restriction at their end included"
+for id in $($B/ask allow --list --stage stage-y | grep -E '^A-Y-[0-9]+ .* — (read RBAC|schema migr|release notes|deploy previews)' | cut -d' ' -f1); do $B/ask revoke $id > /dev/null; done
 
 # ---- a question no permission covers; a weak match warns and passes
 add --stage stage-x --class hotfix "Ship a hotfix?"; check $? 0 "another class → passes"
