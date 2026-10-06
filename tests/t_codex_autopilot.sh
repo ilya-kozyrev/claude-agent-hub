@@ -106,6 +106,18 @@ try:
     assert '--dangerously-bypass-approvals-and-sandbox' not in calls()[-1]['argv']
     print('PASS dead successor restart preserves recorded model and restricted sandbox')
 finally: stop()
+
+# AGENT_HUB_REASON_POLICY=refuse must not stop the hand-over chain: the successor keeps the hub's model and effort, `hub succeed` says so
+home,handoff,cwd = setup('reason')
+ap.codex_rollouts.INDEX.records={}; ap.codex_rollouts.INDEX.checked=None  # discover the hub's rollout afresh
+os.environ.update(AGENT_HUB_REASON_POLICY='refuse', AGENT_HUB_EFFORT_DEFAULTS='{"*": "low"}')
+try:
+    rc,out=succeed(handoff,cwd)
+    meta=json.loads((home/'stage-a/agents/hub-2/meta.json').read_text())
+    assert rc==0 and meta['effort']=='xhigh' and 'hub successor' in meta['reason'], (rc,out,meta)
+    print('PASS Codex successor above the default effort passes the reason policy')
+finally:
+    stop(); os.environ.pop('AGENT_HUB_REASON_POLICY'); os.environ.pop('AGENT_HUB_EFFORT_DEFAULTS')
 # Restore discovery for dry-run controls.
 ap.codex_rollouts.INDEX.checked=None
 

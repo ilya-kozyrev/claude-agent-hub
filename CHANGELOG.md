@@ -29,6 +29,18 @@
   and live Codex sessions still need for their hooks. Tests:
   `t_agent_ended.sh`, `t_handoff_todo.sh` and `t_caller_host.sh` fail on 0.8.6's code; `t_lock_retry_doc.sh` runs the
   example of `docs/reference.md` itself.
+- **Agents are spawned at the effort the work needs, old agents are not resumed on top of huge contexts, and an agent's
+  name says what it does.** `agent spawn` takes its effort per model from the new `AGENT_HUB_EFFORT_DEFAULTS` (else
+  `AGENT_HUB_DEFAULT_EFFORT`, else `high`), for Claude and Codex alike; an effort above the model's default, or a model
+  listed in `AGENT_HUB_REASON_MODELS`, needs `--reason "…"` — a stderr warning, or a refusal with
+  `AGENT_HUB_REASON_POLICY=refuse` — and the reason is kept in the journal's start line and `meta.json`. `agent send`
+  to a stopped agent whose context is above `AGENT_HUB_RESUME_MAX_CTX` (default 250k tokens) is refused with the advice
+  to spawn a fresh agent from a handoff file; `--resume-anyway` overrides, `agent status` shows the size (`ctx 300k`;
+  a Codex log carries none, so Codex resumes are not limited). The registered title is `<role> — <the brief's first
+  heading> (<stage>)`, not "agent wp23 (hub-09)". The no-plan warning now says to show the plan to the owner and record
+  `ask plan` only after the owner's yes. A Codex spawn without `--model` has an unknown model: with `AGENT_HUB_REASON_MODELS` set it is refused
+  (`refuse`, "pass --model") or warned about (`warn`); `hub succeed` passes its own reason, so `AGENT_HUB_REASON_POLICY=refuse` does not stop the autopilot chain.
+  Tests: `t_spawn_policy.sh` (many of its checks fail without the change), `t_autopilot.sh`, `t_codex_autopilot.sh`.
 
 ## 0.8.6 — 2026-10-06
 

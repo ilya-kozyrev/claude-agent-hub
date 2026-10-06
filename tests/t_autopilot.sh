@@ -203,6 +203,10 @@ call --bg argv | grep -q -- "--model claude-sonnet-9-9 "; check $? 0 "model map:
 # --headless right away
 setup; succeed --model opus --headless > /dev/null 2>&1
 check "$(call --bg count):$(pending kind)" "none:headless" "--headless: agent spawn without trying --bg"
+# a refusing reason policy must not stop the chain: the successor keeps the hub's effort (high), above this default
+setup; AGENT_HUB_REASON_POLICY=refuse AGENT_HUB_EFFORT_DEFAULTS='{"opus": "low"}' succeed --model opus --headless > $R/rsn.out 2>&1
+check "$(pending kind)" headless "reason policy refuse: the headless successor still starts"
+grep -q 'hub successor' $R/stage-a/agents/hub-2/meta.json; check $? 0 "…with a reason in its meta.json"
 # no takeover by the deadline -> --fallback: log tail journaled, bg stopped (kept), headless from the same handoff
 setup; succeed --model opus > /dev/null 2>&1
 $B/hub succeed --stage stage-a --fallback > $R/fb.out 2>&1; check $? 0 "fallback: exit 0"

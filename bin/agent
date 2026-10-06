@@ -6,9 +6,11 @@ Long work (a merge steward, a release rehearsal, anything > 1 h) runs as a detac
 session instead of a hub sub-agent: it survives the hub's handoff, and any hub can talk to it.
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
-              [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--permission-mode MODE]
+              [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
+              [--permission-mode MODE]
   agent status [R] [--stage S] [--all]
-  agent send R "msg" [--stage S]
+  agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
+                                                      is the message, a word starting with `-` included)
   agent stop R [--stage S]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
@@ -28,7 +30,11 @@ resolves it to the latest model of that family; Claude Code 2.1.287 is the minim
 resolves it to an older model), and spawn warns about it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
 and agent-top. $AGENT_HUB_MODEL_MAP pins aliases to ids ("sonnet=claude-sonnet-x-y,opus=…") — an opt-in, since a pin
 goes stale with the next model release.
-Effort: --effort, else $AGENT_HUB_DEFAULT_EFFORT, else high; haiku gets no effort flag.
+Effort: --effort, else the model's entry in $AGENT_HUB_EFFORT_DEFAULTS, else $AGENT_HUB_DEFAULT_EFFORT, else high;
+haiku gets no effort flag. An effort above the model's default, or a model of $AGENT_HUB_REASON_MODELS, needs
+--reason "…" (warning, or refusal with AGENT_HUB_REASON_POLICY=refuse); the reason goes into the journal start line
+and meta.json (bin/spawn_policy.py). The title registered for the agent is `<role> — <the brief's first heading,
+without a leading "Brief:"> (<stage>)`, unless --title says otherwise.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
 (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
@@ -46,16 +52,19 @@ An existing branch or worktree is used as it is (--base is ignored with a note).
 the base. status and stop name the worktree; nothing removes it — `git worktree remove` once the branch is
 merged. Two agents in one checkout overwrite each other's files: give each writer its own worktree.
 status: alive or not, the model, age of the last log event, model turns (of the last run, with the total once the
-agent was resumed), the last assistant text line.
+agent was resumed), the context size (ctx, the last model call's input), the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
 the session is resumed detached with `claude --resume <id> -p` (the message on stdin) in the same cwd, the unread
 messages replayed first (an agent that ended its turn before reading its inbox loses nothing;
 agent status flags them). spawn and resume succeed only once the run writes its init event
 (120 s, $AGENT_INIT_TIMEOUT); a CLI that rejects its flags is killed and reported, and no role is recorded.
+A resume is refused while the agent's context is above $AGENT_HUB_RESUME_MAX_CTX (default 250k tokens): spawn a fresh
+agent from a handoff file; --resume-anyway overrides.
 stop: SIGTERM to the process group (SIGKILL after 10 s), role retired.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
-spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: `ask plan`.
+spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
+the owner first, `ask plan` is recorded only after the owner's yes.
 Exit: 0 ok, 1 failure / unknown agent, 2 usage.
 """
 from __future__ import annotations
@@ -76,6 +85,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
+import spawn_policy  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -101,8 +111,8 @@ def plan_warning(stage: str) -> str | None:
             return None
     except Exception:
         return None
-    return (f"stage {stage} has no owner-approved plan on record: after the owner's yes, "
-            f"`ask plan --stage {stage} \"<the plan in one line>\"`; spawning anyway")
+    return (f"stage {stage} has no owner-approved plan on record: show the plan to the owner; record `ask plan` "
+            f"only after the owner's yes (`ask plan --stage {stage} \"<the plan in one line>\"`); spawning anyway")
 
 
 ALIASES = hc.MODEL_ALIASES
@@ -490,12 +500,18 @@ def cmd_spawn(a) -> int:
     if problem:
         raise hc.UsageError(f"--model: {problem}")
     given, a.model = given_model, mmap.get(given_model, given_model)
-    default_effort = hc.setting("AGENT_HUB_DEFAULT_EFFORT", cwd=cwd) or "high"
     allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
+    model_names = [n for n in dict.fromkeys([given or "CLI default", a.model or "CLI default"])]
+    default_effort = spawn_policy.default_effort(model_names, allowed_efforts, cwd)
     effective_effort = a.effort or default_effort
     if effective_effort not in allowed_efforts:
         raise hc.UsageError(f"effort {effective_effort!r} ({engine}): one of {allowed_efforts}")
     effort = None if engine == "claude" and "haiku" in a.model else effective_effort
+    reason = spawn_policy.clean_reason(a.reason)
+    above_default = spawn_policy.check_reason(model_names, effort, default_effort, allowed_efforts, reason, cwd,
+                                              model_unknown=engine == "codex" and not a.model)
+    if above_default:
+        hc.warn(above_default)
     # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
     import subagent_rules  # noqa: E402
     denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
@@ -564,9 +580,12 @@ def cmd_spawn(a) -> int:
     report = hc.work_dir(stage) / f"{tag.replace('/', '-')}-REPORT.md"
     meta = {"role": a.role, "tag": tag, "stage": stage, "session_id": str(uuid.uuid4()) if engine == "claude" else "", "model": a.model,
             "effort": effort, "permission_mode": pmode, "cwd": str(cwd), "dir": str(d), "brief": str(brief),
-            "title": a.title or f"agent {a.role} ({stage})", "report": str(report),
+            "title": a.title or spawn_policy.brief_title(a.role, stage, brief.read_text(encoding="utf-8")),
+            "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
     meta["engine"] = engine
+    if reason:
+        meta["reason"] = reason
     if engine == "codex":
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
         if policy:
@@ -594,20 +613,23 @@ def cmd_spawn(a) -> int:
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
-                               + (f", worktree {wt['path']} ({wt['branch']})" if wt else ""))
+                               + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
+                               + (f", reason: {reason}" if reason else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
     return 0
 
 
 def read_log(path: Path) -> dict:
     """What the log of every run of the agent says: model turns (all runs, and the last run's), the last assistant
-    text, the last result, whether a run started after it."""
-    turns, run_turns, last_text, results, last_type = set(), set(), "", [], ""
+    text, the last result, whether a run started after it, the context size (the last model call's input: input plus
+    cache tokens of the last main-thread assistant message — what agent-top shows as ctx; 0 when the log has none)."""
+    turns, run_turns, last_text, results, last_type, ctx = set(), set(), "", [], "", 0
     started_after_result = False
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return {"turns": 0, "run_turns": 0, "last_text": "", "result": None, "events": 0, "running_after_result": False}
+        return {"turns": 0, "run_turns": 0, "last_text": "", "result": None, "events": 0, "running_after_result": False,
+                "ctx": 0}
     n = 0
     with fh:
         for raw in fh:
@@ -638,6 +660,10 @@ def read_log(path: Path) -> dict:
                     run_turns = set()
                 elif t == "assistant":
                     msg = ev.get("message") or {}
+                    usage = msg.get("usage")
+                    if isinstance(usage, dict) and not ev.get("parent_tool_use_id"):  # a sub-agent's call is not this context
+                        ctx = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens",
+                                                                   "cache_creation_input_tokens")) or ctx
                     turns.add(msg.get("id") or n)
                     run_turns.add(msg.get("id") or n)
                     for block in msg.get("content") or []:
@@ -649,7 +675,7 @@ def read_log(path: Path) -> dict:
                 last_type = t
     return {"turns": len(turns), "run_turns": len(run_turns), "last_text": last_text,
             "result": results[-1] if results else None, "events": n, "running_after_result": started_after_result,
-            "last_type": last_type}
+            "last_type": last_type, "ctx": ctx}
 
 
 def turns_text(info: dict) -> str:
@@ -841,7 +867,8 @@ def status_line(stage: str, role: str) -> str:
     text = info["last_text"][:220] + ("…" if len(info["last_text"]) > 220 else "")
     wt = meta.get("worktree")
     return (f"{role} [{meta['tag']}] {model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
-            f"turns {turns_text(info)}; last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
+            f"turns {turns_text(info)}; " + (f"ctx {spawn_policy.fmt_tokens(info['ctx'])}; " if info["ctx"] else "")
+            + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
 
 
 def cmd_status(a) -> int:
@@ -876,13 +903,19 @@ def _send_locked(stage: str, a, msg: str) -> int:
     meta = load_meta(stage, a.role)
     if a.role not in hc.roles_load(stage)["roles"]:
         raise hc.Failure(f"agent {a.role} was stopped (role retired); start a new one with agent spawn")
-    if not alive(meta) and meta.get("engine", "claude") == "claude":
-        bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
+    live = alive(meta)  # one reading: the checks and the branch below must agree on it
+    if not live:
+        if meta.get("engine", "claude") == "claude":
+            bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
+        if not a.resume_anyway:
+            limit, ctx = spawn_policy.resume_max_ctx(meta["cwd"]), read_log(Path(meta["dir"]) / "log.jsonl")["ctx"]
+            if limit and ctx > limit:  # refused before the message is queued
+                raise hc.Failure(spawn_policy.resume_refusal(a.role, ctx, limit))
     t = hc.now()
     if msg:
         with open(Path(meta["dir"]) / "inbox.md", "a", encoding="utf-8") as fh:
             fh.write(f"- {t:%Y-%m-%d %H:%M} {msg}\n")
-    if alive(meta):
+    if live:
         if not msg:
             raise hc.UsageError("the agent is alive — a message text is required")
         log = Path(meta["dir"]) / "log.jsonl"
@@ -1018,6 +1051,36 @@ def cmd_exit_note(a) -> int:
     return 0
 
 
+def parse_send(argv: list) -> argparse.Namespace:
+    """`agent send [--stage S] [--resume-anyway] R text… [--resume-anyway]`: the options may stand anywhere before a `--`;
+    the first other word is the role and everything after it is the message, a word that starts with `-` included
+    (argparse would take it for an option, and older versions stop the text at an option). After `--` every word is
+    the role or the text."""
+    stage, resume_anyway, words, rest = None, False, [], list(argv[1:])
+    while rest:
+        w = rest.pop(0)
+        if w == "--":
+            words += rest
+            break
+        if w == "--resume-anyway":
+            resume_anyway = True
+        elif w == "--stage" or w.startswith("--stage="):
+            if w == "--stage":
+                if not rest:
+                    raise hc.UsageError("--stage needs a value")
+                w = "--stage=" + rest.pop(0)
+            stage = w.split("=", 1)[1]
+            if stage.startswith("-"):
+                raise hc.UsageError(f"--stage needs a stage name, got {stage!r}")
+        elif w.startswith("-") and w != "-" and not words and not w.startswith("- "):
+            raise hc.UsageError(f"agent send: unknown option {w!r} (a message goes after the role)")
+        else:
+            words.append(w)
+    if not words:
+        raise hc.UsageError("agent send: the role is required")
+    return argparse.Namespace(cmd="send", role=words[0], text=words[1:], stage=stage, resume_anyway=resume_anyway)
+
+
 def main(argv: list) -> int:
     prog = os.path.basename(sys.argv[0])
     sub_from_name = {"agent-spawn": "spawn", "agent-status": "status", "agent-send": "send", "agent-stop": "stop"}
@@ -1034,7 +1097,7 @@ def main(argv: list) -> int:
     s.add_argument("--sandbox-policy", help="Codex rollout sandbox JSON; preserve supported roots/network/temp restrictions")
     s.add_argument("--model", help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
                    "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
-    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_DEFAULT_EFFORT or high; ignored for haiku")
+    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high; ignored for haiku")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
@@ -1043,7 +1106,9 @@ def main(argv: list) -> int:
     s.add_argument("--base", metavar="REF", help="with --worktree: start a new branch from REF (default: origin's default "
                    "branch after a fetch; --base HEAD is the checked-out commit of --cwd)")
     s.add_argument("--tag")
-    s.add_argument("--title")
+    s.add_argument("--title", help="default: <role> — <the brief's first heading> (<stage>)")
+    s.add_argument("--reason", help="why the work needs an effort or a model above the default "
+                   "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS); journaled and kept in meta.json")
     st = sub.add_parser("status", help="alive or not, model, last event age, turns")
     st.add_argument("role", nargs="?")
     st.add_argument("--stage")
@@ -1052,6 +1117,8 @@ def main(argv: list) -> int:
     se.add_argument("role")
     se.add_argument("text", nargs="*", help="text; without text, resume with the unread inbox messages")
     se.add_argument("--stage")
+    se.add_argument("--resume-anyway", action="store_true",
+                    help="resume a stopped agent although its context is above AGENT_HUB_RESUME_MAX_CTX")
     sp = sub.add_parser("stop", help="stop the agent and retire its role")
     sp.add_argument("role")
     sp.add_argument("--stage")
@@ -1059,7 +1126,8 @@ def main(argv: list) -> int:
     en.add_argument("role")
     en.add_argument("--stage")
     en.add_argument("--code", type=int, default=0)
-    a = p.parse_args(argv)
+    a = parse_send(argv) if argv[:1] == ["send"] and not {"-h", "--help"} & set(argv[:argv.index("--")] if "--" in argv else argv) \
+        else p.parse_args(argv)
     return {"spawn": cmd_spawn, "status": cmd_status, "send": cmd_send, "stop": cmd_stop,
             "exit-note": cmd_exit_note}[a.cmd](a)
 
