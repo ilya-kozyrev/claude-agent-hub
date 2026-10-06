@@ -48,11 +48,11 @@ $B/hub handoff --stage stage-a --finish --handoff $C/HANDOFF-hub-stage-a-NOPE.md
 $B/hub handoff --stage stage-a --handoff $C/HANDOFF-hub-stage-a-FILLED.md > $R/f6.out 2>&1; check $? 2 "negative: --handoff without --finish is refused"
 
 # 5. hub succeed makes the same check (a dry run is enough: the check comes before any plan)
-$B/hub succeed --stage stage-a --handoff $C/HANDOFF-hub-stage-a-DRAFT.md --model opus --dry-run --cwd $R > $R/s1.out 2> $R/s1.err; check $? 2 "succeed refuses the raw draft (exit 2)"
+$B/hub succeed --stage stage-a --handoff $C/HANDOFF-hub-stage-a-DRAFT.md --model opus --effort high --dry-run --cwd $R > $R/s1.out 2> $R/s1.err; check $? 2 "succeed refuses the raw draft (exit 2)"
 grep -q 'still hold [0-9]* TODO line' $R/s1.err; check $? 0 "…with the same message"
-$B/hub succeed --stage stage-a --handoff $C/HANDOFF-hub-stage-a-DRAFT.md --allow-todo --model opus --dry-run --cwd $R > $R/s2.out 2> $R/s2.err; check $? 0 "succeed --allow-todo goes on"
+$B/hub succeed --stage stage-a --handoff $C/HANDOFF-hub-stage-a-DRAFT.md --allow-todo --model opus --effort high --dry-run --cwd $R > $R/s2.out 2> $R/s2.err; check $? 0 "succeed --allow-todo goes on"
 grep -q '^\[plan\] auto-handoff' $R/s2.out; check $? 0 "…to the plan"
-$B/hub succeed --stage stage-a --handoff $C/HANDOFF-hub-stage-a-FILLED.md --model opus --dry-run --cwd $R > $R/s3.out 2> $R/s3.err; check $? 0 "positive control: the filled handoff passes succeed"
+$B/hub succeed --stage stage-a --handoff $C/HANDOFF-hub-stage-a-FILLED.md --model opus --effort high --dry-run --cwd $R > $R/s3.out 2> $R/s3.err; check $? 0 "positive control: the filled handoff passes succeed"
 
 # 6. takeover warns, once, in the output and the digest, and still takes over
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/HANDOFF-hub-stage-a-DRAFT.md --dry-run > $R/t1.out 2>&1; check $? 0 "takeover (dry run) from the raw draft still works"
