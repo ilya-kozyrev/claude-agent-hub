@@ -30,7 +30,8 @@ $AGENT_HUB_STATE_DIR, else <hub home>/.state; bin/topcache.py), so a new `--json
 reads only what the logs gained since the last one; AGENT_TOP_CACHE=0 reads everything afresh and writes no cache.
 Files of agents are never opened for writing; that cache is the only file agent-top writes.
 Cost: a Claude agent's is the latest cumulative `total_cost_usd` of each of its sessions, summed over sessions; a Codex
-agent's tokens are the latest cumulative count of each of its threads. `spend` (--json, and a line in --once) is the
+agent's tokens are the latest cumulative count of each of its threads (a count seen before any init is its own bucket and
+makes the total `partial`). `spend` (--json, and a line in --once) is the
 stage's agents' dollars against its hub's: the hub's are logged when it is a headless agent, else estimated from its
 session transcript's tokens at the per-model price the agents' results show (≈; a hub without a Claude transcript has none).
 Env: AGENT_HUB_HOME (hub home; `hub home` shows which and why), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
@@ -426,12 +427,6 @@ class LogState:
             self.codex_run_turns = 0
             if isinstance(ev.get("session_id"), str):
                 self.codex_sid = ev["session_id"]
-                if "" in self.usage_by_sid:
-                    # a count read before any init (a log scanned from its tail) is the latest of the thread that follows it:
-                    # filed under it, a later count of that thread replaces it instead of adding to it
-                    self.usage_by_sid.setdefault(self.codex_sid, self.usage_by_sid[""])
-                    del self.usage_by_sid[""]
-                    self._sum_usage()
         if typ == "result" and not ev.get("result"):
             errors = ev.get("errors") or []
             detail = "; ".join(str(err.get("message") or err) if isinstance(err, dict) else str(err)
@@ -443,7 +438,10 @@ class LogState:
     def _sum_usage(self) -> None:
         counts = list(self.usage_by_sid.values())
         self.usage_tokens = {key: sum(num(u.get(key)) for u in counts) for key in dict.fromkeys(k for u in counts for k in u)}
-        self.usage_scope = "session" if len(self.usage_by_sid) == 1 else "sessions"
+        # A count read before any init (a log scanned from its tail) belongs to an unknown thread, kept in its own bucket
+        # (key ""): it may be the thread that follows or an older one, so the total is marked partial, not guessed.
+        self.usage_scope = ("partial" if "" in self.usage_by_sid and len(self.usage_by_sid) > 1
+                            else "session" if len(self.usage_by_sid) == 1 else "sessions")
 
     def _legacy_feed(self, pos, line, typ):
         if typ == b"assistant":
@@ -548,8 +546,7 @@ TOKEN_WEIGHTS = (("inputTokens", "input_tokens", 1.0), ("cacheCreationInputToken
                  ("cacheReadInputTokens", "cache_read_input_tokens", 0.1), ("outputTokens", "output_tokens", 5.0))
 
 
-LINE_CHUNK = 256 * 1024           # a transcript line longer than this is read in pieces, keeping only its ends
-LONG_HEAD, LONG_TAIL = 4096, 16384
+LINE_MAX = 16 * 1024 * 1024       # a transcript line is read whole up to this; a longer one (a huge tool result) is skipped
 
 
 def weighted_tokens(usage: dict, snake: bool) -> float:
@@ -567,11 +564,11 @@ class Transcript:
         self.ino, self.offset, self.size = None, 0, 0
         self.by_model = {}                # model -> usage of the messages already closed {"input_tokens": ..}
         self.cur_id, self.cur_model, self.cur = None, None, {}
-        self.long = None                  # a line over LINE_CHUNK in progress: [its first LONG_HEAD bytes, its last LONG_TAIL so far] as latin-1 text
+        self.skipped = 0                  # lines over LINE_MAX left unread: the totals miss their usage
 
     @property
     def complete(self) -> bool:
-        return self.offset >= self.size
+        return self.offset >= self.size and not self.skipped
 
     def totals(self) -> dict:
         out = {m: dict(u) for m, u in self.by_model.items()}
@@ -603,23 +600,9 @@ class Transcript:
         if isinstance(msg, dict) and ev.get("type") == "assistant" and not ev.get("parent_tool_use_id"):
             self._apply(msg.get("id"), msg.get("model"), msg.get("usage"))
 
-    def _long_line(self, head: bytes, tail: bytes) -> None:
-        """A line over LINE_CHUNK is never held whole (a big tool result or file write): its usage is read from its end
-        (the message's usage follows its content) and its id and model from its start."""
-        if not re.search(rb'"type"\s*:\s*"assistant"', head + tail) or re.search(rb'"parent_tool_use_id"\s*:\s*"', head + tail):
-            return
-        mid, model = re.search(rb'"id"\s*:\s*"(msg_[^"]+)"', head), re.search(rb'"model"\s*:\s*"([^"]+)"', head)
-        text, usage = tail.decode("utf-8", "replace"), None
-        at = text.rfind('"usage"')
-        if at >= 0 and (colon := text.find(":", at)) >= 0:
-            rest = text[colon + 1:]
-            try:
-                usage = json.JSONDecoder().raw_decode(text, colon + 1 + len(rest) - len(rest.lstrip()))[0]
-            except ValueError:
-                usage = None
-        self._apply(mid.group(1).decode() if mid else None, model.group(1).decode("utf-8", "replace") if model else None, usage)
-
     def update(self, budget: int) -> None:
+        """Reads whole lines from the offset until `budget` bytes are passed. The offset never moves past an unterminated
+        line (it is still being written); a terminated line over LINE_MAX is skipped and counted in `skipped`."""
         try:
             st = os.stat(self.path)
         except OSError:
@@ -633,23 +616,25 @@ class Transcript:
                 fh.seek(self.offset)
                 end = self.offset + budget
                 while self.offset < end:
-                    chunk = fh.readline(LINE_CHUNK)
-                    if not chunk:
+                    line = fh.readline(LINE_MAX + 1)
+                    if not line:
                         break
-                    whole = chunk.endswith(b"\n")
-                    if self.long is None and whole:
-                        self.offset += len(chunk)
-                        self._line(chunk)
-                    elif self.long is None and len(chunk) < LINE_CHUNK:
-                        break                   # a line still being written: wait for the rest
-                    else:                       # a line over LINE_CHUNK: keep its start and its end, not the line
-                        self.offset += len(chunk)
-                        head, tail = (self.long[0].encode("latin-1"), self.long[1].encode("latin-1")) if self.long else (chunk[:LONG_HEAD], b"")
-                        tail = (tail + chunk)[-LONG_TAIL:]
-                        self.long = [head.decode("latin-1"), tail.decode("latin-1")]    # str: the disk cache holds JSON
-                        if whole:
-                            self._long_line(head, tail)
-                            self.long = None
+                    if len(line) > LINE_MAX and not line.endswith(b"\n"):
+                        n = len(line)
+                        while True:                     # the rest of the oversize line, a piece at a time, kept nowhere
+                            more = fh.readline(1 << 20)
+                            n += len(more)
+                            if not more or more.endswith(b"\n"):
+                                break
+                        if not more:
+                            break                       # unterminated
+                        self.offset += n
+                        self.skipped += 1
+                    elif line.endswith(b"\n"):
+                        self.offset += len(line)
+                        self._line(line)
+                    else:
+                        break
         except OSError:
             return
 
@@ -1417,7 +1402,7 @@ def card_rows(a: dict, width: int) -> list:
     rows += wrap_rows(" · ".join(bits), width, "dim", " ", "   ")
     if a.get("engine") == "codex":
         usage = a.get("usage_tokens") or {}
-        rows += wrap_rows(f"Codex: user turns · input usage {fmt_k(usage.get('input_tokens'))} across model calls"
+        rows += wrap_rows(f"Codex: user turns · input usage {'≈' if a.get('usage_scope') == 'partial' else ''}{fmt_k(usage.get('input_tokens'))} across model calls"
                           + (" · ctx is the last model input" if a.get("ctx_source") else " · context size unavailable"),
                           width, "dim", " ", "   ", 3)
     if a["title"]:

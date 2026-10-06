@@ -77,8 +77,10 @@ agent('cdx2', 'codex', THREAD, [
     {'type': 'thread.started', 'thread_id': THREAD}, completed(2500, 2000, 25),
     {'type': 'thread.started', 'thread_id': THREAD2}, completed(400, 300, 4)])
 
-# A count read before any init (a log scanned from its tail) is the same thread's older count: not added to its later one.
+# A count read before any init (a log scanned from its tail) is of an unknown thread: it stays its own bucket, is in the
+# total and marks it partial, whichever thread follows (the same one or another).
 agent('cdx3', 'codex', THREAD, [completed(1000, 800, 10), {'type': 'thread.started', 'thread_id': THREAD}, completed(2500, 2000, 25)])
+agent('cdx4', 'codex', THREAD2, [completed(1000, 800, 10), {'type': 'thread.started', 'thread_id': THREAD2}, completed(400, 300, 4)])
 
 # 3. The hub wrote yesterday and today (the tag is the same): its age is today's line, not yesterday's last one.
 now = dt.datetime.now(dt.timezone.utc)
@@ -112,7 +114,10 @@ assert agents['priced']['cost_usd'] == 5.0
 assert agents['cdx']['usage_tokens']['input_tokens'] == 2500, agents['cdx']['usage_tokens']   # the old sum said 3500
 assert agents['cdx']['usage_tokens']['output_tokens'] == 25 and agents['cdx']['usage_scope'] == 'session'
 assert agents['cdx2']['usage_tokens']['input_tokens'] == 2900 and agents['cdx2']['usage_scope'] == 'sessions'
-assert agents['cdx3']['usage_tokens']['input_tokens'] == 2500 and agents['cdx3']['usage_scope'] == 'session', agents['cdx3']['usage_tokens']
+assert agents['cdx3']['usage_tokens']['input_tokens'] == 3500 and agents['cdx3']['usage_scope'] == 'partial', agents['cdx3']['usage_tokens']
+assert agents['cdx4']['usage_tokens']['input_tokens'] == 1400 and agents['cdx4']['usage_scope'] == 'partial', agents['cdx4']['usage_tokens']
+assert 'input usage ≈4k' in subprocess.run([str(binpath / 'agent-top'), '--once', '--all', '--stage', 'stage-a', '--agent', 'cdx3', '--width', '160'],
+                                            capture_output=True, text=True, check=True).stdout
 assert agents['nosid']['cost_usd'] == 1.5, agents['nosid']['cost_usd']       # the shared '' key said 0.5
 assert agents['nosid2']['cost_usd'] == 1.5, agents['nosid2']['cost_usd']
 
@@ -182,35 +187,55 @@ assert by_filter[False][1] == ['recent'] and by_filter[True][1] == ['old', 'rece
 assert by_filter[False][0] == by_filter[True][0], by_filter
 assert by_filter[True][0]['agents_usd'] == 4.0 and by_filter[True][0]['hub_usd'] == 1.0 and by_filter[True][0]['hub_share'] == 0.2
 
-# A transcript line of any size is read in pieces: only the start and the end of a long line are kept (its usage follows
-# its content), a read stops near its byte budget, and the state it leaves mid-line is what the disk cache can hold.
+# A transcript line is read whole up to LINE_MAX, whatever the order of its fields: the same record, short and with 300 KB
+# of content before or after its usage, gives the same totals. A line over the cap is skipped and the transcript is
+# marked incomplete; an unterminated line is never passed: the offset stays before it and the transcript is incomplete.
 sys.path.insert(0, str(binpath))
-import topcache
 loader = importlib.machinery.SourceFileLoader('agent_top', str(binpath / 'agent-top'))
 top = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
 loader.exec_module(top)
-top.LINE_CHUNK = 4096
-big = {'type': 'assistant', 'parentUuid': None, 'message': {'id': 'msg_big', 'model': OPUS, 'role': 'assistant', 'content': [
-    {'type': 'tool_use', 'name': 'Write', 'input': {'content': 'z' * 60_000 + ' "usage": {"input_tokens": 999999999}'}}],
-    'usage': {'input_tokens': 5, 'output_tokens': 7, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 13,
-              'cache_creation': {'ephemeral_5m_input_tokens': 13}}}}
-tpath = root / 'long.jsonl'
-with open(tpath, 'w') as fh:
-    fh.write(json.dumps(line('s1', 1, 0)) + '\n')
-    fh.write(json.dumps(big) + '\n')
-    fh.write(json.dumps(line('s2', 100, 0)) + '\n')
+use = {'input_tokens': 5, 'output_tokens': 7, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 13}
+want = {'input_tokens': 5, 'output_tokens': 7, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 13}
+for name, content in (('short', 'x'), ('long', 'z' * 300_000 + ' "usage": {"input_tokens": 999999999}')):
+    for order in (('id', 'model', 'usage', 'content'), ('id', 'model', 'content', 'usage')):
+        parts = {'id': 'msg_a', 'model': OPUS, 'usage': use, 'content': [{'type': 'text', 'text': content}]}
+        record = {'type': 'assistant', 'message': {k: parts[k] for k in order}}
+        tpath = root / f'order-{name}-{"-".join(order)}.jsonl'
+        tpath.write_text(json.dumps(record) + '\n')
+        tr = top.Transcript(tpath)
+        tr.update(10**9)
+        assert tr.complete and tr.totals() == {OPUS: want}, (name, order, tr.totals())
+
+top.LINE_MAX = 4096
+tpath = root / 'cap.jsonl'
+tpath.write_text(json.dumps(line('s1', 1, 0)) + '\n' + json.dumps({'type': 'assistant', 'message': {
+    'id': 'msg_big', 'model': OPUS, 'usage': use, 'content': [{'type': 'text', 'text': 'z' * 50_000}]}}) + '\n'
+    + json.dumps(line('s2', 100, 0)) + '\n')
 tr = top.Transcript(tpath)
-tr.update(10_000)                                    # a small budget: stops inside the 60 KB line, not after it
-assert 10_000 <= tr.offset <= 10_000 + top.LINE_CHUNK and not tr.complete, tr.offset
-topcache.dumps(topcache.state_of(tr))                # mid-line state is cacheable
-mid = top.Transcript(tpath)
-topcache.load_into(mid, json.loads(json.dumps(topcache.state_of(tr))))
-for reader in (tr, mid):
-    for _ in range(50):
-        reader.update(10_000)
-    assert reader.complete and reader.long is None
-    t = reader.totals()[OPUS]
-    assert t == {'input_tokens': 106, 'output_tokens': 7, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 13}, t
+tr.update(10**9)
+assert tr.skipped == 1 and not tr.complete, (tr.skipped, tr.complete)                 # the offset is at the end: the skip is what says it
+assert tr.offset == tr.size and tr.totals()[OPUS]['input_tokens'] == 101, tr.totals()   # the lines around it still count
+tail = root / 'torn.jsonl'
+whole = json.dumps(line('t1', 1, 0)) + '\n'
+tail.write_text(whole + json.dumps(line('t2', 100, 0))[:-5])                              # the last line is still being written
+tr = top.Transcript(tail)
+tr.update(10**9)
+assert tr.offset == len(whole) and not tr.complete and tr.totals()[OPUS]['input_tokens'] == 1, (tr.offset, tr.totals())
+tail.write_text(whole + json.dumps(line('t2', 100, 0)) + '\n')
+tr.update(10**9)
+assert tr.complete and tr.totals()[OPUS]['input_tokens'] == 101
+# an unterminated line over the cap is not passed either, and a long one in progress is not "read"
+huge = root / 'huge.jsonl'
+huge.write_text(whole + 'y' * 20_000)
+tr = top.Transcript(huge)
+tr.update(10**9)
+assert tr.offset == len(whole) and not tr.complete and tr.skipped == 0, (tr.offset, tr.skipped)
+# a small budget stops between lines, and the rest is read by the next calls
+tr = top.Transcript(tpath)
+tr.update(1)
+assert 0 < tr.offset < tr.size and not tr.complete
+tr.update(10**9)
+assert tr.offset == tr.size
 print('PASS honest agent-top: resumed Claude cost, resumed Codex tokens, two-day journal age, the hub\'s spend share')
 PY
 check $? 0 "honest agent-top fixtures"

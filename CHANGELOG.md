@@ -17,8 +17,8 @@
   `total_cost_usd` (also across `--resume`: 64 multi-result logs on the owner's home never step back, none changes
   session id), and agent-top had added every result up — $72.22 shown against $3.61 real. It now takes each session's
   latest total. A Codex `turn.completed` carries the thread's cumulative count, again logged after each resume; the
-  count of each thread is now the latest one (`usage_scope` is `session`, or `sessions` for several threads; it was
-  `logged_runs`). The hub's "journal" age is its newest line across yesterday's and today's journal (today's was
+  count of each thread is now the latest one (`usage_scope` is `session`, `sessions` for several threads, or `partial` — shown as ≈ — when a count
+  read before any `init` of a log scanned from its tail sits beside known threads; it was `logged_runs`). The hub's "journal" age is its newest line across yesterday's and today's journal (today's was
   shadowed by yesterday's when the tag wrote on both days). `agent-top --json` carries `spend` per stage — the agents'
   logged dollars (every agent folder of the stage, whatever the list hides), the hub's dollars (logged for a headless hub, else estimated from the tokens of its transcript at
   the per-model price the agents' results show, flagged `hub_basis: "estimate"`), and `hub_share`; `--once` prints it.
