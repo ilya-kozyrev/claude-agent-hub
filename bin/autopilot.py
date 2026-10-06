@@ -104,6 +104,11 @@ def configured_model() -> Optional[str]:
     return (hc.setting("AGENT_HUB_SUCCESSOR_MODEL") or "").strip() or None
 
 
+# The successor continues the hub's own work at the hub's own model and effort; `agent spawn` asks for a reason when
+# either is above the default (AGENT_HUB_REASON_POLICY=refuse would otherwise stop the hand-over chain).
+SUCCESSOR_REASON = "hub successor: keeps the model and effort of the hub it replaces"
+
+
 def configured_effort() -> Optional[str]:
     """The Claude successor's effort from the setting; None = unset."""
     raw = (hc.setting("AGENT_HUB_SUCCESSOR_EFFORT") or "").strip()
@@ -648,7 +653,8 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         role = f"hub-{self.succ}"
         brief = self.brief(why)
         argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--stage", self.stage, "--role", role, "--tag", role,
-                "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title]
+                "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title,
+                "--reason", SUCCESSOR_REASON]
         if self.effort:
             argv += ["--effort", self.effort]
         if self.root:
@@ -718,7 +724,7 @@ The owner may be away; they reach you through `ask` and `agent send hub-{self.su
         role = f"hub-{self.succ}"
         argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--engine", "codex", "--stage", self.stage,
                 "--role", role, "--tag", role, "--cwd", str(self.cwd), "--brief", str(brief), "--title", self.title,
-                "--sandbox-policy", json.dumps(self.sandbox_policy, separators=(",", ":"))]
+                "--sandbox-policy", json.dumps(self.sandbox_policy, separators=(",", ":")), "--reason", SUCCESSOR_REASON]
         if self.model:
             argv += ["--model", self.model]
         if self.effort:
