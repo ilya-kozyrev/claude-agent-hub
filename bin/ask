@@ -19,14 +19,21 @@ One file per stage, readable by a human and by this script. Each entry is a bloc
 normally decides ("decided by default — the owner may contest"); `P-…` is a plan the owner approved
 (status `approved`: never unresolved, found by `search`; `agent spawn` warns while its stage has none).
 An entry leaves the unresolved list only with the owner's answer (`close`) or the owner withdrawing it
-(`withdraw`).
+(`withdraw`). `A-…` is a standing permission (`ask allow`; docs/standing-permissions.md): the owner's words that a
+class of action needs no further question. It is read from every stage's register; `ask add` refuses a question a
+permission covers (exit 3) unless `--override "why"` is given.
 
 The script edits entries in place (only the lines it owns) and appends new ones, so hand edits
 elsewhere in the file survive. Writes take an flock on <stage>/.questions.lock and replace the
 file atomically (temp file + os.replace).
 
 Usage:
-  ask add --stage stage-a --blocks "…" --default "…" --due 2026-09-26T10:00 [--by …] [--source …] [--at HH:MM] "question"
+  ask add --stage stage-a --blocks "…" --default "…" --due 2026-09-26T10:00 [--by …] [--source …] [--at HH:MM]
+          [--repo R] [--class "merge, release"] [--override "why the permission does not cover it"] "question"
+  ask allow --stage stage-a --words "the owner's words" [--scope repo|stage|all] [--repo R] [--class "k1, k2"]
+            [--until YYYY-MM-DD[THH:MM]] [--by …] [--source …] [--at HH:MM] "the class of action in plain words"
+  ask allow --list [--repo R] [--stage stage-a] [--all]    (permissions in force for a repository / a stage)
+  ask revoke A-A-001 [--reason "…"]
   ask decided --stage stage-a [--by …] [--source …] [--alternative "…"] [--at HH:MM] "decision taken"
   ask plan --stage stage-a [--by …] [--source …] [--at HH:MM] "the owner-approved plan in one line"
   ask close Q-A-001 --answer "…" [--at HH:MM] [--date YYYY-MM-DD]
@@ -35,7 +42,7 @@ Usage:
   ask done Q-A-001 --evidence "…" [--at HH:MM]        (the owner's answer was executed; repeat to append)
   ask list [--stage stage-a] [--open | --overdue | --all | --pending [--since YYYY-MM-DD]]
   ask search word [word …] [--stage stage-a] [--all]   (all words, any status, every stage by default)
-  ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision)
+  ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision / permission)
   ask summary
 add / decided / plan / close / done stamp the time themselves (hub time zone, `--at` overrides) and print a ready
 journal line (add / decided / plan print the new id first; `--print-id` prints the id alone, for `ID=$(ask add …)`). Env: AGENT_HUB_HOME (the hub home; `hub home` shows which), AGENT_HUB_TZ, ASK_BY (default author).
@@ -49,6 +56,7 @@ import os
 import re
 import sys
 import tempfile
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -57,7 +65,7 @@ import hubcore as hc  # noqa: E402
 
 ROOT = hc.root()
 FILENAME = "questions.md"
-HEADER_RE = re.compile(r"^## ([QDP])-([A-Z0-9]+)-(\d{3,})\s+—\s+(.*)$")
+HEADER_RE = re.compile(r"^## ([QDPA])-([A-Z0-9]+)-(\d{3,})\s+—\s+(.*)$")
 FIELD_RE = re.compile(r"^- ([a-z][a-z-]*):\s?(.*)$")
 PREFIX_RE = re.compile(r"<!--\s*ask:v1\s+prefix=([A-Z0-9]+)\s*-->")
 NO_SET = "not set"
@@ -323,6 +331,20 @@ def cmd_add(args, kind_letter: str) -> int:
                 f"- blocks: {one_line(args.blocks) or NO_SET}",
                 f"- default: {one_line(args.default) or NO_SET}",
             ]
+            lines += [f"- {k}: {v}" for k, v in args.extra_fields]
+        elif kind_letter == "A":
+            lines += [
+                "- kind: allow",
+                "- status: allowed",
+                f"- scope: {args.scope}",
+                f"- repo: {args.repo_name or NO_SET}",
+                f"- repo-id: {args.repo_id or NO_SET}",
+                f"- class: {', '.join(keywords(args.klass)) or NO_SET}",
+                f"- words: {one_line(args.words)}",
+                f"- asked: {when.stamp}",
+                f"- by: {one_line(args.by)}",
+                f"- until: {one_line(args.until) or NO_SET}",
+            ]
         elif kind_letter == "P":
             lines += [
                 "- kind: plan",
@@ -348,6 +370,470 @@ def cmd_add(args, kind_letter: str) -> int:
     if not args.print_id:
         print(journal_line(new_id, "recorded", when, args.text))
     return 0
+
+
+# ---------------------------------------------------------------- standing permissions (A-…)
+
+COVERED_EXIT = 3
+SCOPES = ("repo", "stage", "all")
+# Classes a permission covers only when its own class names them (a keyword equal to the class or starting with one of
+# its stems); a stem found in a question's text or class makes that class part of what must be covered. Override:
+# AGENT_HUB_SENSITIVE_CLASSES in the hub home's config.json, {"class": ["stem", …]}.
+SENSITIVE_DEFAULT = {
+    "money": ["money", "payment", "billing", "invoice", "payroll", "salary", "refund", "деньг", "денеж", "оплат",
+              "платеж", "платёж", "зарплат", "выплат"],
+    "migration": ["migrat", "миграц"],
+    "permissions": ["permission", "rbac", "acl", "полномоч"],
+}
+DIGEST_PERMS_BYTES = 520   # the permissions block of the hub start / takeover digest; what does not fit is "K more"
+
+
+def keywords(raw: str) -> list[str]:
+    """`--class` / the `class:` field: comma-separated keywords, case-folded, in order, without repeats."""
+    out = []
+    for k in (raw or "").split(","):
+        k = one_line(k).casefold()
+        if k and k not in NO_VALUE and k not in out:
+            out.append(k)
+    return out
+
+
+def sensitive_classes() -> dict[str, list[str]]:
+    data = hc.setting_json("AGENT_HUB_SENSITIVE_CLASSES", default=None)
+    if isinstance(data, dict):
+        return {str(k).casefold(): [str(s).casefold() for s in (v if isinstance(v, list) else [v])]
+                for k, v in data.items()}
+    return SENSITIVE_DEFAULT
+
+
+def sensitive_of(word: str) -> str:
+    """The sensitive class a keyword or a word of text belongs to, else ""."""
+    for cls, stems in sensitive_classes().items():
+        if word == cls or any(word.startswith(s) for s in stems):
+            return cls
+    return ""
+
+
+# ---- repository identity: the normalized origin URL, else the main clone's absolute path; the short name is display
+
+@dataclass(frozen=True)
+class Repo:
+    id: str
+    name: str
+
+
+def normalize_url(url: str) -> str:
+    """host[:port]/owner/repo of a git remote: scheme, user, '.git' and trailing '/' dropped, the host lower-cased, an
+    explicit port kept (ssh://host:2222/… and ssh://host:3333/… are two repositories; the scp-like git@host:path form
+    has no port), an IPv6 host in brackets, the leading '/' of an absolute scp path kept (host//srv/x); when unsure,
+    distinct spellings stay distinct — the worst outcome is one more question to the owner; a local remote (a path, file://) → "file:" + its real path."""
+    u = url.strip()
+    if u.startswith("file://"):
+        u = u[len("file://"):]
+    if u.startswith(("/", "~", ".")):
+        return "file:" + os.path.realpath(os.path.expanduser(u)).removesuffix(".git")
+    if "://" in u:
+        parts = urllib.parse.urlsplit(u)
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        host = (parts.hostname or "").lower()
+        if ":" in host:   # IPv6: keep the brackets, or [2001:db8::1]:2222 and [2001:db8::1:2222] would read alike
+            host = f"[{host}]"
+        host += f":{port}" if port else ""
+        path = parts.path.strip("/").removesuffix(".git").rstrip("/")
+        return f"{host}/{path}" if host and path else u
+    m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.+?)(?:\.git)?/*$", u)
+    # an absolute scp path keeps its '/': host:/srv/x is under the root, host:srv/x under the user's home
+    return f"{m.group(1).lower()}/{m.group(2)}" if m else u
+
+
+def url_repo(url: str) -> Repo:
+    rid = normalize_url(url)
+    return Repo(rid, rid.rstrip("/").rsplit("/", 1)[-1] or rid)
+
+
+def _git_out(cwd, *argv) -> str:
+    res = hc._git(cwd, *argv)
+    return res.stdout.strip() if res is not None and res.returncode == 0 else ""
+
+
+def path_repo(path) -> Repo | None:
+    """The repository a path is in: a linked worktree resolves through git's common dir to its main clone; the id is
+    the normalized origin URL, else the main clone's absolute path. A path outside git: None."""
+    p = Path(os.path.expanduser(str(path)))
+    if not p.exists():
+        return None
+    common = _git_out(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return None
+    common_p = Path(common)
+    main = common_p.parent if common_p.name == ".git" else common_p
+    url = _git_out(main, "config", "--get", "remote.origin.url")
+    if url:
+        return url_repo(url)
+    main = Path(os.path.realpath(main))
+    return Repo(str(main), main.name.removesuffix(".git"))
+
+
+def stage_repo(stage: str) -> Repo | None:
+    """The repository recorded for the stage (stage.json, written by `hub start` / `hub takeover`)."""
+    raw = hc.stage_record(stage).get("repo")
+    if not isinstance(raw, str) or not raw:
+        return None
+    return path_repo(raw) or Repo(os.path.realpath(os.path.expanduser(raw)), Path(raw).name)
+
+
+def question_repo(stage: str) -> Repo | None:
+    """Default repository of a question or a permission from `stage`: the stage's recorded one, else the repository of
+    the working directory."""
+    return stage_repo(stage) or path_repo(os.getcwd())
+
+
+_KNOWN: list[Repo] | None = None
+
+
+def known_repos() -> list[Repo]:
+    """Repositories a short --repo name can mean: those of every stage's stage.json and of every permission."""
+    global _KNOWN
+    if _KNOWN is None:
+        seen: dict[str, Repo] = {}
+        for stage in sorted(p.parent.name for p in ROOT.glob(f"*/{hc.STAGE_FILE}")) if ROOT.is_dir() else []:
+            r = stage_repo(stage)
+            if r:
+                seen.setdefault(r.id, r)
+        for e in permissions():
+            rid, name = e.fields.get("repo-id", ""), e.fields.get("repo", "")
+            if rid not in NO_VALUE and rid != "*" and name not in NO_VALUE:
+                seen.setdefault(rid, Repo(rid, name))
+        _KNOWN = list(seen.values())
+    return _KNOWN
+
+
+def resolve_repo(raw: str) -> Repo:
+    """--repo: a path (with '/' or a leading '~' / '.'), a remote URL, or a short name that exactly one known
+    repository has. An ambiguous or unknown short name is refused, with the candidates."""
+    raw = one_line(raw)
+    if re.match(r"^[a-z][a-z0-9+.-]*://|^[^@/\s]+@[^:/\s]+:", raw, re.I):
+        return url_repo(raw)
+    if "/" in raw or raw.startswith(("~", ".")):
+        r = path_repo(raw)
+        if r is None:
+            raise SystemExit(f"ask: --repo {raw}: not inside a git repository")
+        return r
+    hits = [r for r in known_repos() if r.name.casefold() == raw.casefold()]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise SystemExit(f"ask: --repo {raw} is ambiguous: {', '.join(r.id for r in hits)} — pass the checkout's path "
+                         "or the remote URL")
+    raise SystemExit(f"ask: --repo {raw}: no stage or permission knows a repository of that name — pass the "
+                     "checkout's path or the remote URL")
+
+
+# ---- records
+
+UNTIL_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?")
+
+
+def parse_until(raw: str) -> dt.datetime | None:
+    """A permission's end, parsed whole: YYYY-MM-DD (the end of that day) or YYYY-MM-DDTHH:MM, nothing before or
+    after; None for anything else (an entry with such an `until` is invalid). Stricter than a question's --due."""
+    raw = (raw or "").strip()
+    if not UNTIL_RE.fullmatch(raw):
+        return None
+    try:
+        if "T" in raw:
+            return dt.datetime.fromisoformat(raw)
+        return dt.datetime.combine(dt.date.fromisoformat(raw), dt.time(23, 59))
+    except ValueError:
+        return None
+
+
+def perm_problems(e: Entry) -> list[str]:
+    """Why an A- entry cannot be trusted (an invalid entry covers nothing); [] for a well-formed one."""
+    f, out = e.fields, []
+    if e.state not in ("allowed", "revoked"):
+        out.append(f"status {e.status!r}")
+    if f.get("words", "") in NO_VALUE:
+        out.append("no owner's words")
+    scope = f.get("scope", "")
+    if scope not in SCOPES:
+        out.append(f"scope {scope!r}")
+    elif scope == "repo" and f.get("repo-id", "") in NO_VALUE + ("*",):
+        out.append("scope repo without a repo-id")
+    until = f.get("until", "")
+    if until not in NO_VALUE and parse_until(until) is None:
+        out.append(f"until {until!r} unparsable")
+    return out
+
+
+def perm_state(e: Entry, now: dt.datetime) -> str:
+    """allowed | expired | revoked | invalid."""
+    if e.state == "revoked":
+        return "revoked"
+    if perm_problems(e):
+        return "invalid"
+    until = parse_until(e.fields.get("until", ""))
+    return "expired" if until is not None and until < now else "allowed"
+
+
+def applies(e: Entry, stage: str, repo: Repo | None) -> bool:
+    """Whether permission `e` is about an action of `stage` on `repo` (state aside)."""
+    scope = e.fields.get("scope", "repo")
+    if scope == "all":
+        return True
+    if scope == "stage":
+        return bool(stage) and e.stage == stage
+    return repo is not None and e.fields.get("repo-id", "") == repo.id
+
+
+def permissions() -> list[Entry]:
+    out = []
+    for stage in all_stages():
+        try:
+            out += [e for e in load(stage)[1] if e.kind_letter == "A"]
+        except (OSError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def applicable(stage: str, repo: Repo | None, now: dt.datetime) -> list[Entry]:
+    """Permissions in force for an action of `stage` on `repo`, from every stage's register, newest first."""
+    hits = [e for e in permissions() if perm_state(e, now) == "allowed" and applies(e, stage, repo)]
+    return sorted(hits, key=entry_when, reverse=True)
+
+
+def unplaceable(e: Entry) -> bool:
+    """An entry whose scope does not say where it applies (an unknown scope, scope repo without a repo-id): an invalid
+    one like that is shown wherever invalid entries are, never hidden by a filter."""
+    scope = e.fields.get("scope", "")
+    return scope not in SCOPES or (scope == "repo" and e.fields.get("repo-id", "") in NO_VALUE + ("*",))
+
+
+def invalid_near(stage: str, repos: list) -> list[Entry]:
+    """Invalid permissions that would be about this stage or these repositories, or that do not say where they apply."""
+    now = now_local()
+    return [e for e in permissions() if perm_state(e, now) == "invalid" and (
+        unplaceable(e) or any(applies(e, stage, r) for r in repos))]
+
+
+def perm_source(e: Entry) -> str:
+    src = e.fields.get("source", "")
+    return src if src not in NO_VALUE else f"{e.stage}, {e.fields.get('asked', '—')}"
+
+
+def scope_label(e: Entry) -> str:
+    scope = e.fields.get("scope", "repo")
+    if scope == "all":
+        return "all repositories"
+    if scope == "stage":
+        return f"stage {e.stage} only"
+    return f"repo {e.fields.get('repo', '?')}"
+
+
+def fmt_perm(e: Entry, now: dt.datetime) -> str:
+    f = e.fields
+    state = perm_state(e, now)
+    head = {"revoked": e.status, "invalid": f"INVALID ({'; '.join(perm_problems(e))}): covers nothing"}.get(state, state)
+    repo_id = f.get("repo-id", "")
+    where = scope_label(e) + (f" ({repo_id})" if f.get("scope") == "repo" and repo_id not in NO_VALUE else "")
+    return "\n".join([
+        f"{e.id} [{e.stage}] {head} — {e.title}",
+        f"    {where}; class: {f.get('class', NO_SET)}; until {f.get('until', NO_SET)}",
+        f"    words: {f.get('words', '—')}",
+        f"    given {f.get('asked', '—')} ({f.get('by', '—')}); source: {f.get('source', '—')}",
+    ])
+
+
+# ---- "covered"
+
+def requirements(klass: str, text: str) -> list[tuple[str, str]]:
+    """What a permission set must name for the question to be covered: ("keyword", k) for every class keyword, as
+    written — a sensitive one too (`rbac-read` does not cover `rbac-write`) — and, on top, ("class", c) for every
+    sensitive class whose stem occurs in the question's class or text."""
+    out: list[tuple[str, str]] = []
+    for k in keywords(klass):
+        if ("keyword", k) not in out:
+            out.append(("keyword", k))
+    for word in keywords(klass) + re.findall(r"\w+", one_line(text).casefold()):
+        cls = sensitive_of(word)
+        if cls and ("class", cls) not in out:
+            out.append(("class", cls))
+    return out
+
+
+def names(e: Entry, need: tuple[str, str]) -> bool:
+    """Whether permission `e`'s class covers requirement `need`: a keyword by the same keyword; a sensitive class by a
+    keyword of that class."""
+    kind, value = need
+    theirs = keywords(e.fields.get("class", ""))
+    if kind == "class":
+        return any(sensitive_of(k) == value for k in theirs)
+    return value in theirs
+
+
+def need_label(need: tuple[str, str]) -> str:
+    kind, value = need
+    return f"{value} (a sensitive class)" if kind == "class" else value
+
+
+def coverage(stage: str, repos: list, klass: str, text: str) -> tuple[list[Entry], list[str], list[Entry]]:
+    """(the permissions that cover the question, what is not covered, weak matches). The question is covered only
+    when every requirement is named by a permission in force on every repository it touches; without --class
+    nothing is covered. A weak match (a permission keyword in the text, a class keyword in a permission's title or
+    words) only warns."""
+    now = now_local()
+    needs = requirements(klass, text) if keywords(klass) else []
+    targets = repos or [None]
+    used: list[Entry] = []
+    gaps: list[str] = []
+    for repo in targets:
+        perms = applicable(stage, repo, now)
+        for need in needs:
+            hit = next((e for e in perms if names(e, need)), None)
+            if hit is None:
+                gaps.append(f"{need_label(need)} on {repo.name if repo else 'this stage'}")
+            elif hit not in used:
+                used.append(hit)
+    asked = keywords(klass)
+    body = one_line(text).casefold()
+    weak = []
+    for repo in targets:
+        for e in applicable(stage, repo, now):
+            theirs = keywords(e.fields.get("class", ""))
+            if e not in used and e not in weak and (any(k in body for k in theirs) or any(
+                    k in f"{e.title} {e.fields.get('words', '')}".casefold() for k in asked)):
+                weak.append(e)
+    if not needs:
+        return [], [], weak
+    return (used if not gaps else []), gaps, weak + ([e for e in used if e not in weak] if gaps else [])
+
+
+def check_covered(args) -> int:
+    """Before `ask add` writes: refuse a question the permissions in force cover (COVERED_EXIT), warn otherwise. Sets
+    args.extra_fields (the question's repo, class and override lines). 0 = go on."""
+    repos = [resolve_repo(r) for r in args.repo]
+    if not repos and (r := question_repo(args.stage)):
+        repos = [r]
+    for e in invalid_near(args.stage, repos):
+        print(f"ask: {e.id} is invalid ({'; '.join(perm_problems(e))}) and covers nothing — fix or revoke it "
+              "(`ask allow --list` marks it)", file=sys.stderr)
+    covering, gaps, weak = coverage(args.stage, repos, args.klass, args.text)
+    args.extra_fields = []
+    if args.repo:
+        args.extra_fields.append(("repo", ", ".join(f"{r.name} ({r.id})" for r in repos)))
+    if keywords(args.klass):
+        args.extra_fields.append(("class", ", ".join(keywords(args.klass))))
+    if covering and not one_line(args.override):
+        for e in covering:
+            print(f"ask: covered by {e.id} ({perm_source(e)}): {clip(e.title, 100)}", file=sys.stderr)
+            print(f"ask:   the owner's words: {e.fields.get('words', '')}", file=sys.stderr)   # in full: a limit
+            # often comes last ("…but production still needs my word")
+        print("ask: act under it only if these words cover this case — its environment and scope (staging is not "
+              "production); journal the id. If they do not, pass --override \"why\"", file=sys.stderr)
+        return COVERED_EXIT
+    if covering:
+        args.extra_fields.append(("override", f"{', '.join(e.id for e in covering)} — {one_line(args.override)}"))
+    if gaps and keywords(args.klass):
+        print(f"ask: not covered: {', '.join(gaps)} — the question goes to the owner", file=sys.stderr)
+    for e in weak:
+        print(f"ask: may be covered by {e.id} ({perm_source(e)}): {clip(e.title, 100)} — check `ask show {e.id}`; "
+              "pass --class to decide", file=sys.stderr)
+    return 0
+
+
+# ---- commands
+
+def cmd_allow(args) -> int:
+    if args.list:
+        return cmd_allow_list(args)
+    if not args.text or not args.stage:
+        raise SystemExit("ask: allow needs --stage and the class of action (or --list)")
+    if not one_line(args.words):
+        raise SystemExit("ask: --words is empty — a permission records the owner's own words; without them ask the owner")
+    if args.until and parse_until(args.until) is None:
+        raise SystemExit(f"ask: cannot parse --until {args.until!r} (use YYYY-MM-DD or YYYY-MM-DDTHH:MM, nothing else)")
+    stage_file(args.stage)   # the stage name is checked before anything else is resolved
+    if len(args.repo) > 1:
+        raise SystemExit("ask: allow takes one --repo (record one permission per repository)")
+    given = resolve_repo(args.repo[0]) if args.repo else None
+    if args.scope == "all":
+        if given:
+            raise SystemExit("ask: --scope all covers every repository; drop --repo")
+        args.repo_name, args.repo_id = "*", "*"
+        return cmd_add(args, "A")
+    repo = given or (question_repo(args.stage) if args.scope == "repo" else stage_repo(args.stage))
+    if repo is None and args.scope == "repo":
+        raise SystemExit(f"ask: no repository known for stage {args.stage}: pass --repo (the checkout's path, the "
+                         "remote URL or a known name) or --scope stage|all")
+    args.repo_name, args.repo_id = (repo.name, repo.id) if repo else ("", "")
+    return cmd_add(args, "A")
+
+
+def cmd_allow_list(args) -> int:
+    now = now_local()
+    repos = [resolve_repo(r) for r in args.repo]
+    if args.stage:
+        stage_file(args.stage)
+        if not repos and (r := question_repo(args.stage)):
+            repos = [r]
+    filtered = bool(args.stage or args.repo)
+    shown = 0
+    for e in sorted(permissions(), key=entry_when, reverse=True):
+        state = perm_state(e, now)
+        if not args.all and state not in ("allowed", "invalid"):
+            continue
+        if filtered and not (state == "invalid" and unplaceable(e)) and not any(
+                applies(e, args.stage or "", r) for r in (repos or [None])):
+            continue
+        print(fmt_perm(e, now))
+        shown += 1
+    if not shown:
+        scope = " ".join(x for x in (f"repo {', '.join(r.name for r in repos)}" if repos else "",
+                                     f"stage {args.stage}" if args.stage else "") if x)
+        print(f"ask: no standing permission{' for ' + scope if scope else ''} (stages scanned: "
+              f"{', '.join(all_stages()) or '—'})", file=sys.stderr)
+    return 0
+
+
+def cmd_revoke(args) -> int:
+    e = find_entry(args.id)
+    if e.kind_letter != "A":
+        raise SystemExit(f"ask: {args.id} is not a permission (revoke is for A-…; a question is withdrawn)")
+    if e.state == "revoked":
+        raise SystemExit(f"ask: {args.id} is already {e.status!r}")
+    when = resolve_when(args.at)
+    rc = set_fields(args.id, {"status": f"revoked: {one_line(args.reason)} ({when.stamp})"}, require_unresolved=False)
+    print(journal_line(args.id, "revoked", when, args.reason))
+    return rc
+
+
+def permissions_digest(stage: str, budget: int = DIGEST_PERMS_BYTES, width: int = 130) -> str:
+    """The block of the hub start / takeover digest, at most `budget` UTF-8 bytes: the permissions in force for the
+    stage and its repository, recorded in any stage, as many as fit, then "K more: ask allow --list"; invalid ones that
+    would apply are named; one line when there are none."""
+    repo = question_repo(stage)
+    perms = applicable(stage, repo, now_local())
+    bad = invalid_near(stage, [repo] if repo else [])
+    where = f"repo {repo.name}" if repo else f"stage {stage} (no repository recorded)"
+    more = f"ask allow --list --stage {stage}"
+    tail = [f"invalid, cover nothing: {', '.join(e.id for e in bad)} — {more}"] if bad else []
+    if not perms:
+        return "\n".join([f"Standing permissions ({where}): none — before a merge, deploy or release question, ask "
+                          "the owner once for a standing rule (`ask allow`)"] + tail)
+    head = f"Standing permissions ({where}; act only where the owner's words cover the case):"
+    lines = [clip(f"{e.id} [{e.stage}] {e.title} — {e.fields.get('words', '')}"
+                  + ("" if e.fields.get("until", NO_SET) in NO_VALUE else f" (until {e.fields['until']})"), width)
+             for e in perms]
+    size = lambda xs: len("\n".join(xs).encode("utf-8"))   # noqa: E731
+    shown = len(lines)
+    while shown and size([head] + lines[:shown] + ([f"{len(lines) - shown} more: {more}"] if shown < len(lines)
+                                                    else []) + tail) > budget:
+        shown -= 1
+    rest = [f"{len(lines) - shown} more: {more}"] if shown < len(lines) else []
+    return "\n".join([head] + lines[:shown] + rest + tail)
 
 
 def has_plan(stage: str) -> bool:
@@ -546,11 +1032,15 @@ def cmd_digest(args) -> int:
     stages = [args.stage] if args.stage else all_stages()
     if args.stage and not stage_file(args.stage).exists():
         raise SystemExit(f"ask: no register {stage_file(args.stage)}")
+    now = now_local()
     for stage in stages:
         _, entries = load(stage)
         for e in entries:
             if e.state in ("answered", "standing"):
                 print(f"{e.id} {clip(gist(e) or e.title, args.width)}")
+            elif e.kind_letter == "A" and perm_state(e, now) == "allowed":
+                line = f"allowed ({scope_label(e)}): {e.title} — {e.fields.get('words', '')}"
+                print(f"{e.id} {clip(line, args.width)}")
     return 0
 
 
@@ -619,6 +1109,35 @@ def main(argv: list[str]) -> int:
     a.add_argument("--at", default="", help="HH:MM, default now")
     a.add_argument("--prefix", default="", help="id prefix for a new stage file (default: from stage name)")
     a.add_argument("--print-id", action="store_true", help="print only the new id (for scripts)")
+    a.add_argument("--repo", action="append", default=[], help="the repository the action touches (a name as `lock "
+                   "list` shows it, or a path); default: the stage's. Its standing permissions are checked")
+    a.add_argument("--class", dest="klass", default="", help="the class of action, comma-separated keywords (merge, "
+                   "deploy, release, …): a shared keyword with a permission in force refuses the question (exit 3)")
+    a.add_argument("--override", default="", help="add the question although a permission covers it; say why")
+
+    al = sub.add_parser("allow", help="record a standing permission the owner gave in words (`--list` shows them)")
+    al.add_argument("text", nargs="?", default="", help="the class of action in plain words")
+    al.add_argument("--stage", help="the stage recording it (required unless --list); with --list: those in force there")
+    al.add_argument("--words", default="", help="the owner's words, quoted (required)")
+    al.add_argument("--scope", choices=SCOPES, default="repo", help="repo (default: actions on --repo from any stage), "
+                    "stage (this stage only), all (every repository)")
+    al.add_argument("--repo", action="append", default=[], help="the repository (name or path); default: the stage's")
+    al.add_argument("--class", dest="klass", default="", help="comma-separated keywords that `ask add --class` matches")
+    al.add_argument("--until", default="", help="YYYY-MM-DD[THH:MM]; default: until revoked")
+    al.add_argument("--by", default=os.environ.get("ASK_BY", "agent"))
+    al.add_argument("--source", default="", help="where the words are on record (a chat, a Q- id)")
+    al.add_argument("--asked", default="", help="date given (YYYY-MM-DD), default today")
+    al.add_argument("--at", default="", help="HH:MM, default now")
+    al.add_argument("--prefix", default="")
+    al.add_argument("--print-id", action="store_true", help="print only the new id (for scripts)")
+    al.add_argument("--list", action="store_true", help="list the permissions in force (filter with --repo / --stage)")
+    al.add_argument("--all", action="store_true", help="with --list: revoked and expired ones too")
+
+    rv = sub.add_parser("revoke", help="the owner took a standing permission back")
+    rv.add_argument("id")
+    rv.add_argument("--stage", help="optional check: the entry must be in this stage")
+    rv.add_argument("--reason", default="revoked by the owner")
+    rv.add_argument("--at", default="", help="HH:MM, default now")
 
     d = sub.add_parser("decided", help="decision an agent took itself; the owner may contest it")
     d.add_argument("text")
@@ -673,7 +1192,7 @@ def main(argv: list[str]) -> int:
     se.add_argument("--stage", help="default: every stage")
     se.add_argument("--all", action="store_true", help=f"no cap (default: {SEARCH_CAP} newest)")
 
-    dg = sub.add_parser("digest", help="one line per owner answer and standing decision — the whole register compactly")
+    dg = sub.add_parser("digest", help="one line per owner answer, standing decision and permission in force — the whole register compactly")
     dg.add_argument("--stage", help="default: every stage")
     dg.add_argument("--width", type=int, default=160, help="characters of the gist per line (default 160)")
 
@@ -690,14 +1209,19 @@ def main(argv: list[str]) -> int:
 
     args = p.parse_args(argv)
     today = now_local().date().isoformat()
-    if args.cmd in ("close", "withdraw", "default-taken", "show", "done") and args.stage:
+    if args.cmd in ("close", "withdraw", "default-taken", "show", "done", "revoke") and args.stage:
         found = find_entry(args.id).stage   # ids are unique across stages; --stage only guards against a typo
         if found != args.stage:
             raise SystemExit(f"ask: {args.id} is in stage {found}, not {args.stage}")
     if args.cmd == "show":
         return cmd_show(args.id)
     if args.cmd == "add":
-        return cmd_add(args, "Q")
+        stage_file(args.stage)
+        return check_covered(args) or cmd_add(args, "Q")
+    if args.cmd == "allow":
+        return cmd_allow(args)
+    if args.cmd == "revoke":
+        return cmd_revoke(args)
     if args.cmd == "decided":
         return cmd_add(args, "D")
     if args.cmd == "plan":

@@ -81,7 +81,7 @@ sequenceDiagram
     Note over Old: session ends; agents keep running
     New->>F: hub takeover --stage stage-a --session ID (number = registered hub + 1)
     F-->>New: locks moved, roles hub, start line (and the night queue's coordinator line, if the stage has one)
-    F-->>New: digest: handoff § 0, ask register, locks, roles, first jwait --since HANDOFF_TIME
+    F-->>New: digest: standing permissions, handoff § 0, ask register, locks, roles, first jwait --since HANDOFF_TIME
     New->>F: jwait … --since HANDOFF_TIME (lines written during the handover are delivered)
 ```
 
@@ -161,6 +161,8 @@ and its sub-tags never wake its own `jwait`.
 ```
 
 `D-…` entries (`ask decided`) record a decision an agent took itself, with `alternative:` and status `standing`.
+`A-…` entries (`ask allow`) are standing permissions — `scope:`, `repo:`, `class:`, `words:`, `until:`, status `allowed`
+or `revoked: …`; every stage's register is read for them ([format](standing-permissions.md)).
 
 **Lock record** (`board.md`, inside a fenced `locks` block, one JSON object per line):
 `{"kind": "main-merge", "repo": "webapp", "owner_name": "Hub stage-a #3", "session_id": "…", "until": "…", "why": "…"}`.

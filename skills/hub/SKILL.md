@@ -193,13 +193,25 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
   take if nobody answers; `ask decided` — a decision you took yourself on a matter the owner normally decides;
   `ask close <id> --answer …` — the owner answered; `ask done <id> --evidence "…"` — the answer was executed;
   `ask list --pending` — answers without `done`.
+- Standing permissions (`<plugin-root>/docs/standing-permissions.md`): `ask allow --list --stage <S>` — what the owner
+  already allowed for this stage's repository, recorded in any stage (the start/takeover digest lists them); `ask allow
+  --stage <S> --class "<keywords>" --words "<the owner's words>" "<the class of action>"` — record one (`--repo` when
+  the action touches another repository — its path or remote URL; `--scope stage|all`; `--until`); `ask revoke
+  <A-id>`. Use specific keywords (`deploy-staging`, not `deploy`, when the words are about staging). Ask with `ask add
+  --repo <each repository the action touches> --class <every class of the action>`: a question the permissions cover
+  on every repository is refused (exit 3) and prints the owner's words — act under them only if they cover this
+  case's specifics (environment, scope, what is touched) and journal the id; if they do not, `--override "why"`.
+  Money, migrations and permissions/RBAC are covered only by a permission that names them.
 
 ## Planning a stage: grill before you brief
 
 A brief can only carry decisions that were made. Before proposing a plan for a new stage or a new piece of work,
 settle the open decisions with the owner, in this order:
 
-1. `ask search <topic words>` — decisions already on record are settled; do not ask them again.
+1. `ask search <topic words>` and `ask allow --list --stage <S>` — decisions and permissions already on record are
+   settled; do not ask them again. When the stage's repository has no standing permission, run the short analysis of
+   `<plugin-root>/skills/setup/SKILL.md` § 5 (what the project merges, deploys and releases; the owner's level) and add
+   one grilling round about them; record each answer with `ask allow`.
 2. **Grill the owner** with the `grilling` skill (the recommended companion plugin `mattpocock-skills`, see `<plugin-root>/docs/install.md#recommended-companion-grilling`).
    It walks the decision tree in rounds: every question numbered, each with your recommended answer; facts you can look
    up yourself go to a sub-agent instead of to the owner. If the skill is not installed, say once how to add it
@@ -375,7 +387,7 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    sub-agent with the schema in its brief). A negative result counts only with a positive control on the same query.
    *Why:* a search that cannot find anything reads exactly like "there is none".
 8. **Money and anything that leaves the team go to the owner** as `ask add` with a default action, not as the hub's
-   decision. *Why:* they are the decisions that cannot be undone by the next commit.
+   decision — unless a standing permission in the owner's own words names them (`ask allow --list`). *Why:* they are the decisions that cannot be undone by the next commit.
 9. **Grill before you brief** (above). *Why:* a brief with a silent assumption produces confident work on the wrong
    problem.
 10. **A change gets the review its class says** (`hub reviewer --for <class>`): `docs` — documentation, or tooling and
@@ -385,6 +397,10 @@ These are the defaults of the plugin's author, each paid for by an incident or a
     second reviewer on the same risk mostly finds the same thing twice; a narrower brief gets more out of one reader.
 11. **The reviewer is a different model from the author.** *Why:* a reader of the author's own model reads the code
     the way it was written and returns a confident summary, which reads like agreement.
+12. **A question's due time is no reason to hold ready work while the owner is reachable, and never invent a gate the
+    owner did not set** ("after 10:00", "after the owner looks"). Before asking about a merge, deploy or release, check
+    `ask allow --list --stage <S>`: a permission in force whose words cover the case is the answer. *Why:* finished work waited overnight for a
+    per-item "ok" the owner had already given, and for a time nobody had named.
 
 ## Optional modules
 

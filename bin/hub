@@ -95,7 +95,8 @@ target state is already there is skipped as "already done", so a re-run finishes
      writes "re-took shift #N (replaces <id8>), handoff by #M" and keeps one link in a lock's reason, not the nest of
      the earlier takeovers.
   5. jlog "[hub-<n>] start: …".
-  Then prints a digest ≤ 3 KB: handoff § 0, the ask register (first line "awaiting execution: N (ids)" —
+  Then prints a digest ≤ 3 KB: handoff § 0, the standing permissions in force for the stage and its repository,
+  recorded in any stage's register (the first few, then "K more"; one line when there are none), the ask register (first line "awaiting execution: N (ids)" —
   owner answers without `ask done`; then open questions, recent owner answers and agent decisions — check
   every "owner said" of the handoff against it), locks, live roles with the age of their last journal
   line, and the command for the first `jwait` with --since = the handoff's mtime, so lines written
@@ -525,6 +526,14 @@ def _ask_digest_groups(ask, entries: list, days: int, width: int) -> str:
     return "\n".join(f"{', '.join(ids)} {text}" for (_, text), (ids, _) in ordered)
 
 
+def permissions_digest(stage: str) -> str:
+    """Standing permissions in force for the stage and its repository, recorded in any stage (`ask allow --list`)."""
+    try:
+        return ask_module().permissions_digest(stage)
+    except (OSError, SystemExit) as e:
+        return f"Standing permissions: register unreadable: {e}"
+
+
 def locks_digest() -> str:
     b = board_module()
     try:
@@ -584,6 +593,9 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
          + jwait_command(stage, tag, since), 600, ""),
         (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,
          str(handoff) if handoff else ""),
+        # after § 0 and its handoff pointer, which keep their budget; the block fits itself into ~520 bytes (what does
+        # not fit is "K more: ask allow --list"), so the register after it still gets most of the rest
+        (permissions_digest(stage), 600, f"ask allow --list --stage {stage}"),
         ("ask register (check every \"owner said\" of the handoff against it; on a mismatch the register wins — "
          "ask the owner):\n" + ask_digest(stage), 1300, f"ask list --stage {stage}"),
         ("Locks:\n" + locks_digest(), 380, "lock list"),
