@@ -210,9 +210,8 @@ def l3_skill():
     first_wait_contract('shared skill Autopilot', text)
 
 def m3():
-    original = subprocess.run(['git', '-C', str(root), 'show', '1acb4fb:skills/hub/SKILL.md'],
-                              capture_output=True, text=True, check=True, timeout=5).stdout
-    paragraph = '**Autopilot**' + original.split('**Autopilot**', 1)[1].split('\nA session whose', 1)[0]
+    # Immutable review contract, available in shallow CI checkouts and source archives too.
+    paragraph = (root / 'tests/fixtures/autopilot-0.9.0.md').read_text().rstrip('\n')
     current = (root / 'skills/hub/SKILL.md').read_text()
     assert paragraph in current, 'M3: the 0.9.0 Claude/CLI Autopilot paragraph must remain verbatim'
     section = current.split('**Autopilot**', 1)[1].split('## Waiting', 1)[0].lower()
