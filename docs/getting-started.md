@@ -122,7 +122,8 @@ anything before I approve the plan.
 ```
 
 - **Hub:** loads the `hub` skill (the workflow and the tool list) and starts the stage:
-  `hub start --stage csv-export --session self`. That creates the stage directory, registers this
+  `hub start --stage csv-export --goal "Export the table as CSV" --session self` (the stage name says what the work is, the
+  goal is one line in your words — the hub asks for it if your task does not give it). That creates the stage directory, registers this
   session as `hub-1`, writes the start line to the journal and prints the first `jwait` command. (If you skipped the setup
   above and the repository has no `.agent-hub/`, the hub offers the `agent-hub:setup` skill first.) A hub works in a
   fresh worktree of the project, never in your main clone: when the chat was opened there, `hub start` creates the

@@ -1,28 +1,43 @@
 #!/usr/bin/env python3
 """Hub start, takeover and handoff, one command each.
 
-  hub start    --stage stage-a --session <session id> [--name "Hub stage-a #1"] [--take-main-merge]
+  hub start    --stage retro-fixes --goal "<what the stage delivers>" --session <session id> [--name "Hub retro-fixes #1"]
+               [--take-main-merge]
                [--skip-lock RESOURCE ...] [--dry-run] [--repo PATH | --no-project]
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
-               [--name "Hub stage-a #17"] [--skip-lock RESOURCE ...] [--take-main-merge] [--main-merge-until +30d]
-               [--repo PATH | --no-project]
+               [--name "Hub stage-a #17"] [--goal "…"] [--skip-lock RESOURCE ...] [--take-main-merge]
+               [--main-merge-until +30d] [--repo PATH | --no-project]
   hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
   hub succeed  --stage stage-a --handoff PATH [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
   hub succeed  --stage stage-a --fallback [--why TEXT]
   hub succeed  --stage stage-a --replace [--force] [--handoff PATH] [--dry-run]
+  hub rename   --stage OLD --to NEW [--dry-run]
   hub effort   [--session ID] [--json]
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
-Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff and succeed need a stage, `reviewer`
+Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed and rename need a stage, `reviewer`
 puts it into the `agent spawn` line it prints, `home` and `effort` ignore it.
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
-takeover. It warns (ATTENTION lines, once) when the hub home is the legacy ~/.claude/agent-hub (`hub home`), when the
+takeover. It refuses (exit 2) a stage name that carries no word about the work — only generic words (hub, stage, wave,
+wp, task, work, test, tmp, new, default, stream, sprint; $AGENT_HUB_GENERIC_STAGE_WORDS replaces the list), numbers and
+single letters, like `hub-09`, `stage-2`, `wave-a` — and a start without --goal "<one line: what the stage delivers>".
+The goal is kept in <stage dir>/stage.json; the hub's registered title becomes "Hub <stage> #N — <goal>" (trimmed), and
+takeover, succeed, the handoff draft, the digest and agent-top carry it. A stage without a goal keeps "Hub <stage> #N";
+takeover never refuses on the name, and takeover --goal sets or replaces the goal. AGENT_HUB_NO_NAMING=1 in the
+environment (scripted environments, the test suite) skips both start checks. It warns (ATTENTION lines, once) when the
+hub home is the legacy ~/.claude/agent-hub (`hub home`), when the
 Claude Code CLI is older than 2.1.287 (the minimum supported; its model aliases resolve to older models) and when a command of the same name as one of the plugin's tools (any executable of its
 bin/: hub, jlog, jwait, agent, ask, roles, lock, …) comes first on PATH, GitHub CLI `hub` from Homebrew being the
 usual one.
+
+rename moves a stage to a new name when none of its agents is alive (otherwise it exits 2 and lists the live ones): the
+directory, the names and paths in the stage's json files (roles.json, agents/*/meta.json, stage.json), the question
+register's heading and the board's lock notes that name the stage. The new name is checked like start's. --dry-run lists
+what would change. Logs, journals and briefs keep their text; run it between shifts, a session still running under
+HUB_STAGE=OLD keeps the old name.
 
 The shift number is derived: takeover = the registered hub's number (roles `hub`, tag hub-N) + 1, or the
 successor named in the latest handoff ("… → \"Hub <stage> #N\""); handoff = the registered hub's number.
@@ -512,13 +527,15 @@ def hub_notes_line(stage: str) -> str:
     return "\n".join(out)
 
 
-def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = ()) -> str:
+def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
+           goal: str = "") -> str:
     tag = f"hub-{n}"
     # the first jwait replays everything since the predecessor wrote the handoff
     since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
     text = handoff.read_text(encoding="utf-8") if handoff else ""
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
+        (f"Goal of stage {stage}: {goal}" if goal else "", 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
@@ -759,6 +776,18 @@ def locate(a, stage: str, n: int):
     return loc.code
 
 
+def check_naming(stage: str, goal, rerun: bool) -> None:
+    """`hub start` of a new stage needs a name that carries a word about the work and a goal line (the stage's own, kept
+    in stage.json, counts). A re-run by the registered hub is not asked again; AGENT_HUB_NO_NAMING=1 skips both."""
+    if rerun or not hc.naming_enforced():
+        return
+    if (problem := hc.stage_name_problem(stage)) is not None:
+        raise hc.UsageError(problem)
+    if not hc.clean_goal(goal) and not hc.stage_goal(stage):
+        raise hc.UsageError("hub start needs --goal \"<one line: what the stage delivers, in the owner's words>\" — it "
+                            "goes into the hub's title, the digest and agent-top")
+
+
 def cmd_start(a) -> int:
     stage = hc.check_stage(a.stage)
     a.session = resolve_self(a.session)
@@ -770,6 +799,7 @@ def cmd_start(a) -> int:
     prev = latest("HANDOFF-hub-*.md", stage)
     if prev is not None and not rec:
         raise hc.UsageError(f"stage {stage} has a handoff ({prev.name}) — use `hub takeover --stage {stage} --session …`")
+    check_naming(stage, a.goal, rerun=bool(rec))
     a.n = a.n or n or 1
     if (code := locate(a, stage, a.n)) is not None:
         return code
@@ -801,9 +831,12 @@ def cmd_takeover(a) -> int:
     n = (a.n or (autopilot.pending_number(stage, handoff) if a.auto_handoff else None)
          or takeover_number(stage, session, cli, handoff, notes))
     tag = f"hub-{n}"
-    name = a.name or hub_name(stage, n)
+    goal = hc.clean_goal(a.goal) or hc.stage_goal(stage)  # takeover never refuses on the name; --goal sets or replaces it
+    name = a.name or hc.hub_title(stage, n, goal)
     if (code := locate(a, stage, n)) is not None:
         return code
+    if not a.dry_run:
+        hc.record_stage_goal(stage, goal)
 
     # Predecessor: every source that does not already name the new hub. A re-run after a partial
     # takeover therefore still finds it, and a stale registry does not hide the real one's locks.
@@ -997,7 +1030,7 @@ def cmd_takeover(a) -> int:
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
-    print(digest(stage, n, name, handoff, plan.done, notes, warns))
+    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal))
     return 0
 
 
@@ -1123,11 +1156,12 @@ def cmd_handoff(a) -> int:
         return s.replace("|", "/").replace("\n", " ")
 
     me_id = me["local"] or me["cli"] or "TODO session id"
+    goal_line = f"\nGoal of the stage: {hc.stage_goal(stage)}" if hc.stage_goal(stage) else ""
     body = f"""# Handoff "{name}" → "{succ}" — {stage} — {t:%Y-%m-%d %H:%M} — ENTRY POINT
 
 <!-- Draft by `hub handoff` {t:%H:%M}: facts collected by the script, TODO is for the hub. ≤ 12 KB. Delete the role's older handoffs. -->
 Replaces `{prev_handoff.name if prev_handoff else '—'}`. Journal: `work/journal-{t:%Y-%m-%d}.md` (tags `[{tag}…]`).
-Written by session "{name}" ({me_id}, TODO model).
+Written by session "{name}" ({me_id}, TODO model).{goal_line}
 `work/` = `{work}/`.
 
 **Headline.** TODO: one or two sentences — what matters most right now and whose word is behind it (quote + id in `ask`).
@@ -1296,6 +1330,100 @@ def cmd_reviewer(a) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- rename
+
+def rename_strings(value, old: str, new: str, root: Path):
+    """`value` (parsed JSON) with the stage's name replaced where it names the stage: a path under <hub home>/OLD, a
+    title `Hub OLD #n…` or `… (OLD)`, a `stage` field. Other text is left as it is."""
+    path_re = re.compile(re.escape(str(root / old)) + r"(?=/|$)")
+    if isinstance(value, dict):
+        return {k: (new if k == "stage" and v == old else rename_strings(v, old, new, root)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [rename_strings(v, old, new, root) for v in value]
+    if isinstance(value, str):
+        text = path_re.sub(str(root / new), value).replace(f"Hub {old} #", f"Hub {new} #")
+        return text[:-len(old) - 2] + f"({new})" if text.endswith(f"({old})") else text
+    return value
+
+
+def renamed_locks(locks: list, old: str, new: str, sessions: set) -> list:
+    """[(index, new record)] of the board's locks whose notes name the stage: the holder is one of its sessions or the
+    note carries `Hub OLD #` / starts `OLD:`; there the whole word OLD is replaced in owner_name, why and took_over_from
+    (elsewhere only `Hub OLD #`: a lock of another stage that says it took over from this one)."""
+    word = re.compile(rf"(?<![\w-]){re.escape(old)}(?![\w-])")
+    out = []
+    for i, lock in enumerate(locks):
+        notes = {k: lock[k] for k in ("owner_name", "why", "took_over_from") if isinstance(lock.get(k), str)}
+        own = lock.get("session_id") in sessions or any(
+            f"Hub {old} #" in v or v.startswith(f"{old}:") for v in notes.values())
+        changed = {k: (word.sub(new, v) if own else v.replace(f"Hub {old} #", f"Hub {new} #")) for k, v in notes.items()}
+        if changed != notes:
+            out.append((i, dict(lock, **changed)))
+    return out
+
+
+def cmd_rename(a) -> int:
+    old = hc.check_stage(a.stage)
+    if not a.to:
+        raise hc.UsageError("rename: --to NEW is required")
+    new = hc.check_stage(a.to)
+    src, dst = hc.root() / old, hc.root() / new
+    if old == new:
+        raise hc.UsageError("rename: --to is the stage's own name")
+    if not src.is_dir():
+        raise hc.UsageError(f"no stage directory {src}")
+    if dst.exists():
+        raise hc.UsageError(f"stage {new} already exists ({dst})")
+    if hc.naming_enforced() and (problem := hc.stage_name_problem(new)) is not None:
+        raise hc.UsageError(problem)
+    table = subagents.process_table()
+    live = []
+    for meta_path in sorted(src.glob("agents/*/meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict) and subagents.is_alive(meta, table):
+            live.append(f"{meta.get('role') or meta_path.parent.name} (pid {meta.get('pid')})")
+    if live:
+        raise hc.UsageError(f"stage {old} has live agents: {', '.join(live)} — stop them (`agent stop --stage {old} "
+                            "<role>`) or wait until they finish, then rename")
+    files = [p for p in [*sorted(src.glob("*.json")), *sorted(src.glob("agents/*/meta.json"))] if p.is_file()]
+    board = board_module()
+    roles = hc.roles_load(old)["roles"]
+    sessions = {v for r in roles.values() for v in (r.get("session"), r.get("cli_session_id")) if v}
+    locks = board.load()
+    lock_changes = renamed_locks(locks, old, new, sessions)
+    tag = "[plan] " if a.dry_run else ""
+    print(f"{tag}rename stage {old} → {new}: directory {src} → {dst}")
+    print(f"{tag}rewrite names and paths in {len(files)} json file(s): " + ", ".join(str(p.relative_to(src)) for p in files))
+    for i, rec in lock_changes:
+        print(f"{tag}board: {rec['kind']} ({rec.get('repo') or board.DEFAULT_REPO}): "
+              + "; ".join(f"{k} → {rec[k]!r}" for k in ("owner_name", "why", "took_over_from") if rec.get(k) != locks[i].get(k)))
+    if a.dry_run:
+        return 0
+    with hc.roles_lock(old):
+        os.rename(src, dst)
+        for path in files:
+            target = dst / path.relative_to(src)
+            data = json.loads(target.read_text(encoding="utf-8"))
+            hc.atomic_write(target, json.dumps(rename_strings(data, old, new, hc.root()), ensure_ascii=False, indent=1) + "\n")
+    register = dst / "questions.md"
+    if register.is_file():
+        head, sep, rest = register.read_text(encoding="utf-8").partition("\n")
+        if head == f"# Owner questions — {old}":
+            hc.atomic_write(register, f"# Owner questions — {new}" + sep + rest)
+    if lock_changes:
+        with board.Locked():
+            current = board.load()
+            for i, rec in renamed_locks(current, old, new, sessions):
+                current[i] = rec
+            board.write(current)
+    print(f"renamed stage {old} → {new}. Sessions that still run under HUB_STAGE={old} (a hub, a shell) need the new name; "
+          f"worktrees and branches named {old}-… are not renamed.")
+    return 0
+
+
 def cmd_effort(a) -> int:
     readings = session_effort.survey(resolve_self(a.session) if a.session else None)
     found = session_effort.best(readings)
@@ -1323,7 +1451,9 @@ def main(argv: list) -> int:
     st = sub.add_parser("start", parents=[stage_opt], help="register the first hub of a new stage")
     st.add_argument("--session", required=True, help="your full session id (local_… or a CLI uuid)")
     st.add_argument("--n", type=int, help=argparse.SUPPRESS)
-    st.add_argument("--name", help="title (default: \"Hub <stage> #1\")")
+    st.add_argument("--goal", help="one line: what the stage delivers, in the owner's words (required for a new stage; "
+                                   "kept in the stage directory, shown in the hub's title, the digest and agent-top)")
+    st.add_argument("--name", help="title (default: \"Hub <stage> #1 — <goal>\")")
     st.add_argument("--main-merge-until", default="+30d", help="main-merge expiry with --take-main-merge")
     st.add_argument("--take-main-merge", action="store_true", help="also take main-merge of this repository")
     st.add_argument("--skip-lock", action="append", metavar="RESOURCE", help="leave this lock where it is (repeatable)")
@@ -1336,7 +1466,8 @@ def main(argv: list) -> int:
     t.add_argument("--session", required=True, help="full session id of the new hub (local_… or a CLI uuid; `self` = "
                                                      "$CLAUDE_CODE_SESSION_ID)")
     t.add_argument("--handoff", help="handoff file (default: the latest HANDOFF-hub-*.md)")
-    t.add_argument("--name", help="title (default: \"Hub <stage> #<n>\")")
+    t.add_argument("--goal", help="set or replace the stage's goal line (default: the one kept by `hub start`)")
+    t.add_argument("--name", help="title (default: \"Hub <stage> #<n> — <goal>\")")
     t.add_argument("--skip-lock", action="append", metavar="RESOURCE",
                    help="leave this lock with the previous hub (repeatable)")
     t.add_argument("--main-merge-until", default="+30d", help="main-merge expiry when taken from nobody")
@@ -1378,6 +1509,9 @@ def main(argv: list) -> int:
     sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand); "
                                                           "with --replace: also stop a successor that is busy")
     sc.add_argument("--dry-run", action="store_true")
+    rn = sub.add_parser("rename", parents=[stage_opt], help="rename a stage that has no live agent")
+    rn.add_argument("--to", metavar="NEW", help="the new stage name (it must name the work, like `hub start`'s)")
+    rn.add_argument("--dry-run", action="store_true")
     ef = sub.add_parser("effort", parents=[stage_opt], help="the effort a session runs at now, and where it was read")
     ef.add_argument("--session", help="a CLI session uuid or a Desktop local_… id (default: this session)")
     ef.add_argument("--json", action="store_true", help="every source's reading as JSON")
@@ -1399,7 +1533,7 @@ def main(argv: list) -> int:
     a = p.parse_args(argv)
     a.argv = list(argv)  # a MOVE message repeats the command line
     explicit, a.stage = a.stage, a.stage or os.environ.get("HUB_STAGE") or None
-    needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed")
+    needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed", "rename")
     if needs_stage and not a.stage:
         p.error(f"{a.cmd}: --stage is required (or set HUB_STAGE)")
     if a.stage and not hc.STAGE_RE.fullmatch(a.stage):  # check_stage does the rest for the commands that use the stage
@@ -1407,7 +1541,7 @@ def main(argv: list) -> int:
             p.error(f"bad stage name {a.stage!r} (lowercase letters, digits, '-' and '_')")
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
-            "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort}[a.cmd](a)
+            "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -85,8 +85,9 @@ sequenceDiagram
     New->>F: jwait … --since HANDOFF_TIME (lines written during the handover are delivered)
 ```
 
-The very first hub of a stage has no predecessor: `hub start --stage S --session ID` creates `<hub home>/S/`, registers
-`hub-1`, writes the start line and prints the first `jwait`. `--n` on `takeover` and `handoff` overrides the derived
+The very first hub of a stage has no predecessor: `hub start --stage S --goal "…" --session ID` creates `<hub home>/S/`
+(the goal goes into `stage.json` and into the hub's title), registers `hub-1`, writes the start line and prints the first
+`jwait`. `--n` on `takeover` and `handoff` overrides the derived
 number; a re-run of a takeover finds itself registered and keeps its number.
 
 Both commands first check where the hub runs: in a linked worktree of its project that has `.agent-hub/`. The main clone

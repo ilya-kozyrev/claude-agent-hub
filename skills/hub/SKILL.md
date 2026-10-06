@@ -34,7 +34,9 @@ hook trust, full access, and native worker setup. Full access keeps the lock hoo
 
 Do these before anything else, in this order:
 
-1. `hub start --stage <S> --session self` — S is a short name for the goal (*Starting a stage*). If
+1. `hub start --stage <S> --goal "<goal>" --session self` — S names the work in 1–3 words and the goal is one line in
+   the owner's words (*Starting a stage*). If the task gives no goal, ask the owner for that line first, as the first
+   question of the grilling; never invent one. If
    `hub` answers with an error such as `invalid choice` or `not a git command`, another `hub` (GitHub CLI) is ahead of
    the plugin's on PATH: run `<plugin-root>/bin/hub start …` and tell the owner in one line.
 2. `ask search <words of the goal>` — decisions already on record are settled.
@@ -70,12 +72,21 @@ leave them until then.
 
 ## Starting a stage
 
-`hub start --stage <S> --session <your full session id>` — once, by the first hub of a new stage: creates the stage
-directory, registers you as `hub-1`, writes the start line and prints the first `jwait`. Use `--session self`;
+`hub start --stage <S> --goal "<goal>" --session <your full session id>` — once, by the first hub of a new stage: creates
+the stage directory, registers you as `hub-1`, writes the start line and prints the first `jwait`. Use `--session self`;
 the tool resolves the current host's session identity (`CODEX_THREAD_ID` in Codex, `CLAUDE_CODE_SESSION_ID`
 in Claude, or `AGENT_SESSION_ID` in a detached worker). In Claude Desktop you may pass the `local_…` id.
 An ordinary shell must pass an actual full session id. Offer `agent-hub:setup` if the project has no `.agent-hub/` yet.
 Follow warnings about shadowed tools or an outdated CLI.
+
+**Names say what the work is.** The stage name is the goal in 1–3 words (`retro-fixes`, `yc-move`), never `hub-09`,
+`stage-2`, `wave-a` or `wp3`: `hub start` refuses a name made only of generic words (hub, stage, wave, wp, task, work,
+test, tmp, new, default, stream, sprint — `AGENT_HUB_GENERIC_STAGE_WORDS` sets the list), numbers and single letters
+(exit 2), and refuses a start without `--goal`. The goal line goes into your title (`Hub <stage> #N — <goal>`), the
+takeover digest, the handoff and `agent-top`. Agent roles follow the same rule: `--role mainmerge-fix`, `argv-off`,
+never a number or a package id (`wp23`), so the journal, `agent-top` and other stages' hubs read what each one does.
+A stage that already carries a poor name is renamed with `hub rename --stage OLD --to NEW` (`--dry-run` first) once none
+of its agents is alive; `hub takeover --goal "…"` gives an older stage a goal line.
 
 A hub works in a fresh worktree of its project, never in the project's main clone and never outside git. When the
 command exits 4 with `MOVE <path>`, move as it prints — Claude Code: `EnterWorktree` with `path=<path>`, and if it refuses

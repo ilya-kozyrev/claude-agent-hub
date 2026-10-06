@@ -462,7 +462,7 @@ class Successor:
         self.worktree: Optional[Path] = None  # the successor's worktree once started
         self.tag = f"hub-{n}"
         self.rc_name = f"{stage}-hub-{self.succ}"
-        self.title = f"Hub {stage} #{self.succ}"
+        self.title = hc.hub_title(stage, self.succ)
         self.wt_name = ""  # the name `claude --worktree` gets, picked once per background start
         self.notes: list = []
         self.env = child_env()
@@ -681,7 +681,7 @@ class CodexSuccessor(Successor):
         self.stage, self.n, self.handoff, self.model, self.mode = stage, n, handoff, model, mode
         self.cwd = self.root or cwd
         self.k, self.limit, self.succ = k, limit, succ or n + 1
-        self.tag, self.title = f"hub-{n}", f"Hub {stage} #{self.succ}"
+        self.tag, self.title = f"hub-{n}", hc.hub_title(stage, self.succ)
         self.rc_name = f"{stage}-hub-{self.succ}"
         self.worktree = None
         self.wt_name = ""
