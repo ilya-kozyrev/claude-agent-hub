@@ -336,7 +336,8 @@ def cmd_add(args, kind_letter: str) -> int:
                 "- kind: allow",
                 "- status: allowed",
                 f"- scope: {args.scope}",
-                f"- repo: {args.repo_key or NO_SET}",
+                f"- repo: {args.repo_name or NO_SET}",
+                f"- repo-id: {args.repo_id or NO_SET}",
                 f"- class: {', '.join(keywords(args.klass)) or NO_SET}",
                 f"- words: {one_line(args.words)}",
                 f"- asked: {when.stamp}",
@@ -374,6 +375,16 @@ def cmd_add(args, kind_letter: str) -> int:
 
 COVERED_EXIT = 3
 SCOPES = ("repo", "stage", "all")
+# Classes a permission covers only when its own class names them (a keyword equal to the class or starting with one of
+# its stems); a stem found in a question's text or class makes that class part of what must be covered. Override:
+# AGENT_HUB_SENSITIVE_CLASSES in the hub home's config.json, {"class": ["stem", …]}.
+SENSITIVE_DEFAULT = {
+    "money": ["money", "payment", "billing", "invoice", "payroll", "salary", "refund", "деньг", "денеж", "оплат",
+              "платеж", "платёж", "зарплат", "выплат"],
+    "migration": ["migrat", "миграц"],
+    "permissions": ["permission", "rbac", "acl", "полномоч"],
+}
+DIGEST_PERMS_BYTES = 520   # the permissions block of the hub start / takeover digest; what does not fit is "K more"
 
 
 def keywords(raw: str) -> list[str]:
@@ -386,46 +397,163 @@ def keywords(raw: str) -> list[str]:
     return out
 
 
-def repo_key(raw: str) -> str:
-    """A repository as the lock board names it: a path (with a '/' or a leading '~' / '.') → the name of the repository
-    it is in (a worktree → its main repository), else the last path part; a name or "*" as given."""
+def sensitive_classes() -> dict[str, list[str]]:
+    data = hc.setting_json("AGENT_HUB_SENSITIVE_CLASSES", default=None)
+    if isinstance(data, dict):
+        return {str(k).casefold(): [str(s).casefold() for s in (v if isinstance(v, list) else [v])]
+                for k, v in data.items()}
+    return SENSITIVE_DEFAULT
+
+
+def sensitive_of(word: str) -> str:
+    """The sensitive class a keyword or a word of text belongs to, else ""."""
+    for cls, stems in sensitive_classes().items():
+        if word == cls or any(word.startswith(s) for s in stems):
+            return cls
+    return ""
+
+
+# ---- repository identity: the normalized origin URL, else the main clone's absolute path; the short name is display
+
+@dataclass(frozen=True)
+class Repo:
+    id: str
+    name: str
+
+
+def normalize_url(url: str) -> str:
+    """host/owner/repo of a git remote (scheme, user, port-less ':' form, '.git' and trailing '/' dropped, host
+    lower-cased); a local remote (a path, file://) → "file:" + its real path."""
+    u = url.strip()
+    if u.startswith("file://"):
+        u = u[len("file://"):]
+    if u.startswith(("/", "~", ".")):
+        return "file:" + os.path.realpath(os.path.expanduser(u)).removesuffix(".git")
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)(?:\.git)?/*$", u, re.I)
+    return f"{m.group(1).lower()}/{m.group(2)}" if m else u
+
+
+def url_repo(url: str) -> Repo:
+    rid = normalize_url(url)
+    return Repo(rid, rid.rstrip("/").rsplit("/", 1)[-1] or rid)
+
+
+def _git_out(cwd, *argv) -> str:
+    res = hc._git(cwd, *argv)
+    return res.stdout.strip() if res is not None and res.returncode == 0 else ""
+
+
+def path_repo(path) -> Repo | None:
+    """The repository a path is in: a linked worktree resolves through git's common dir to its main clone; the id is
+    the normalized origin URL, else the main clone's absolute path. A path outside git: None."""
+    p = Path(os.path.expanduser(str(path)))
+    if not p.exists():
+        return None
+    common = _git_out(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return None
+    common_p = Path(common)
+    main = common_p.parent if common_p.name == ".git" else common_p
+    url = _git_out(main, "config", "--get", "remote.origin.url")
+    if url:
+        return url_repo(url)
+    main = Path(os.path.realpath(main))
+    return Repo(str(main), main.name.removesuffix(".git"))
+
+
+def stage_repo(stage: str) -> Repo | None:
+    """The repository recorded for the stage (stage.json, written by `hub start` / `hub takeover`)."""
+    raw = hc.stage_record(stage).get("repo")
+    if not isinstance(raw, str) or not raw:
+        return None
+    return path_repo(raw) or Repo(os.path.realpath(os.path.expanduser(raw)), Path(raw).name)
+
+
+def question_repo(stage: str) -> Repo | None:
+    """Default repository of a question or a permission from `stage`: the stage's recorded one, else the repository of
+    the working directory."""
+    return stage_repo(stage) or path_repo(os.getcwd())
+
+
+_KNOWN: list[Repo] | None = None
+
+
+def known_repos() -> list[Repo]:
+    """Repositories a short --repo name can mean: those of every stage's stage.json and of every permission."""
+    global _KNOWN
+    if _KNOWN is None:
+        seen: dict[str, Repo] = {}
+        for stage in sorted(p.parent.name for p in ROOT.glob(f"*/{hc.STAGE_FILE}")) if ROOT.is_dir() else []:
+            r = stage_repo(stage)
+            if r:
+                seen.setdefault(r.id, r)
+        for e in permissions():
+            rid, name = e.fields.get("repo-id", ""), e.fields.get("repo", "")
+            if rid not in NO_VALUE and rid != "*" and name not in NO_VALUE:
+                seen.setdefault(rid, Repo(rid, name))
+        _KNOWN = list(seen.values())
+    return _KNOWN
+
+
+def resolve_repo(raw: str) -> Repo:
+    """--repo: a path (with '/' or a leading '~' / '.'), a remote URL, or a short name that exactly one known
+    repository has. An ambiguous or unknown short name is refused, with the candidates."""
     raw = one_line(raw)
-    if not raw or raw in NO_VALUE:
-        return ""
+    if re.match(r"^[a-z][a-z0-9+.-]*://|^[^@/\s]+@[^:/\s]+:", raw, re.I):
+        return url_repo(raw)
     if "/" in raw or raw.startswith(("~", ".")):
-        p = Path(raw).expanduser()
-        return hc.git_repo_name(p) or p.resolve().name
-    return raw
+        r = path_repo(raw)
+        if r is None:
+            raise SystemExit(f"ask: --repo {raw}: not inside a git repository")
+        return r
+    hits = [r for r in known_repos() if r.name.casefold() == raw.casefold()]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise SystemExit(f"ask: --repo {raw} is ambiguous: {', '.join(r.id for r in hits)} — pass the checkout's path "
+                         "or the remote URL")
+    raise SystemExit(f"ask: --repo {raw}: no stage or permission knows a repository of that name — pass the "
+                     "checkout's path or the remote URL")
 
 
-def stage_repo(stage: str) -> str:
-    """The repository recorded for the stage (stage.json, written by `hub start` / `hub takeover`), else ""."""
-    repo = hc.stage_record(stage).get("repo")
-    return repo_key(repo) if isinstance(repo, str) else ""
+# ---- records
 
-
-def question_repo(stage: str) -> str:
-    """Default repository of a question or a permission from `stage`: the stage's recorded one, else the configured
-    AGENT_HUB_DEFAULT_REPO or the working directory's repository (as `lock` names it), else ""."""
-    return stage_repo(stage) or hc.default_repo() or ""
+def perm_problems(e: Entry) -> list[str]:
+    """Why an A- entry cannot be trusted (an invalid entry covers nothing); [] for a well-formed one."""
+    f, out = e.fields, []
+    if e.state not in ("allowed", "revoked"):
+        out.append(f"status {e.status!r}")
+    if f.get("words", "") in NO_VALUE:
+        out.append("no owner's words")
+    scope = f.get("scope", "")
+    if scope not in SCOPES:
+        out.append(f"scope {scope!r}")
+    elif scope == "repo" and f.get("repo-id", "") in NO_VALUE + ("*",):
+        out.append("scope repo without a repo-id")
+    until = f.get("until", "")
+    if until not in NO_VALUE and parse_due(until) is None:
+        out.append(f"until {until!r} unparsable")
+    return out
 
 
 def perm_state(e: Entry, now: dt.datetime) -> str:
-    """allowed | expired | revoked (or whatever a hand edit wrote)."""
-    if e.state == "allowed":
-        until = parse_due(e.fields.get("until", ""))
-        return "expired" if until is not None and until < now else "allowed"
-    return e.state
+    """allowed | expired | revoked | invalid."""
+    if e.state == "revoked":
+        return "revoked"
+    if perm_problems(e):
+        return "invalid"
+    until = parse_due(e.fields.get("until", ""))
+    return "expired" if until is not None and until < now else "allowed"
 
 
-def applies(e: Entry, stage: str, repos: list[str]) -> bool:
-    """Whether permission `e` covers an action of `stage` on one of `repos` (state aside)."""
+def applies(e: Entry, stage: str, repo: Repo | None) -> bool:
+    """Whether permission `e` is about an action of `stage` on `repo` (state aside)."""
     scope = e.fields.get("scope", "repo")
     if scope == "all":
         return True
     if scope == "stage":
         return bool(stage) and e.stage == stage
-    return e.fields.get("repo", "").casefold() in {r.casefold() for r in repos if r}
+    return repo is not None and e.fields.get("repo-id", "") == repo.id
 
 
 def permissions() -> list[Entry]:
@@ -438,10 +566,17 @@ def permissions() -> list[Entry]:
     return out
 
 
-def applicable(stage: str, repos: list[str], now: dt.datetime) -> list[Entry]:
-    """Permissions in force for an action of `stage` on `repos`, from every stage's register, newest first."""
-    hits = [e for e in permissions() if perm_state(e, now) == "allowed" and applies(e, stage, repos)]
+def applicable(stage: str, repo: Repo | None, now: dt.datetime) -> list[Entry]:
+    """Permissions in force for an action of `stage` on `repo`, from every stage's register, newest first."""
+    hits = [e for e in permissions() if perm_state(e, now) == "allowed" and applies(e, stage, repo)]
     return sorted(hits, key=entry_when, reverse=True)
+
+
+def invalid_near(stage: str, repos: list) -> list[Entry]:
+    """Invalid permissions that would be about this stage or these repositories (or whose scope cannot be read)."""
+    now = now_local()
+    return [e for e in permissions() if perm_state(e, now) == "invalid" and (
+        e.fields.get("scope") not in SCOPES or any(applies(e, stage, r) for r in repos))]
 
 
 def perm_source(e: Entry) -> str:
@@ -451,61 +586,118 @@ def perm_source(e: Entry) -> str:
 
 def scope_label(e: Entry) -> str:
     scope = e.fields.get("scope", "repo")
-    return {"all": "all repositories", "stage": f"stage {e.stage} only"}.get(scope, f"repo {e.fields.get('repo', '?')}")
+    if scope == "all":
+        return "all repositories"
+    if scope == "stage":
+        return f"stage {e.stage} only"
+    return f"repo {e.fields.get('repo', '?')}"
 
 
 def fmt_perm(e: Entry, now: dt.datetime) -> str:
     f = e.fields
     state = perm_state(e, now)
+    head = {"revoked": e.status, "invalid": f"INVALID ({'; '.join(perm_problems(e))}): covers nothing"}.get(state, state)
+    repo_id = f.get("repo-id", "")
+    where = scope_label(e) + (f" ({repo_id})" if f.get("scope") == "repo" and repo_id not in NO_VALUE else "")
     return "\n".join([
-        f"{e.id} [{e.stage}] {e.status if state not in ('allowed', 'expired') else state} — {e.title}",
-        f"    {scope_label(e)}; class: {f.get('class', NO_SET)}; until {f.get('until', NO_SET)}",
+        f"{e.id} [{e.stage}] {head} — {e.title}",
+        f"    {where}; class: {f.get('class', NO_SET)}; until {f.get('until', NO_SET)}",
         f"    words: {f.get('words', '—')}",
         f"    given {f.get('asked', '—')} ({f.get('by', '—')}); source: {f.get('source', '—')}",
     ])
 
 
-def coverage(stage: str, repos: list[str], klass: str, text: str) -> tuple[list[Entry], list[Entry]]:
-    """(confident, weak) matches among the permissions in force. Confident: the question's class shares a keyword with
-    the permission's class. Weak: a permission keyword occurs in the question's text, or a class keyword in the
-    permission's title or words. Free text alone never makes a confident match."""
-    asked = set(keywords(klass))
+# ---- "covered"
+
+def requirements(klass: str, text: str) -> list[str]:
+    """What a permission set must name for the question to be covered: each class keyword (a sensitive one as its
+    class), plus every sensitive class whose stem occurs in the question's text."""
+    out = []
+    for k in keywords(klass):
+        need = sensitive_of(k) or k
+        if need not in out:
+            out.append(need)
+    for word in re.findall(r"\w+", one_line(text).casefold()):
+        cls = sensitive_of(word)
+        if cls and cls not in out:
+            out.append(cls)
+    return out
+
+
+def names(e: Entry, need: str) -> bool:
+    """Whether permission `e`'s class covers requirement `need`: the keyword itself, or for a sensitive class a keyword
+    that names it."""
+    theirs = keywords(e.fields.get("class", ""))
+    if need in sensitive_classes():
+        return any(sensitive_of(k) == need for k in theirs)
+    return need in theirs
+
+
+def coverage(stage: str, repos: list, klass: str, text: str) -> tuple[list[Entry], list[str], list[Entry]]:
+    """(the permissions that cover the question, what is not covered, weak matches). The question is covered only
+    when every requirement is named by a permission in force on every repository it touches; without --class
+    nothing is covered. A weak match (a permission keyword in the text, a class keyword in a permission's title or
+    words) only warns."""
+    now = now_local()
+    needs = requirements(klass, text) if keywords(klass) else []
+    targets = repos or [None]
+    used: list[Entry] = []
+    gaps: list[str] = []
+    for repo in targets:
+        perms = applicable(stage, repo, now)
+        for need in needs:
+            hit = next((e for e in perms if names(e, need)), None)
+            if hit is None:
+                gaps.append(f"{need} on {repo.name if repo else 'this stage'}")
+            elif hit not in used:
+                used.append(hit)
+    asked = keywords(klass)
     body = one_line(text).casefold()
-    confident, weak = [], []
-    for e in applicable(stage, repos, now_local()):
-        theirs = keywords(e.fields.get("class", ""))
-        if asked & set(theirs):
-            confident.append(e)
-        elif any(k in body for k in theirs) or any(
-                k in f"{e.title} {e.fields.get('words', '')}".casefold() for k in asked):
-            weak.append(e)
-    return confident, weak
+    weak = []
+    for repo in targets:
+        for e in applicable(stage, repo, now):
+            theirs = keywords(e.fields.get("class", ""))
+            if e not in used and e not in weak and (any(k in body for k in theirs) or any(
+                    k in f"{e.title} {e.fields.get('words', '')}".casefold() for k in asked)):
+                weak.append(e)
+    if not needs:
+        return [], [], weak
+    return (used if not gaps else []), gaps, weak + ([e for e in used if e not in weak] if gaps else [])
 
 
 def check_covered(args) -> int:
-    """Before `ask add` writes: refuse a question a permission covers (COVERED_EXIT), warn on a weak match. Sets
+    """Before `ask add` writes: refuse a question the permissions in force cover (COVERED_EXIT), warn otherwise. Sets
     args.extra_fields (the question's repo, class and override lines). 0 = go on."""
-    repos = [repo_key(r) for r in args.repo] or [question_repo(args.stage)]
-    confident, weak = coverage(args.stage, repos, args.klass, args.text)
+    repos = [resolve_repo(r) for r in args.repo]
+    if not repos and (r := question_repo(args.stage)):
+        repos = [r]
+    for e in invalid_near(args.stage, repos):
+        print(f"ask: {e.id} is invalid ({'; '.join(perm_problems(e))}) and covers nothing — fix or revoke it "
+              "(`ask allow --list` marks it)", file=sys.stderr)
+    covering, gaps, weak = coverage(args.stage, repos, args.klass, args.text)
     args.extra_fields = []
     if args.repo:
-        args.extra_fields.append(("repo", ", ".join(repos)))
+        args.extra_fields.append(("repo", ", ".join(f"{r.name} ({r.id})" for r in repos)))
     if keywords(args.klass):
         args.extra_fields.append(("class", ", ".join(keywords(args.klass))))
-    if confident and not one_line(args.override):
-        for e in confident:
-            print(f"ask: covered by {e.id} ({perm_source(e)}): {clip(e.title, 100)} — {clip(e.fields.get('words', ''), 160)}",
-                  file=sys.stderr)
-        print("ask: the owner already allowed this — act under the permission and journal its id; if it does not cover "
-              "this case, pass --override \"why\" (`ask show <id>` prints it in full)", file=sys.stderr)
+    if covering and not one_line(args.override):
+        for e in covering:
+            print(f"ask: covered by {e.id} ({perm_source(e)}): {clip(e.title, 100)}", file=sys.stderr)
+            print(f"ask:   the owner's words: {clip(e.fields.get('words', ''), 300)}", file=sys.stderr)
+        print("ask: act under it only if these words cover this case — its environment and scope (staging is not "
+              "production); journal the id. If they do not, pass --override \"why\"", file=sys.stderr)
         return COVERED_EXIT
-    if confident:
-        args.extra_fields.append(("override", f"{', '.join(e.id for e in confident)} — {one_line(args.override)}"))
+    if covering:
+        args.extra_fields.append(("override", f"{', '.join(e.id for e in covering)} — {one_line(args.override)}"))
+    if gaps and keywords(args.klass):
+        print(f"ask: not covered: {', '.join(gaps)} — the question goes to the owner", file=sys.stderr)
     for e in weak:
         print(f"ask: may be covered by {e.id} ({perm_source(e)}): {clip(e.title, 100)} — check `ask show {e.id}`; "
               "pass --class to decide", file=sys.stderr)
     return 0
 
+
+# ---- commands
 
 def cmd_allow(args) -> int:
     if args.list:
@@ -519,37 +711,40 @@ def cmd_allow(args) -> int:
     stage_file(args.stage)   # the stage name is checked before anything else is resolved
     if len(args.repo) > 1:
         raise SystemExit("ask: allow takes one --repo (record one permission per repository)")
-    given = repo_key(args.repo[0]) if args.repo else ""
+    given = resolve_repo(args.repo[0]) if args.repo else None
     if args.scope == "all":
         if given:
             raise SystemExit("ask: --scope all covers every repository; drop --repo")
-        args.repo_key = "*"
-    elif args.scope == "repo":
-        args.repo_key = given or question_repo(args.stage)
-        if not args.repo_key:
-            raise SystemExit(f"ask: no repository known for stage {args.stage}: pass --repo NAME (as `lock list` names "
-                             "it) or --scope stage|all")
-    else:
-        args.repo_key = given or stage_repo(args.stage)
+        args.repo_name, args.repo_id = "*", "*"
+        return cmd_add(args, "A")
+    repo = given or (question_repo(args.stage) if args.scope == "repo" else stage_repo(args.stage))
+    if repo is None and args.scope == "repo":
+        raise SystemExit(f"ask: no repository known for stage {args.stage}: pass --repo (the checkout's path, the "
+                         "remote URL or a known name) or --scope stage|all")
+    args.repo_name, args.repo_id = (repo.name, repo.id) if repo else ("", "")
     return cmd_add(args, "A")
 
 
 def cmd_allow_list(args) -> int:
     now = now_local()
-    repos = [repo_key(r) for r in args.repo]
+    repos = [resolve_repo(r) for r in args.repo]
     if args.stage:
         stage_file(args.stage)
-        repos = repos or [question_repo(args.stage)]
+        if not repos and (r := question_repo(args.stage)):
+            repos = [r]
+    filtered = bool(args.stage or args.repo)
     shown = 0
     for e in sorted(permissions(), key=entry_when, reverse=True):
-        if not args.all and perm_state(e, now) != "allowed":
+        state = perm_state(e, now)
+        if not args.all and state not in ("allowed", "invalid"):
             continue
-        if (args.stage or repos) and not applies(e, args.stage or "", repos):
+        if filtered and not (state == "invalid" and e.fields.get("scope") not in SCOPES) and not any(
+                applies(e, args.stage or "", r) for r in (repos or [None])):
             continue
         print(fmt_perm(e, now))
         shown += 1
     if not shown:
-        scope = " ".join(x for x in (f"repo {', '.join(r for r in repos if r)}" if any(repos) else "",
+        scope = " ".join(x for x in (f"repo {', '.join(r.name for r in repos)}" if repos else "",
                                      f"stage {args.stage}" if args.stage else "") if x)
         print(f"ask: no standing permission{' for ' + scope if scope else ''} (stages scanned: "
               f"{', '.join(all_stages()) or '—'})", file=sys.stderr)
@@ -560,7 +755,7 @@ def cmd_revoke(args) -> int:
     e = find_entry(args.id)
     if e.kind_letter != "A":
         raise SystemExit(f"ask: {args.id} is not a permission (revoke is for A-…; a question is withdrawn)")
-    if e.state != "allowed":
+    if e.state == "revoked":
         raise SystemExit(f"ask: {args.id} is already {e.status!r}")
     when = resolve_when(args.at)
     rc = set_fields(args.id, {"status": f"revoked: {one_line(args.reason)} ({when.stamp})"}, require_unresolved=False)
@@ -568,21 +763,30 @@ def cmd_revoke(args) -> int:
     return rc
 
 
-def permissions_digest(stage: str, repo: str = "", width: int = 150) -> str:
-    """The block of the hub start / takeover digest: the permissions in force for the stage and its repository,
-    recorded in any stage, one line each; one line when there are none."""
-    repo = repo or question_repo(stage)
-    perms = applicable(stage, [repo] if repo else [], now_local())
-    where = f"repo {repo}" if repo else f"stage {stage} (no repository recorded)"
+def permissions_digest(stage: str, budget: int = DIGEST_PERMS_BYTES, width: int = 130) -> str:
+    """The block of the hub start / takeover digest, at most `budget` UTF-8 bytes: the permissions in force for the
+    stage and its repository, recorded in any stage, as many as fit, then "K more: ask allow --list"; invalid ones that
+    would apply are named; one line when there are none."""
+    repo = question_repo(stage)
+    perms = applicable(stage, repo, now_local())
+    bad = invalid_near(stage, [repo] if repo else [])
+    where = f"repo {repo.name}" if repo else f"stage {stage} (no repository recorded)"
+    more = f"ask allow --list --stage {stage}"
+    tail = [f"invalid, cover nothing: {', '.join(e.id for e in bad)} — {more}"] if bad else []
     if not perms:
-        return (f"Standing permissions ({where}): none — before a merge, deploy or release question, ask the owner "
-                "once for a standing rule (`ask allow`)")
-    head = (f"Standing permissions ({where}; from every stage's register — act under them, journal the id, "
-            "do not ask again):")
-    return head + "\n" + "\n".join(
-        clip(f"{e.id} [{e.stage}] {e.title} — {e.fields.get('words', '')}"
-             + ("" if e.fields.get("until", NO_SET) in NO_VALUE else f" (until {e.fields['until']})"), width)
-        for e in perms)
+        return "\n".join([f"Standing permissions ({where}): none — before a merge, deploy or release question, ask "
+                          "the owner once for a standing rule (`ask allow`)"] + tail)
+    head = f"Standing permissions ({where}; act only where the owner's words cover the case):"
+    lines = [clip(f"{e.id} [{e.stage}] {e.title} — {e.fields.get('words', '')}"
+                  + ("" if e.fields.get("until", NO_SET) in NO_VALUE else f" (until {e.fields['until']})"), width)
+             for e in perms]
+    size = lambda xs: len("\n".join(xs).encode("utf-8"))   # noqa: E731
+    shown = len(lines)
+    while shown and size([head] + lines[:shown] + ([f"{len(lines) - shown} more: {more}"] if shown < len(lines)
+                                                    else []) + tail) > budget:
+        shown -= 1
+    rest = [f"{len(lines) - shown} more: {more}"] if shown < len(lines) else []
+    return "\n".join([head] + lines[:shown] + rest + tail)
 
 
 def has_plan(stage: str) -> bool:

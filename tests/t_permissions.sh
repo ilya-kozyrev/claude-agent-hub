@@ -1,15 +1,21 @@
 #!/bin/bash
 # Standing permissions (ask allow / revoke / allow --list) and the "covered" check of ask add: a permission is bound to
-# the repository the action touches and read from every stage's register (docs/standing-permissions.md). Scope
-# resolution, expiry, revocation, the refusal and its override, the hub start digest. Positive and negative controls.
+# the repository the action touches (its origin URL, else its main clone's path) and read from every stage's register
+# (docs/standing-permissions.md). Scope resolution, repository identity, every class and every repository covered,
+# sensitive classes, invalid entries, expiry, revocation, the refusal and its override, the hub digest.
 . "$(dirname "$0")/lib.sh"
-new_home; R=$AGENT_HUB_HOME; P=$(mktemp -d)/t
+new_home; R=$AGENT_HUB_HOME; P=${PERM_OUT:-$(mktemp -d)}/t
 cd "$(mktemp -d)"   # outside any repository: the working directory names no repository of its own
-mkdir -p $R/repos/shop/.git $R/repos/site/.git $R/stage-x $R/stage-y $R/stage-z $R/stage-n
-printf '{"repo": "%s"}\n' $R/repos/shop > $R/stage-x/stage.json   # stages x and y work on shop, z on site
-printf '{"repo": "%s"}\n' $R/repos/shop > $R/stage-y/stage.json
-printf '{"repo": "%s"}\n' $R/repos/site > $R/stage-z/stage.json
+G=$R/repos; mkdir -p $G/client-a $G/client-b
+for d in client-a/shop client-b/shop site; do git init -q $G/$d && git -C $G/$d commit -q --allow-empty -m init; done
+git -C $G/client-a/shop remote add origin git@github.com:client-a/shop.git   # two repositories named shop
+git -C $G/client-b/shop remote add origin https://github.com/client-b/shop    # site has no remote: its path is its id
+git -C $G/client-a/shop worktree add -q $G/shop-wt 2>/dev/null
+A=$G/client-a/shop; SITE=$(cd $G/site && pwd -P)
+stage(){ mkdir -p $R/$1; printf '{"repo": "%s"}\n' "$2" > $R/$1/stage.json; }
+stage stage-x $A; stage stage-y $A; stage stage-z $G/site; stage stage-q $G/client-b/shop; mkdir -p $R/stage-n
 add(){ $B/ask add "$@" > $P.add.out 2> $P.add.err; }
+allow(){ $B/ask allow "$@" > /dev/null; }
 
 # ---- recording
 out=$($B/ask allow --stage stage-y --class "merge, release" --words "«можно накатывать»" --source "chat 06.10, Q-Y-001" \
@@ -18,12 +24,13 @@ check "$(echo "$out" | head -1)" "A-Y-001" "allow prints the new id"
 echo "$out" | sed -n 2p | grep -q '^A-Y-001 recorded [0-9][0-9]\.[0-9][0-9] [0-9:]*: merge after green CI'; check $? 0 "…and a ready journal line"
 F=$R/stage-y/questions.md
 grep -q '^## A-Y-001 — merge after green CI' $F && grep -q '^- scope: repo$' $F && grep -q '^- repo: shop$' $F \
-  && grep -q '^- class: merge, release$' $F && grep -q '^- words: «можно накатывать»$' $F && grep -q '^- until: not set$' $F
-check $? 0 "the entry: scope repo, the stage's repository by name, class keywords, the owner's words, no expiry"
+  && grep -q '^- repo-id: github.com/client-a/shop$' $F && grep -q '^- class: merge, release$' $F \
+  && grep -q '^- words: «можно накатывать»$' $F && grep -q '^- until: not set$' $F
+check $? 0 "the entry: scope repo, the origin URL as the repository id, the short name, class, the owner's words"
 $B/ask allow --stage stage-y --class merge "no words" > /dev/null 2> $P.err; check $? 1 "negative: a permission without the owner's words is refused"
 $B/ask allow --stage stage-n --words "ok" --class merge "unknown repo" > /dev/null 2> $P.err; check $? 1 "negative: scope repo and no repository known → refused"
 grep -q 'pass --repo' $P.err; check $? 0 "…and says to pass --repo"
-$B/ask allow --stage stage-y --words "ok" --scope all --repo shop "x" > /dev/null 2>&1; check $? 1 "negative: --scope all with --repo"
+$B/ask allow --stage stage-y --words "ok" --scope all --repo $A "x" > /dev/null 2>&1; check $? 1 "negative: --scope all with --repo"
 $B/ask allow --stage stage-y --words "ok" --until tomorrow "x" > /dev/null 2>&1; check $? 1 "negative: unparsable --until"
 $B/ask list --stage stage-y 2>/dev/null | grep -q '^A-'; check $? 1 "a permission is not an unresolved entry of ask list"
 $B/ask search накатывать | grep -q '^A-Y-001'; check $? 0 "ask search finds it by the owner's words"
@@ -32,65 +39,129 @@ $B/ask digest --stage stage-y | grep -q '^A-Y-001 allowed (repo shop): merge aft
 # ---- scope resolution: the same stage, another stage on the same repository, another repository (DAY-03)
 add --stage stage-y --class merge "Merge PR #5?"; check $? 3 "same stage, same class → refused (exit 3)"
 grep -q '^ask: covered by A-Y-001 (chat 06.10, Q-Y-001): merge after green CI' $P.add.err; check $? 0 "…\"covered by A-… (<source>)\""
+grep -q "^ask:   the owner's words: «можно накатывать»" $P.add.err && grep -q 'only if these words cover this case' $P.add.err
+check $? 0 "…prints the owner's words and to act only where they cover the case"
 grep -q '^## Q-Y-' $F; check $? 1 "…and nothing is written"
 add --stage stage-x --class release "Release shop?"; check $? 3 "another stage, same repository (its stage.json) → refused"
-add --stage stage-z --repo shop --class release "Release shop to prod?"; check $? 3 "another repository's stage asking about shop (--repo shop) → refused"
-add --stage stage-z --repo $R/repos/shop --class Release "Release shop?"; check $? 3 "…--repo as a path, class in another case → refused"
+add --stage stage-z --repo $A --class release "Release shop to prod?"; check $? 3 "another repository's stage naming --repo <path> → refused"
+add --stage stage-z --repo $G/shop-wt --class Release "Release shop?"; check $? 3 "…a linked worktree's path resolves to its main clone"
+add --stage stage-z --repo https://github.com/client-a/shop.git --class release "Release shop?"; check $? 3 "…the remote URL in another form → refused"
 add --stage stage-z --class release "Release site?"; check $? 0 "negative control: stage z about its own repository site → passes"
 grep -q '^- class: release$' $R/stage-z/questions.md; check $? 0 "…the question records its class"
 
+# ---- repository identity: two repositories named shop do not share permissions
+add --stage stage-q --class merge "Merge the client-b PR?"; check $? 0 "client-b/shop is not client-a/shop: not covered"
+add --stage stage-z --repo shop --class merge "Merge shop?"; check $? 1 "an ambiguous short --repo is refused"
+grep -q 'ambiguous: .*github.com/client-a/shop.*github.com/client-b/shop\|ambiguous: .*github.com/client-b/shop.*github.com/client-a/shop' $P.add.err; check $? 0 "…naming both candidates"
+add --stage stage-z --repo nosuchrepo --class merge "x"; check $? 1 "an unknown short --repo is refused"
+allow --stage stage-z --class merge --words "сайт мержи" "merge site"
+grep -q "^- repo-id: $SITE\$" $R/stage-z/questions.md; check $? 0 "a repository without a remote: the main clone's path is its id"
+add --stage stage-x --repo site --class merge "Merge site?"; check $? 3 "a short name only one known repository has → resolved"
+
+# ---- every class and every repository must be covered; sensitive classes need a permission that names them
+allow --stage stage-y --class deploy --words "«на стейдж выкатывай»" "deploy to staging"
+add --stage stage-x --class "deploy, migration" "Deploy and migrate?"; check $? 0 "a deploy permission does not cover a deploy + migration question"
+grep -q '^ask: not covered: migration on shop' $P.add.err; check $? 0 "…and says which class is not covered"
+add --stage stage-x --class deploy "Deploy and run the new migration?"; check $? 0 "a migration named only in the text is still a class to cover"
+add --stage stage-x --class release "Release with the new billing flow?"; check $? 0 "money in the text: a release permission does not cover it"
+add --stage stage-x --repo $A --repo $G/site --class release "Release shop and site?"; check $? 0 "two repositories, one without the permission → not covered"
+grep -q '^ask: not covered: release on site' $P.add.err; check $? 0 "…the gap is named (site has merge, not release)"
+add --stage stage-x --repo $A --repo $G/site --class merge "Merge shop and site?"; check $? 3 "two repositories, both with a merge permission → refused"
+allow --stage stage-y --class "deploy, migrations" --words "«миграции на стейдже сами»" "deploy with migrations"
+add --stage stage-x --class "deploy, migration" "Deploy and migrate?"; check $? 3 "a permission that names the migration class covers it"
+
 # ---- a question no permission covers; a weak match warns and passes
-add --stage stage-x --class migration "Run the migration on shop?"; check $? 0 "another class → passes"
-[ -s $P.add.err ]; check $? 1 "…without a warning"
+add --stage stage-x --class hotfix "Ship a hotfix?"; check $? 0 "another class → passes"
 add --stage stage-x "Can I merge the hotfix?"; check $? 0 "no --class, a permission keyword in the text → passes"
 grep -q '^ask: may be covered by A-Y-001' $P.add.err; check $? 0 "…with a may-be-covered warning"
 
 # ---- the override
-add --stage stage-x --class release --override "the release touches billing" "Release shop with billing?"; check $? 0 "--override adds a covered question"
-grep -q '^- override: A-Y-001 — the release touches billing$' $R/stage-x/questions.md; check $? 0 "…and records which permission and why"
+add --stage stage-x --class release --override "the owner's words were about the last release" "Release shop?"; check $? 0 "--override adds a covered question"
+grep -q "^- override: A-Y-001 — the owner's words were about the last release\$" $R/stage-x/questions.md; check $? 0 "…and records which permission and why"
 
 # ---- scopes stage and all
-$B/ask allow --stage stage-z --scope stage --class deploy --words "деплой сам" "deploy" > /dev/null
-add --stage stage-z --class deploy "Deploy?"; check $? 3 "scope stage: its own stage → refused"
-add --stage stage-x --repo site --class deploy "Deploy site?"; check $? 0 "scope stage: another stage, even on that repository → passes"
-$B/ask allow --stage stage-z --scope all --class docs --words "доки без вопросов" "docs" > /dev/null
+allow --stage stage-z --scope stage --class publish --words "публикуй сам" "publish"
+add --stage stage-z --class publish "Publish?"; check $? 3 "scope stage: its own stage → refused"
+add --stage stage-x --repo $G/site --class publish "Publish site?"; check $? 0 "scope stage: another stage, even on that repository → passes"
+allow --stage stage-z --scope all --class docs --words "доки без вопросов" "docs"
 add --stage stage-x --class docs "Publish docs?"; check $? 3 "scope all: any stage and repository → refused"
+
+# ---- invalid entries cover nothing and are reported
+cat >> $R/stage-x/questions.md <<'MD'
+
+## A-X-050 — tag releases by hand
+- kind: allow
+- status: allowed
+- scope: repo
+- repo: shop
+- repo-id: github.com/client-a/shop
+- class: tag
+- words: «тегай»
+- until: someday
+
+## A-X-051 — bump versions by hand
+- kind: allow
+- status: allowed
+- scope: repo
+- repo: shop
+- repo-id: github.com/client-a/shop
+- class: bump
+MD
+add --stage stage-x --class tag "Tag the release?"; check $? 0 "an entry with an unparsable until covers nothing"
+grep -q "^ask: A-X-050 is invalid (until 'someday' unparsable) and covers nothing" $P.add.err; check $? 0 "…and ask add reports it"
+add --stage stage-x --class bump "Bump the version?"; check $? 0 "an entry without the owner's words covers nothing"
+$B/ask allow --list --stage stage-x > $P.l0
+grep -q "^A-X-050 \[stage-x\] INVALID (until 'someday' unparsable): covers nothing" $P.l0 && grep -q "^A-X-051 \[stage-x\] INVALID (no owner's words)" $P.l0
+check $? 0 "ask allow --list marks both invalid"
 
 # ---- listing
 $B/ask allow --list --stage stage-x > $P.l1
-grep -q '^A-Y-001 \[stage-y\] allowed — merge' $P.l1 && grep -q '^A-Z-002 \[stage-z\] allowed — docs' $P.l1; check $? 0 "list --stage x: shop's permission from stage y and the all-repositories one"
-grep -q '^A-Z-001' $P.l1; check $? 1 "…not stage z's stage-only permission"
-$B/ask allow --list --repo site | grep -q '^A-Y-001'; check $? 1 "list --repo site: not shop's"
-$B/ask allow --list --stage stage-n 2>&1 >/dev/null | grep -q 'no standing permission'; check $? 1 "stage n (no repository) still sees the all-repositories one"
+grep -q '^A-Y-001 \[stage-y\] allowed — merge' $P.l1 && grep -q '^A-Z-003 \[stage-z\] allowed — docs' $P.l1; check $? 0 "list --stage x: shop's permission from stage y and the all-repositories one"
+grep -q '(github.com/client-a/shop)' $P.l1; check $? 0 "…with the repository id"
+grep -q '^A-Z-002' $P.l1; check $? 1 "…not stage z's stage-only permission"
+$B/ask allow --list --repo $G/site | grep -q '^A-Y-001'; check $? 1 "list --repo site: not shop's"
 
 # ---- expiry and revocation
-$B/ask allow --stage stage-x --class hotfix --until 2000-01-01 --words "до 1 января" "hotfix" > /dev/null
+HX1=$($B/ask allow --stage stage-x --class hotfix --until 2000-01-01 --words "до 1 января" --print-id "hotfix")
 add --stage stage-x --class hotfix "Hotfix?"; check $? 0 "an expired permission no longer covers"
-$B/ask allow --list --stage stage-x | grep -q '^A-X-001'; check $? 1 "…and is not listed"
-$B/ask allow --list --all | grep -q '^A-X-001 \[stage-x\] expired'; check $? 0 "…list --all shows it as expired"
-$B/ask allow --stage stage-x --class hotfix --until 2099-01-01 --words "до 2099" "hotfix" > /dev/null
+$B/ask allow --list --all | grep -q "^$HX1 \[stage-x\] expired"; check $? 0 "…list --all shows it as expired"
+HX2=$($B/ask allow --stage stage-x --class hotfix --until 2099-01-01 --words "до 2099" --print-id "hotfix")
 add --stage stage-x --class hotfix "Hotfix again?"; check $? 3 "a permission with a future --until covers"
 $B/ask revoke A-Y-001 --reason "owner took it back" > $P.rv; check $? 0 "revoke"
 grep -q '^- status: revoked: owner took it back (20' $F; check $? 0 "…writes revoked with a stamp"
 grep -q '^A-Y-001 revoked ' $P.rv; check $? 0 "…prints a journal line"
-add --stage stage-x --class merge "Merge PR #6?"; check $? 0 "a revoked permission no longer covers"
+add --stage stage-x --class release "Release shop again?"; check $? 0 "a revoked permission no longer covers"
 $B/ask revoke A-Y-001 > /dev/null 2>&1; check $? 1 "negative: revoking twice"
 $B/ask revoke Q-X-001 > /dev/null 2>&1; check $? 1 "negative: revoke of a question"
 $B/ask close A-X-002 --answer x > /dev/null 2>&1; check $? 1 "negative: a permission is not a question to close"
 
-# ---- the hub start digest: permissions of the stage's repository, recorded in other stages too; one line when none
-$B/hub start --stage stage-x --session 11111111-1111-4111-8111-111111111111 --dry-run > $P.d1 2>&1; check $? 0 "hub start --dry-run (stage x)"
-grep -q '^Standing permissions (repo shop; from every stage' $P.d1 && grep -q '^A-X-002 \[stage-x\] hotfix — до 2099 (until 2099-01-01)' $P.d1 \
-  && grep -q '^A-Z-002 \[stage-z\] docs — доки без вопросов' $P.d1; check $? 0 "…lists the permissions in force for shop and all repositories"
+# ---- the hub start digest: permissions of the stage's repository from every stage; one line when none
+S1=11111111-1111-4111-8111-111111111111
+$B/hub start --stage stage-x --session $S1 --dry-run > $P.d1 2>&1; check $? 0 "hub start --dry-run (stage x)"
+grep -q '^Standing permissions (repo shop; act only where' $P.d1 && grep -q "^$HX2 \[stage-x\] hotfix — до 2099 (until 2099-01-01)" $P.d1 \
+  && grep -q '^A-Z-003 \[stage-z\] docs — доки без вопросов' $P.d1; check $? 0 "…lists the permissions in force for shop and all repositories"
 grep -q '^A-Y-001' $P.d1; check $? 1 "…not the revoked one"
-$B/ask allow --stage stage-y --class merge --words "мержи" "merge" > /dev/null
-$B/hub start --stage stage-x --session 11111111-1111-4111-8111-111111111111 --dry-run > $P.d2 2>&1
-grep -q '^A-Y-002 \[stage-y\] merge — мержи' $P.d2; check $? 0 "…a permission recorded in another stage on the same repository shows"
-$B/ask revoke A-Z-002 > /dev/null
-$B/hub start --stage stage-z --session 11111111-1111-4111-8111-111111111111 --dry-run > $P.d3 2>&1
-grep -q '^A-Z-001 \[stage-z\] deploy' $P.d3; check $? 0 "stage z: its stage-only permission"
-mkdir -p $R/stage-w; printf '{"repo": "%s"}\n' $R/repos/site > $R/stage-w/stage.json
-$B/hub start --stage stage-w --session 11111111-1111-4111-8111-111111111111 --dry-run > $P.d4 2>&1
-check "$(grep -c '^Standing permissions' $P.d4)" 1 "stage w (site, nothing applies)"
-grep -q '^Standing permissions (repo site): none — ' $P.d4; check $? 0 "…says so in one line"
+grep -q '^invalid, cover nothing: A-X-051, A-X-050\|^invalid, cover nothing: A-X-050, A-X-051' $P.d1; check $? 0 "…names the invalid ones"
+mkdir -p $R/stage-w; printf '{"repo": "%s"}\n' $G/client-b/shop > $R/stage-w/stage.json
+$B/hub start --stage stage-w --session $S1 --dry-run > $P.d4 2>&1
+grep -q '^A-Z-003' $P.d4 && ! grep -q '^A-Y-' $P.d4; check $? 0 "client-b's shop: only the all-repositories one, none of client-a's"
+$B/ask revoke A-Z-003 > /dev/null; $B/hub start --stage stage-w --session $S1 --dry-run > $P.d4 2>&1
+grep -q '^Standing permissions (repo shop): none — ' $P.d4; check $? 0 "…with that one revoked: none, in one line"
+# a long § 0 and many permissions: § 0 and the handoff pointer keep their room, the block is capped
+for i in 1 2 3 4 5 6 7; do allow --stage stage-y --class "c$i" --words "«слово $i, достаточно длинное, чтобы строка была полной»" "class number $i of things allowed"; done
+C=$R/stage-x/coordinator; mkdir -p $C
+{ echo "# Handoff — stage-x"; echo; echo "## 0. First steps for the successor"
+  for i in $(seq 1 9); do echo "$i. A step of the handoff that takes most of a line, so that section zero is long enough. END$i"; done
+  echo; echo "## 1. Where things stand"; } > $C/HANDOFF-hub-stage-x-2026-10-06-1200.md
+printf '{"roles": {"hub": {"session": "%s", "kind": "cli", "tag": "hub-1"}}}\n' 22222222-2222-4222-8222-222222222222 > $R/stage-x/roles.json
+$B/hub takeover --stage stage-x --session $S1 --dry-run > $P.d5 2>&1; check $? 0 "hub takeover --dry-run with a long § 0"
+sed -n '/^DIGEST/,$p' $P.d5 > $P.d5d
+grep -q '^§ 0 of the handoff HANDOFF-hub-stage-x-2026-10-06-1200.md' $P.d5d && grep -q 'END9$' $P.d5d; check $? 0 "…§ 0 is whole, with its pointer"
+z=$(grep -n '^§ 0 of the handoff' $P.d5d | cut -d: -f1); p=$(grep -n '^Standing permissions' $P.d5d | cut -d: -f1)
+[ -n "$z" ] && [ -n "$p" ] && [ "$z" -lt "$p" ]; check $? 0 "…§ 0 comes before the permissions block (the 3 KB cut drops the tail)"
+grep -q '^[0-9][0-9]* more: ask allow --list --stage stage-x$' $P.d5d; check $? 0 "…the permissions block is capped with \"K more\""
+blk=$(sed -n '/^Standing permissions/,/^$/p' $P.d5d); n=$(echo "$blk" | grep -c '^A-'); k=$(echo "$blk" | sed -n 's/^\([0-9]*\) more: .*/\1/p')
+check "$((n + k)) $([ $n -ge 2 ] && echo some)" "10 some" "…shown + more = the 10 in force, several shown"
+echo "$blk" | grep -q '…cut'; check $? 1 "…the block fits its budget (no cut)"
+check "$(wc -c < $P.d5d | tr -d ' ' | awk '{print ($1<=3072)}')" 1 "…the digest stays ≤ 3 KB"
 exit $fail

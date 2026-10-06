@@ -100,6 +100,10 @@ BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
              "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
 JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_HUB_REASON_MODELS")
+# Classes of action a standing permission covers only when it names them (bin/ask; {"class": ["stem", …]}). Hub home
+# only: a cloned repository must not loosen what needs the owner's explicit word.
+HUB_WIDE_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
+JSON_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
 
 
 # ---------------------------------------------------------------- the hub home
