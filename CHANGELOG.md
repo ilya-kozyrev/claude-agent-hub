@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The watchdog stops the background sessions of retired hubs (R6).** A hub that handed over or retired itself kept
+  its `claude --bg` session alive, holding memory (ten such sessions were found on one machine, one of them still `busy`
+  on a leftover `jwait`). Each tick now runs `claude stop` on a background session whose id is a retired hub of some
+  stage and is a live role nowhere (no stage), is not a pending auto-handoff successor, and has been quiet for the
+  wake-after time (15 min by default; the last write of its transcript counts, a `busy` status does not protect it). It
+  never removes the session: `claude attach <id>` and `claude --bg --resume <id>` still reach the history. A dry run only
+  prints the plan. `AGENT_HUB_WATCHDOG_REAP=off` turns it off. The hub skill now says to `roles retire hub` and end the
+  turn when the stage is finished, instead of asking the owner to stop the session.
+
 ## 1.0.0 — 2026-10-07
 
 - **BREAKING: agent-hub is now Delamain.** New plugin id `delamain` (Claude Code `delamain@delamain`, Codex

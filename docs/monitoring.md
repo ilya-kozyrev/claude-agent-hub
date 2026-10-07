@@ -75,6 +75,7 @@ can be woken.
 | R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs. | Wakes the hub. |
 | R4 | A Claude hub whose last turn ended on an API error 15 min ago or more, and which is not busy. | Wakes the hub, whether or not anything waits. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
+| R6 | The machine: the `claude --bg` session of a hub that is retired in its stage (`roles retire hub`, or replaced by a successor) and live nowhere, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER`. | `claude stop <id>`; see the reaping of retired hubs below. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
@@ -108,6 +109,9 @@ as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain t
   reads `claude agents --json` again; if the hub is listed busy it does not wake it, and if the CLI starts a copy of the
   session anyway, it stops the copy, counts the wake as failed and notifies; it does not resume a second time in the
   same tick, the next tick (after the backoff) does.
+- **What it may stop.** Besides the stop before a resume, only the background session of a hub that is retired in its
+  stage and live nowhere (R6, below), after it has been quiet for the wake-after time. Never `claude rm`, never a
+  session that is a live role or a pending successor in any stage.
 - **Do-not-wake marker.** `watchdog quiet --stage S --reason "…" [--for 8h | --until HH:MM|ISO]` writes
   `<stage>/do-not-wake.json` (who, when, until, reason); `watchdog quiet --stage S --clear` removes it; `watchdog quiet`
   alone lists every stage's marker. A marked stage gets no R3/R4 wake and no notification; R1 and R2 still write. An
@@ -126,6 +130,27 @@ as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain t
 - **Dry run.** `watchdog run --dry-run [--stage S] [--json]` evaluates every rule and prints `[plan] …` lines, with
   ids shortened to 8 characters; it writes no journal line, no state, no marker, no `EXIT` and takes no lock, and sends
   no notification.
+
+### Retired hubs are stopped (R6)
+
+A hub that hands over to a successor or retires itself because its stage is finished leaves its `claude --bg` session
+running: it stays in `claude agents`, holds memory and may sit on a leftover background command. R6 stops such a session
+once per tick, with `claude stop <id>`; it never runs `claude rm`, so the history is kept and `claude attach <id>` or
+`claude --bg --resume <id>` still reach it. A row of `claude agents --json` is stopped only when all of these hold:
+
+1. it is a `background` session with a `pid` (it runs);
+2. its session id (full or first 8 characters) is a `session` or `cli_session_id` of a `role: "hub"` record in the
+   `retired` list of some stage's `roles.json`;
+3. it is not the session of any live role, of any role and any stage (a session retired in one stage may be live in another);
+4. it is not the `id` of any stage's pending auto-handoff record (a successor that has not registered yet);
+5. it has been quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (15m): the last write of its transcript, else its start time;
+   when neither is known it is skipped. A `busy` status does not protect it, only the quiet transcript does;
+6. `AGENT_HUB_WATCHDOG_REAP` is on (the default; `off` disables R6).
+
+`watchdog run --dry-run` prints `[plan] <stage>: would stop the background session of retired hub-N (<id8>), quiet M min`
+and stops nothing. A real stop writes one line to the job output, `log.md` and the stage journal; a failed stop is
+reported with the exit code and the next tick tries again. Nothing is sent to a notification channel: R6 stays on the
+machine. If `claude agents --json` fails, R6 does nothing.
 
 ### The load hold (R5)
 

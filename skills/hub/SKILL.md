@@ -149,6 +149,7 @@ written for one release; `[delamain auto-handoff k/N]` means the same): run its 
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
 checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
 Questions go to `ask add` with a default; hand over again when the budget requires it.
+When the stage's work is finished and the owner has no more tasks for it, run `roles retire hub --note "<why>"` and end the turn: the watchdog stops the background session once it is quiet, so do not ask the owner to `claude stop` it.
 
 ## Waiting
 
