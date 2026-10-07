@@ -224,18 +224,53 @@ for _ in range(2):
                              refreshed['pending'].get('id'), refreshed['pending'].get('kind'))
     assert roles(stage)==registered, ('same-shift registration changed', registered, roles(stage))
     assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
-print('PASS exact same UUID refresh retains native request, chain, roles and takeover boundary twice')
+hub('start','--stage','stage-a','--session','self',cwd=saved['pending']['cwd'])
+assert state(stage)==saved and roles(stage)==registered
+print('PASS exact same UUID takeover/start refresh retains native request, chain, roles and takeover boundary')
 
-# Execute the pinned old source to produce legacy corruption through its real takeover command.
-legacy=tmp/'legacy-source'; legacy.mkdir()
-archive=subprocess.run(['git','-C',str(root),'archive','89c936a8499c73a1dd05c0fae84cfabd439fb270'],check=True,capture_output=True)
-subprocess.run(['tar','-x','-C',str(legacy)],input=archive.stdout,check=True)
-def legacy_hub(*args, cwd=repo, freeze=None):
-    code="import runpy,sys; sys.path.insert(0,sys.argv[1]); import hubcore as hc; "
-    if freeze:
-        code+=f"hc.now=lambda: hc.dt.datetime.fromisoformat({freeze!r}); "
+# Replay the frozen pre-fix on_takeover at the real hub seam, with the legacy state schema.
+# Keep this fixture self-contained: CI shallow checkouts need no historical commit or model call.
+LEGACY_TAKEOVER = r'''def on_takeover(stage: str, n: int, auto: bool = False, session: str = "", locked: bool = False) -> None:
+    """Called by `hub takeover` once it is done: the pending automatic successor (its takeover carries
+    --auto-handoff, which only `hub succeed` writes) keeps the chain; so does a takeover of the shift that successor
+    already took over (a replacement of it, by hand or by `hub succeed --replace`): the record stays and only its
+    session id is rewritten. Any other takeover resets the chain — a takeover by hand means the owner is involved,
+    even when it gets the number of a successor that has not taken over yet."""
+    with contextlib.nullcontext() if locked else state_lock(stage):
+        data = load_state(stage)
+        pend = data.get("pending") or {}
+        if pend.get("n") == n and (auto or pend.get("taken_over")):
+            changed = False
+            if not pend.get("taken_over"):
+                pend["taken_over"] = hc.now().isoformat(timespec="seconds")
+                changed = True
+            if not auto and session and (pend.get("id") != session[:8] or pend.get("kind") != "manual"):
+                # a session started by hand holds the shift now: the launch the record described (a background
+                # session, a headless role) is gone, and `--replace` must not act on it
+                pend["id"], pend["kind"], changed = session[:8], "manual", True
+                for key in ("role", "link", "worktree", "bg_id", "why"):
+                    pend.pop(key, None)
+            if changed:
+                save_state(stage, data)
+            return
+        if not data["chain"] and not pend:
+            return
+        was = data["chain"]
+        data["chain"], data["pending"] = 0, None
+        save_state(stage, data)
+    if was:
+        hc.journal_append(stage, f"hub-{n}", f"auto-handoff chain reset ({was} → 0): a takeover by hand")
+
+'''
+def legacy_hub(*args, cwd=repo, freeze='2026-01-01T12:00:00+00:00'):
+    code="import runpy,sys; sys.path.insert(0,sys.argv[1]); import hubcore as hc; import autopilot as ap; "
+    code+=f"hc.now=lambda: hc.dt.datetime.fromisoformat({freeze!r}); "
+    code+=f"exec({LEGACY_TAKEOVER!r},ap.__dict__); "
+    # Saving through the real seam emits the old schema; only the newly added proof fields are omitted.
+    code+="exec(\"original_save=ap.save_state\\ndef legacy_save(stage,data):\\n    p=data.get('pending') or {}\\n    p.pop('actual_thread_id',None); p.pop('registration',None)\\n    original_save(stage,data)\\nap.save_state=legacy_save\"); "
+    code+="ap.desktop_identity_proof=lambda stage,request,session,**kw: (ap.load_state(stage),ap.load_state(stage)['pending'],hc.roles_load(stage)['roles']['hub']); "
     code+="sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name='__main__')"
-    r=subprocess.run([sys.executable,'-c',code,str(legacy/'bin'),str(legacy/'bin/hub'),*map(str,args)],
+    r=subprocess.run([sys.executable,'-c',code,str(root/'bin'),str(root/'bin/hub'),*map(str,args)],
                      cwd=cwd,env=env,capture_output=True,text=True)
     assert r.returncode==0,(r.returncode,r.stdout,r.stderr)
     return r
@@ -298,7 +333,7 @@ assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--ve
 recover(); assert state(stage)==repaired and roles(stage)==restored
 hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual)
 assert state(stage)==repaired and roles(stage)==restored
-print('PASS pinned real legacy corruption recovers once from exact full registration proof; stale/prefix/shift/policy/cwd/host conflicts reject without mutation')
+print('PASS frozen legacy takeover corruption recovers once from exact full registration proof; stale/prefix/shift/policy/cwd/host conflicts reject without mutation')
 
 # Retained native binding is authoritative even if the current record is changed to a prefix collision.
 (stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(restored,session=same_prefix,cli_session_id=same_prefix)}}))
