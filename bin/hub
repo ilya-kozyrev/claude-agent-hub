@@ -936,6 +936,14 @@ def locked_takeover(a) -> int:
         pending = autopilot.load_state(a.stage).get("pending") or {}
         if a.auto_handoff and pending.get("surface") == "desktop" and not request:
             raise hc.UsageError("desktop automatic takeover requires --desktop-request from its brief")
+        a.desktop_refresh = False
+        if ((not request or request == pending.get("request_id"))
+                and pending.get("surface") == "desktop" and pending.get("taken_over")
+                and pending.get("id") == resolve_self(a.session)
+                and (a.n is None or a.n == pending.get("n"))):
+            autopilot.desktop_identity_proof(stage, pending['request_id'], resolve_self(a.session),
+                                            allow_move=bool(request))
+            a.desktop_refresh = True
         if request:
             if a.n is not None and a.n != pending.get("n"):
                 raise hc.UsageError("desktop takeover number must match the reserved successor")
@@ -1139,8 +1147,10 @@ def _cmd_takeover(a) -> int:
         request = getattr(a, "desktop_request", None)
         if request and not a.dry_run:
             autopilot.desktop_preflight(stage, request, cli, handoff)
+        if getattr(a, "desktop_refresh", False) and not a.dry_run:
+            autopilot.desktop_identity_proof(stage, autopilot.load_state(stage)['pending']['request_id'], cli)
         plan.step(f"roles: hub → {session} [{tag}]",
-                  lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
+                  lambda: prev_rec if getattr(a, "desktop_refresh", False) else roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
                                              note=f"hub takeover from {prev_label}"),
                   lambda: None if hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
                   else "role was not recorded",
@@ -1739,8 +1749,9 @@ def main(argv: list) -> int:
     db = sub.add_parser("desktop-bind", help="confirm native client/actual identity without claiming takeover")
     df = sub.add_parser("desktop-fail", help="record native failure without an invisible CLI fallback")
     ds = sub.add_parser("desktop-status", help="show requested/observed identity and verified takeover")
+    dc = sub.add_parser("desktop-recover", help="repair proven same-shift native identity from the current app hub")
     ds.add_argument("--verified", action="store_true", help="exit 1 until the actual takeover verifies")
-    for dp in (dr, db, df, ds):
+    for dp in (dr, db, df, ds, dc):
         dp.add_argument("--stage", required=True)
         dp.add_argument("--request", required=True)
     dr.add_argument("--project-id", required=True)
@@ -1783,6 +1794,7 @@ def main(argv: list) -> int:
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
+            "desktop-recover": lambda a: autopilot.desktop_recover(hc.check_stage(a.stage), a.request),
             "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
             "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),
             "desktop-bind": lambda a: autopilot.desktop_bind(hc.check_stage(a.stage), a.request, a.thread_id, a.client_thread_id, a.project_id),

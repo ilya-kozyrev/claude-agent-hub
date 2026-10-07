@@ -267,6 +267,28 @@ creation, the current **app agent** executes the full procedure below through bi
    observed data. Bind/takeover can arrive in either order; repeats retain the same identity/count. A later hub
    invalidates the request, so stale confirmations/takeovers cannot replace it.
 
+A current verified native hub can refresh its host registration with `hub takeover --stage <S> --session self`
+from its verified cwd. Repeated same UUID/shift refreshes retain the full native ID, request, chain, observed
+settings and original registration/takeover timestamps. A different session or shift remains a replacement.
+
+For a legacy self-refresh that shortened the completed request's ID and changed its kind to `manual`, the
+**current app hub itself** can run the following from its original verified cwd, using the reviewed plugin's
+absolute `bin/hub` path when PATH names an older runtime:
+
+```bash
+hub desktop-recover --stage <S> --request <existing-token>
+hub desktop-status --stage <S> --request <existing-token> --verified
+```
+
+Recovery creates no thread, reservation or shift and reads no handoff. It requires this app's full
+CODEX_THREAD_ID, matching current role/CLI UUID, native host/engine, original shift, cwd/main project, saved
+project ID, persisted observed settings and writable stage-home policy. New bindings retain the original
+actual UUID and registration evidence separately. Legacy requests additionally require an unambiguous original
+full-UUID `start:` registration in the takeover day's journal and an exact match between current `set_at` and
+original `taken_over`. A later timestamp, missing/ambiguous proof, different UUID (including the same eight-character
+prefix), stale token or changed observed policy fails before mutation. Do not edit JSON, infer identity from a
+prefix, widen settings or dispatch again to repair such a failure; report the missing proof to the coordinator.
+
 The supported create_thread/handoff_thread schemas have **no sandbox or approval setting**. Requested policy is
 carried in the brief/state, not smuggled into API arguments. Desktop defaults/UI determine actual policy. Full
 Access cannot be promised by these APIs, and approval `never` is not Full Access. A successor with unknown rollout

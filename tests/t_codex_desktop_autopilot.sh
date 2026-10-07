@@ -215,6 +215,99 @@ bind(req,'--thread-id',real); takeover(handoff,req,cwd=repo)
 assert state(stage)['chain']==1
 print('PASS restricted home access leaves predecessor active; actual takeover reconciles identity/cwd and records observed settings separately')
 
+# Exact same-shift host refresh must retain the native request and registration boundary.
+saved=state(stage); registered=roles(stage)
+for _ in range(2):
+    hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=saved['pending']['cwd'])
+    refreshed=state(stage)
+    assert refreshed==saved, ('same-shift refresh corrupted native request', saved['pending']['id'],
+                             refreshed['pending'].get('id'), refreshed['pending'].get('kind'))
+    assert roles(stage)==registered, ('same-shift registration changed', registered, roles(stage))
+    assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+print('PASS exact same UUID refresh retains native request, chain, roles and takeover boundary twice')
+
+# Execute the pinned old source to produce legacy corruption through its real takeover command.
+legacy=tmp/'legacy-source'; legacy.mkdir()
+archive=subprocess.run(['git','-C',str(root),'archive','89c936a8499c73a1dd05c0fae84cfabd439fb270'],check=True,capture_output=True)
+subprocess.run(['tar','-x','-C',str(legacy)],input=archive.stdout,check=True)
+def legacy_hub(*args, cwd=repo, freeze=None):
+    code="import runpy,sys; sys.path.insert(0,sys.argv[1]); import hubcore as hc; "
+    if freeze:
+        code+=f"hc.now=lambda: hc.dt.datetime.fromisoformat({freeze!r}); "
+    code+="sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name='__main__')"
+    r=subprocess.run([sys.executable,'-c',code,str(legacy/'bin'),str(legacy/'bin/hub'),*map(str,args)],
+                     cwd=cwd,env=env,capture_output=True,text=True)
+    assert r.returncode==0,(r.returncode,r.stdout,r.stderr)
+    return r
+home,stage,handoff=setup('legacy-recovery')
+legacy_hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--desktop-worktree')
+req=state(stage)['pending']['request_id']
+legacy_hub('desktop-request','--stage','stage-a','--request',req,'--project-id','saved-project','--project-path',repo)
+legacy_hub('desktop-bind','--stage','stage-a','--request',req,'--thread-id',real)
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+legacy_hub('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,
+           '--desktop-request',req,cwd=actual)
+original=state(stage); registered=roles(stage)
+assert 'registration' not in original['pending'] and 'actual_thread_id' not in original['pending']
+legacy_hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,freeze=registered['set_at'])
+corrupted=state(stage); refreshed=roles(stage)
+assert corrupted['pending']['id']==real[:8] and corrupted['pending']['kind']=='manual'
+assert refreshed['set_at']==registered['set_at'] and 'surface' not in refreshed
+r=hub('desktop-status','--stage','stage-a','--request',req,'--verified',ok=False)
+assert 'later hub' in r.stdout+r.stderr, (r.stdout,r.stderr)
+
+def recover(ok=True, token=None, cwd=actual):
+    before=((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())
+    r=hub('desktop-recover','--stage','stage-a','--request',token or req,cwd=cwd,ok=ok)
+    if not ok:
+        assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==before
+    return r
+# Every negative checks byte-exact state and registration before/after the command.
+recover(ok=False,token='stale-token')
+recover(ok=False,cwd=repo)
+rollout(real,{'type':'workspace-write','writable_roots':[str(actual)]},model='observed-model',effort='medium')
+recover(ok=False)
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+same_prefix='22222222-9999-4999-8999-999999999999'
+rollout(same_prefix,{'type':'danger-full-access'},model='observed-model',effort='medium')
+for updates in ({'session':same_prefix,'cli_session_id':same_prefix}, {'tag':'hub-9'},
+                {'set_at':'2001-01-01T00:00:00+00:00'}, {'host':'term'}, {'engine':'claude'}):
+    (stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(refreshed,**updates)}}))
+    env['CODEX_THREAD_ID']=updates.get('session',real)
+    recover(ok=False)
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':refreshed}}))
+env['CODEX_THREAD_ID']=real
+# Missing original journal proof cannot be replaced by same-prefix discovery.
+journal=next((stage/'coordinator/work').glob('journal-*.md')); saved_journal=journal.read_bytes()
+journal.write_text('')
+recover(ok=False)
+journal.write_bytes(saved_journal)
+recover()
+repaired=state(stage); restored=roles(stage)
+for key in ('request_id','n','at','taken_over','k','client_thread_id','requested','observed','project_id','cwd'):
+    assert repaired['pending'].get(key)==original['pending'].get(key),key
+assert repaired['chain']==original['chain'] and repaired['pending']['id']==real and repaired['pending']['kind']=='desktop'
+assert restored['session']==real and restored['tag']==registered['tag'] and restored['set_at']==registered['set_at']
+assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+recover(); assert state(stage)==repaired and roles(stage)==restored
+hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual)
+assert state(stage)==repaired and roles(stage)==restored
+print('PASS pinned real legacy corruption recovers once from exact full registration proof; stale/prefix/shift/policy/cwd/host conflicts reject without mutation')
+
+# Retained native binding is authoritative even if the current record is changed to a prefix collision.
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(restored,session=same_prefix,cli_session_id=same_prefix)}}))
+env['CODEX_THREAD_ID']=same_prefix
+recover(ok=False)
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':restored}}))
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'workspace-write','writable_roots':[str(actual)]},model='observed-model',effort='medium')
+before=((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())
+hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,ok=False)
+assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==before
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+print('PASS original binding rejects UUID collision and refresh policy mismatch before state/role mutation')
+
 home,stage,handoff=setup('takeover-first'); prepare(handoff,'--desktop-worktree'); req=state(stage)['pending']['request_id']; request(req)
 env['CODEX_THREAD_ID']=real; takeover(handoff,req,cwd=actual)
 env['CODEX_THREAD_ID']=old; bind(req,'--thread-id',real)

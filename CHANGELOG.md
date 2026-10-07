@@ -7,6 +7,12 @@
   репозиторий и окружение не могут дать это разрешение. Без разрешения на native create_thread запрос остаётся
   pending, предыдущий хаб работает до проверенного takeover. Terminal/detached-передача сохраняет CLI-путь.
 
+- **Verified Codex native requests survive the current hub's same-shift host refresh.** Full thread UUID,
+  native kind, request/chain and original registration/takeover boundary remain intact. Self-only
+  `hub desktop-recover` repairs a proven legacy refresh using the original full registration identity,
+  exact shift/cwd and unchanged observed policy; ambiguous evidence and later/manual hubs fail without
+  mutation. Recovery creates no thread, reservation or shift and changes no settings.
+
 - **The watchdog can wake a confirmed idle Codex app hub in its own thread.** `hub start`/`takeover` record app
   provenance only for the current UUID with both app markers and no detached worker identity. Runtime status is
   rechecked before `codex queue`; terminal/unknown hosts notify only, with no native resume fallback. The takeover
