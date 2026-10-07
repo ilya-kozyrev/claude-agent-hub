@@ -929,6 +929,51 @@ test('layouts: dock has the cyan frame, a card framed in its state colour and fr
   }
 })
 
+test('unbacked section labels and feed tools inherit host text; ice titles keep contrasting backing', async ($, on) => {
+  mock.clock(on)
+  const feed = [
+    { at: '12:00:01', kind: 'tool', sub: false, tool: 'Bash', text: 'run tests', detail: null },
+    { at: '12:00:02', kind: 'result_err', sub: false, tool: 'Bash', text: 'bad command', detail: null },
+  ]
+  stubPane(on, () => snapshot([agent()]), undefined, [], feed)
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const props of [
+      paneProps({ placement: 'inline', cols: 76 }),
+      paneProps({ placement: 'inline', cols: 30 }),
+      paneProps({ placement: 'dock', cols: 40 }),
+      paneProps({ placement: 'dock', cols: 76 }),
+    ]) {
+      const ui = await $.ui.mount({ ...props, surface })
+      await ui.press({ key: 'view-summary' })
+      // Inline/compact sections are unbacked Text, so the host controls contrast on light and dark themes.
+      const rules = await ui.findAll({ type: 'Text', text: /^──/ })
+      if (props.props.placement === 'inline' || props.props.bodyColumns < 44) expect(rules.length).toBeGreaterThan(0)
+      for (const label of rules) {
+        expect(label.props.color).toBeUndefined()
+        expect(label.props.backgroundColor).toBeUndefined()
+        expect(label.props.dimColor).not.toBe(true)
+      }
+      const title = await ui.find({ type: 'Text', text: /^(Delamain · )?agent-top$/ })
+      expect(title).toBeDefined()
+      expect(title?.props.color).toBeDefined()
+      expect(title?.props.backgroundColor).toBeDefined()
+      expect(title?.props.color).not.toBe(title?.props.backgroundColor)
+      await ui.press({ key: 'view-agents' })
+      await ui.press({ key: 'open:stage-a/worker' })
+      const tool = await ui.find({ type: 'Text', text: /^▸ Bash +$/ })
+      expect(tool).toBeDefined()
+      expect(tool?.props.color).toBeUndefined()
+      expect(tool?.props.backgroundColor).toBeUndefined()
+      expect(tool?.props.dimColor).not.toBe(true)
+      // Host-adaptive tool labels must not erase the feed's semantic error distinction.
+      expect((await ui.find({ type: 'Text', text: /^◂ error *$/ }))?.props.color).toBe('red')
+      await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  }
+})
+
 test('the branded header shrinks before controls; severity badges and engine focus remain distinct', async ($, on) => {
   mock.clock(on)
   stubPane(on, () => snapshot([agent(), agent({ role: 'quiet', dir_name: 'quiet', quiet: true })]))

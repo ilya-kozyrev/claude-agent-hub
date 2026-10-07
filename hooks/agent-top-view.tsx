@@ -151,7 +151,8 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
   const rule = (label: string, width: number, right = ''): RenderChildren => {
     const head = label ? `── ${clip(label, Math.max(1, width - 8 - len(right)))} ` : ''
     const tail = right ? ` ${right} ──` : ''
-    return t(head + '─'.repeat(Math.max(2, width - len(head) - len(tail))) + tail, { color: BRAND.ice, dim: true })
+    // Unbacked labels inherit the host foreground at full strength on light and dark themes.
+    return t(head + '─'.repeat(Math.max(2, width - len(head) - len(tail))) + tail)
   }
   const pill = (s: string, bg: string, fg = 'black', dim = false): RenderChildren => t(` ${s} `, { bg, color: fg, bold: true, dim })
 
@@ -517,7 +518,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
       const style: Style = it.sub
         ? { italic: true, dim: true }
         : { color: f.color, dim: f.dim, bold: f.bold }
-      const colStyle: Style = isTool ? { color: BRAND.ice } : it.kind === 'result_err' ? { color: 'red' } : it.kind === 'end' ? { bold: true } : { dim: true }
+      const colStyle: Style = isTool ? { bold: true } : it.kind === 'result_err' ? { color: 'red' } : it.kind === 'end' ? { bold: true } : { dim: true }
       wrapLines(text, textW, isResult ? 1 : 2).forEach((l, j) => {
         feedRows.push(
           <Box key={j === 0 ? `feed:${i}` : undefined} flexDirection="row">
