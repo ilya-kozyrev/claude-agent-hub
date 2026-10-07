@@ -584,7 +584,7 @@ grep -q "state reset after" "$R/tick.out"; check $? 1 "M4 nested negative: …wi
 check "$(resumed)" 1 "M4 nested: …and handles the stage normally (the hub is woken)"
 python3 - "$R/.state/watchdog/state.json" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1])); d["stages"]["sm5"]["r2_sent"] = 7; d["stages"]["sm5"]["hub"]["episode"]["attempts"] = "x"
+d = json.load(open(sys.argv[1])); d["stages"]["sm5"]["r2_sent"] = 7; d["stages"]["sm5"]["hub"]["episode"].update(attempts="x", next_try_at=None)
 json.dump(d, open(sys.argv[1], "w"))
 PY
 check "$(tick)" 0 "M4 nested: r2_sent not a dict, attempts not an int — the tick exits 0"
