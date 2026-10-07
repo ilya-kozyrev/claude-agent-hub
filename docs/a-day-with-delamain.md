@@ -1,10 +1,10 @@
-# A day with agent-hub
+# A day with Delamain
 
 A synthetic example: stage `payments` — a stream of work, here a payments release — on the day of its third hub shift.
 The hub is an interactive Claude Code session; every command below is what the hub (Claude, with the `hub` skill
 loaded) runs in Bash.
 
-Set-up behind the example: the repository ran `agent-hub:setup` once, so `.agent-hub/lock-rules.json` names the
+Set-up behind the example: the repository ran `delamain:setup` once, so `.agent-hub/lock-rules.json` names the
 project's shared resources, and the first hub of the stage began with
 `hub start --stage payments --goal "Ship the payments release" --session "$CLAUDE_CODE_SESSION_ID"`. A day that needs less can drop `ask`, `lock` and the
 handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#minimal-mode)).

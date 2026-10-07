@@ -25,7 +25,7 @@ import {
 } from './agent-top-model'
 
 // The plugin's name (plugin.json). The dev copy is checked by running this file there with this line set to 'agent-top-dev'.
-const PLUGIN: string = 'agent-hub'
+const PLUGIN: string = 'delamain'
 const BIN = /\/bin\/agent-top$/
 
 type Row = Record<string, unknown>
@@ -298,23 +298,34 @@ test("only agent-top and this plugin's own <name>:agent-top are answered; anothe
   on('command.run', () => ({ text: 'the engine ran it' }))
   expect((await run($, '', 'agent-top')).text).toBe('picture')
   expect((await run($, '', own)).text).toBe('picture')
-  expect((await run($, '', 'agent-hub:agent-top')).text).toBe(isDev || PLUGIN === 'agent-hub' ? 'picture' : 'the engine ran it')
+  expect((await run($, '', 'delamain:agent-top')).text).toBe(isDev || PLUGIN === 'delamain' ? 'picture' : 'the engine ran it')
+  expect((await run($, '', 'agent-hub:agent-top')).text).toBe(isDev || PLUGIN === 'delamain' ? 'picture' : 'the engine ran it') // rename:keep rename:transition
+  expect((await run($, '', 'foo:agent-top')).text).toBe('the engine ran it')
   for (const other of ['compact', 'other-plugin:agent-top', 'other-plugin:agent-topic', 'agent-top-dev-x:agent-top']) {
     expect((await run($, '', other)).text).toBe('the engine ran it')
   }
   expect((await run($, '', 'agent-top-dev:agent-top')).text).toBe(isDev ? 'picture' : 'the engine ran it')
 })
 
-test('isOwnCommand: the dev copy also answers agent-hub:agent-top, nobody else does', async () => {
-  expect(isOwnCommand('agent-top', 'agent-hub')).toBe(true)
-  expect(isOwnCommand('agent-hub:agent-top', 'agent-hub')).toBe(true)
-  expect(isOwnCommand('agent-top-dev:agent-top', 'agent-hub')).toBe(false) // not an allow-list for the installed plugin
-  expect(isOwnCommand('other:agent-top', 'agent-hub')).toBe(false)
+test('isOwnCommand: the installed plugin and the dev copy also answer the command from before the rename, nobody else does', async () => {
+  expect(isOwnCommand('agent-top', 'delamain')).toBe(true)
+  expect(isOwnCommand('delamain:agent-top', 'delamain')).toBe(true)
+  expect(isOwnCommand('agent-hub:agent-top', 'delamain')).toBe(true) // rename:keep rename:transition  (the installed plugin answers it too)
+  expect(isOwnCommand('agent-top-dev:agent-top', 'delamain')).toBe(false) // not an allow-list for the installed plugin
+  expect(isOwnCommand('other:agent-top', 'delamain')).toBe(false)
+  expect(isOwnCommand('foo:agent-top', 'delamain')).toBe(false)
+  expect(isOwnCommand('agent-hub:agent-topic', 'delamain')).toBe(false) // rename:keep rename:transition
+  expect(isOwnCommand('other-hub:agent-top', 'delamain')).toBe(false)
   expect(isOwnCommand('agent-top', 'agent-top-dev')).toBe(true)
   expect(isOwnCommand('agent-top-dev:agent-top', 'agent-top-dev')).toBe(true)
-  expect(isOwnCommand('agent-hub:agent-top', 'agent-top-dev')).toBe(true)
+  expect(isOwnCommand('delamain:agent-top', 'agent-top-dev')).toBe(true)
+  expect(isOwnCommand('agent-hub:agent-top', 'agent-top-dev')).toBe(true) // rename:keep rename:transition
+  expect(isOwnCommand('other-hub:agent-top', 'agent-top-dev')).toBe(false)
   expect(isOwnCommand('other:agent-top', 'agent-top-dev')).toBe(false)
-  expect(isOwnCommand('agent-hub:agent-topic', 'agent-top-dev')).toBe(false)
+  expect(isOwnCommand('foo:agent-top', 'agent-top-dev')).toBe(false)
+  expect(isOwnCommand('delamain:agent-topic', 'agent-top-dev')).toBe(false)
+  expect(isOwnCommand('agent-hub:agent-top', 'other-plugin')).toBe(false) // rename:keep rename:transition  (a third plugin's mod does not take it)
+  expect(isOwnCommand('delamain:agent-top', 'other-plugin')).toBe(false)
 })
 
 test('with no surface at all (a -p run) /agent-top answers with the text picture and opens nothing', async ($, on) => {
@@ -1107,7 +1118,7 @@ test('/agent-top answers without waiting for a slow first snapshot; the pane say
 
 test('a card call the engine kills on its timeout says so in one short line', async ($, on) => {
   mock.clock(on)
-  stubCardCalls(on, () => ({ deny: 'agent-hub: $.process.run(/very/long/path/bin/agent-top) aborted: still running after 60000 ms' }))
+  stubCardCalls(on, () => ({ deny: 'delamain: $.process.run(/very/long/path/bin/agent-top) aborted: still running after 60000 ms' }))
   await run($, '', 'agent-top')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'open:stage-a/worker' })

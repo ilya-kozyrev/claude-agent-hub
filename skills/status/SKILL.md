@@ -1,6 +1,6 @@
 ---
 name: status
-description: Answer questions about agent-hub agents, stages and hubs, their tasks, owner questions and locks. Use for “what is running”, “which agents are alive”, “task status”, “who needs an answer”, “что сейчас работает”, “какие агенты живы”, “что с задачами”, “кто ждёт ответа” and “какие блокировки”. Not for version-control working-tree state, build/CI state, system processes/ports, or tickets/issue trackers.
+description: Answer questions about Delamain agents, stages and hubs, their tasks, owner questions and locks. Use for “what is running”, “which agents are alive”, “task status”, “who needs an answer”, “что сейчас работает”, “какие агенты живы”, “что с задачами”, “кто ждёт ответа” and “какие блокировки”. Not for version-control working-tree state, build/CI state, system processes/ports, or tickets/issue trackers.
 ---
 
 # Running work

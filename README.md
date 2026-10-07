@@ -1,6 +1,8 @@
-# agent-hub
+# Delamain
 
 Keep long-running coding work moving across chat sessions with Claude Code or Codex.
+
+The name comes from Delamain, the AI that runs the cab fleet in Cyberpunk 2077: one coordinator, a fleet of autonomous workers, each with its own character.
 
 **Ask your agent first:** [Should we install this? Agent guide →](docs/agents/README.md#assess-fit-before-installing)
 
@@ -28,11 +30,11 @@ It runs locally for **one person on one machine**.
    **Claude Code** (2.1.287+; Python 3.10+), in its chat:
 
    ```text
-   /plugin marketplace add ilya-kozyrev/claude-agent-hub
-   /plugin install agent-hub@claude-agent-hub
+   /plugin marketplace add ilya-kozyrev/delamain
+   /plugin install delamain@delamain
    ```
 
-   Confirm `/agent-hub:hub` is available after installation. [Installation and permissions →](docs/install.md)
+   Confirm `/delamain:hub` is available after installation. [Installation and permissions →](docs/install.md)
 
    **Codex** (Python 3.11+): [clone, install and trust hooks →](docs/codex.md#install-in-codex).
 
@@ -41,14 +43,14 @@ It runs locally for **one person on one machine**.
 2. **Set up your project.** Open your repository in the chosen host and ask:
 
    ```text
-   Use agent-hub:setup for this repository.
+   Use delamain:setup for this repository.
    ```
 
-3. **Give the hub a job.** In Claude Code, start with `/agent-hub:hub`; in Codex, ask to use
-   `agent-hub:hub`. For example:
+3. **Give the hub a job.** In Claude Code, start with `/delamain:hub`; in Codex, ask to use
+   `delamain:hub`. For example:
 
    ```text
-   Use agent-hub:hub to plan a stage called csv-export: add CSV export to the reports page.
+   Use delamain:hub to plan a stage called csv-export: add CSV export to the reports page.
    Wait for my approval of the plan. Stop at open PRs with green CI; ask before merging.
    ```
 

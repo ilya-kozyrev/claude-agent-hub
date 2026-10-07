@@ -1,6 +1,6 @@
 # Why a hub and headless agents
 
-This page explains why agent-hub splits long work between one hub session and headless agents, why Claude Code's
+This page explains why Delamain splits long work between one hub session and headless agents, why Claude Code's
 subagents are not enough for that on their own, and why a written handoff beats `/compact` for work that outlives one
 session. The numbers come from one project that ran several multi-week stages this way. Claude Code behaviour is
 quoted from the official docs, listed under [Sources](#sources).
@@ -37,7 +37,7 @@ What that looked like in practice:
 None of this came from a hard task. It came from one session doing planning, waiting, log reading and coordination in
 the same context, so every cheap step paid for the whole history. The fixes are plain: keep the coordinating context
 small, run heavy and long work in separate sessions, wait in the background instead of polling, and start a fresh
-session from a short written state instead of dragging the old one along. agent-hub is those fixes as files and small
+session from a short written state instead of dragging the old one along. Delamain is those fixes as files and small
 CLIs.
 
 ## Why not let one session launch many subagents
@@ -71,7 +71,7 @@ included, with the measurements behind it: [launch-modes.md](launch-modes.md).
 
 Claude Code also has agent view (background sessions you dispatch and watch from one screen, research preview), agent
 teams (a lead and teammates that message each other, experimental) and cross-session messaging [4][5]. If one of them
-covers your case, use it. agent-hub sits on plain `claude -p` and adds what those do not keep for you as files: a
+covers your case, use it. Delamain sits on plain `claude -p` and adds what those do not keep for you as files: a
 journal any session can wait on, an owner-question register, a lock board with a hook, and a handoff that lets the
 hub itself be replaced every few hours.
 
@@ -162,7 +162,7 @@ contexts, and what crosses from one hub to the next is a file you can read.
   [9][10]. Give `jwait` a `--for` that fits that limit (the default is 55m, inside the one-hour prompt cache), and run `agent spawn` as an ordinary foreground call: it
   returns as soon as the agent has written its first event.
 - **Small tasks do not need it.** A 30-minute change you watch from start to finish is one session, perhaps with a
-  subagent for the search. Use agent-hub when work outlives a session, runs in parallel or has to wait for something.
+  subagent for the search. Use Delamain when work outlives a session, runs in parallel or has to wait for something.
 
 You can start with three tools: `agent` to start and message agents, `jlog` to write the journal and `jwait` to wait on
 it. `roles`, `ask`, `lock`, `nightq` and `hub takeover` start to matter once there is more than one session or more

@@ -77,7 +77,7 @@ def main():
         return
     if not args.model:
         parser.error('--model is required for a live run; no default model is invented')
-    root = Path(tempfile.mkdtemp(prefix='agent-hub-codex-live-'))
+    root = Path(tempfile.mkdtemp(prefix='delamain-codex-live-'))
     print(f'Control directory: {root}', flush=True)
     work = root / 'repo'
     work.mkdir()

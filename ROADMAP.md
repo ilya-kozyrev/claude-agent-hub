@@ -21,7 +21,7 @@ What is planned next, in order. An item moves to the [CHANGELOG](CHANGELOG.md) w
    and the summaries printed for the owner. Journal status words (`DONE`, `BLOCKED`) stay as they are:
    waiters match them. Text written for the model (skills, hook messages) stays English; the hub answers in the
    user's language anyway. A test fails the build when a catalog misses a key.
-2. **First-run setup wizard.** `agent-hub:setup` grows from lock resources into the one flow a new user runs after
+2. **First-run setup wizard.** `delamain:setup` grows from lock resources into the one flow a new user runs after
    installing: where the hub runs (Claude Desktop or a terminal, which decides the optional modules), shared resources
    and the commands that touch them, reviewers, models and context window (the handoff threshold and the context
    budget follow from it), the default delegation level, how the project waits for CI, a `hub-rules.md` of the team's

@@ -1,6 +1,6 @@
 ---
 name: hub
-description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude Code or Codex agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions agent-hub or "the hub skill", or asks you to plan work for agents or to run work through agents.
+description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude Code or Codex agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions Delamain (formerly agent-hub) or "the hub skill", or asks you to plan work for agents or to run work through agents.
 ---
 
 # Stage hub: tools and recommended rules
@@ -75,7 +75,7 @@ leave them until then.
 the stage directory, registers you as `hub-1`, writes the start line and prints the first `jwait`. Use `--session self`;
 the tool resolves the current host's session identity (`CODEX_THREAD_ID` in Codex, `CLAUDE_CODE_SESSION_ID`
 in Claude, or `AGENT_SESSION_ID` in a detached worker). In Claude Desktop you may pass the `local_…` id.
-An ordinary shell must pass an actual full session id. Offer `agent-hub:setup` if the project has no `.agent-hub/` yet.
+An ordinary shell must pass an actual full session id. Offer `delamain:setup` if the project has no `.agent-hub/` yet.
 Follow warnings about shadowed tools or an outdated CLI.
 
 **Names say what the work is.** The stage name is the goal in 1–3 words (`retro-fixes`, `yc-move`), never `hub-09`,
@@ -144,7 +144,8 @@ after actual takeover; a clientThreadId is not a real session. Uncertain results
 hidden CLI fallback. On ALARM, tell the owner one line: request unconfirmed and the handoff path; the owner confirms
 the thread or takes over by hand, then stop. Native APIs cannot set Full Access. CLI replacement uses --surface cli.
 
-An automatic successor prompt carries `[agent-hub auto-handoff k/N]`: run its takeover command, then run the digest's
+An automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
+written for one release; `[delamain auto-handoff k/N]` means the same): run its takeover command, then run the digest's
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
 checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
 Questions go to `ask add` with a default; hand over again when the budget requires it.
@@ -180,7 +181,8 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
 
 **With the watchdog on** (the takeover digest says so; `docs/monitoring.md`): a hub that sleeps without a waiter is fine, the
 watchdog wakes it when lines addressed to it have waited 15 min — but keep one `jwait` anyway, it is the faster path. A
-wake arrives as a message that starts `[agent-hub watchdog] <stage>: N journal lines addressed to you have waited since
+wake arrives as a message that starts `[agent-hub watchdog]` (the name before the rename, still written for one
+release; `[delamain watchdog]` means the same), then `<stage>: N journal lines addressed to you have waited since
 HH:MM …`: run the digest `jwait` with `--since HH:MM`, handle what it shows, keep one waiter. An idle `claude --bg` hub is
 woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
 you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
@@ -379,7 +381,7 @@ refused to everyone but its holder. Every other resource — a deploy window, a 
 a shared test database — is named by the project in `lock-rules.json` (`<repo>/.agent-hub/` or the hub home), with
 the commands that touch it. `lock rules` lists what applies where you are; `lock take <resource> --until … --why …`
 refuses a name nobody configured and prints the known ones; `lock rules check "<command>"` shows which lock would
-refuse a command. To set the resources up, use the `agent-hub:setup` skill.
+refuse a command. To set the resources up, use the `delamain:setup` skill.
 
 ## Project configuration
 

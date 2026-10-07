@@ -247,16 +247,23 @@ export function onceArgs(a: CommandArgs): string[] {
   return out
 }
 
-/** The dev copy of the mod is tested beside the installed agent-hub, whose own mod then registers the plain name. */
+/**
+ * The dev copy of the mod is tested beside the installed plugin, whose own mod then registers the plain name. The
+ * installed plugin is `delamain`; its command before the rename, LEGACY_COMMAND, stays answered by it and by the dev copy.
+ */
+const INSTALLED_PLUGIN = 'delamain'
 const DEV_PLUGIN = 'agent-top-dev'
-const DEV_ALSO_ANSWERS = 'agent-hub:agent-top'
+const LEGACY_COMMAND = 'agent-hub:agent-top' // rename:keep rename:transition
 
 /**
- * Whether `/command` is this module's: bare `agent-top`, `<this plugin>:agent-top`, and, in the dev copy only,
- * `agent-hub:agent-top`. Every other `<x>:agent-top` belongs to another plugin.
+ * Whether `/command` is this module's: bare `agent-top`, `<this plugin>:agent-top`, and, in the installed plugin and in
+ * the dev copy, `delamain:agent-top` and the command from before the rename. Every other `<x>:agent-top` belongs to
+ * another plugin.
  */
 export function isOwnCommand(command: string, pluginName: string): boolean {
-  return command === 'agent-top' || command === `${pluginName}:agent-top` || (pluginName === DEV_PLUGIN && command === DEV_ALSO_ANSWERS)
+  if (command === 'agent-top' || command === `${pluginName}:agent-top`) return true
+
+  return (pluginName === INSTALLED_PLUGIN || pluginName === DEV_PLUGIN) && (command === `${INSTALLED_PLUGIN}:agent-top` || command === LEGACY_COMMAND)
 }
 
 // ---------------------------------------------------------------- polling plan

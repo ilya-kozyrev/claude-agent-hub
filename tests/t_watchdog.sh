@@ -106,8 +106,9 @@ check "$(runs sd)" 1 "R3 detached: the hub has run once so far"
 check "$(tick)" 0 "R3 detached: tick exits 0"
 check "$(runs sd)" 2 "R3 detached: a line 16 min old, hub silent, no waiter → resumed once (agent send)"
 grep -q "\[watchdog\] woke hub-3 (agent send --stage sd hub-3, attempt 1): 1 lines waiting since" "$(J sd)"; check $? 0 "R3 detached: the record line names the transport"
-grep -q "\[cli\] @hub-3 (session resumed, pid [0-9]*) \[agent-hub watchdog\] sd: 1 journal lines addressed to you have waited since [0-9:]* and no jwait of yours is running\. Run your digest jwait with --since [0-9:]*, handle what it shows, and keep one waiter\. Stop these wake-ups: watchdog quiet --stage sd --reason" "$(J sd)"
+grep -q "\[cli\] @hub-3 (session resumed, pid [0-9]*) \[agent-hub watchdog\] sd: 1 journal lines addressed to you have waited since [0-9:]* and no jwait of yours is running\. Run your digest jwait with --since [0-9:]*, handle what it shows, and keep one waiter\. Stop these wake-ups: watchdog quiet --stage sd --reason" "$(J sd)"  # rename:keep: the wake prefix stays on the former name for one release
 check $? 0 "R3 detached: the hub got the wake text (digest jwait --since, one waiter, quiet)"
+grep -q "\[delamain watchdog\]" "$(J sd)"; check $? 1 "rename: the wake prefix written now is the former name, not the new form (a hub on an older plugin copy reads only it)"
 tick > /dev/null; check "$(runs sd)" 2 "R3 safety: a second tick in the same episode wakes no second time"
 
 # R3 detached negatives: nothing is resumed
@@ -205,13 +206,16 @@ import json, os, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 resume = [c for c in calls if "--resume" in c["argv"]][0]
 text = resume["argv"][-1]
-assert text.startswith("[agent-hub watchdog] sb1: 1 journal lines addressed to you have waited since"), text
+assert text.startswith("[agent-hub watchdog] sb1: 1 journal lines addressed to you have waited since"), text  # rename:keep: the former name for one release
 assert "Background commands of your last turn were stopped; re-arm what you need." in text, text
 assert resume["cwd"] == os.path.realpath(sys.argv[2]), resume["cwd"]
 sys.path.insert(0, sys.argv[3])
 import autopilot
 assert not autopilot.owner_spoke(text), "the wake text would reset the autopilot chain"
-assert autopilot.owner_spoke("is the watchdog [agent-hub watchdog] on?"), "positive control: a person's prompt still counts"
+assert text.startswith(autopilot.WATCHDOG_MARKER), "the writer and the reader share one definition of the prefix"
+assert not autopilot.owner_spoke(text.replace("[agent-hub watchdog]", "[delamain watchdog]", 1)), "the new form of the prefix is exempt too"  # rename:keep
+assert autopilot.owner_spoke("how is it going?"), "negative control: an ordinary owner prompt still resets the chain"
+assert autopilot.owner_spoke("is the watchdog [delamain watchdog] on?"), "positive control: a person's prompt still counts"
 PY
 check $? 0 "R3 claude-bg: the wake text names the stopped background commands; the resume runs in the hub's cwd; it is not read as the owner speaking (B)"
 grep -q "\[watchdog\] woke hub-4 (claude stop ${B1:0:8}; claude --bg --resume ${B1:0:8}" "$(J sb1)"; check $? 0 "R3 claude-bg: the record line names stop + resume"
@@ -226,12 +230,12 @@ neg_bg(){  # NAME NUM SETUP-COMMAND TEXT: a hub that must not be stopped or resu
 neg_bg sbbusy 12 'FX rows "$FAKE_WD_ROWS" ${SID:0:8} $SID background busy "$CWD"' "a busy hub is not touched"
 neg_bg sbfresh 13 'FX transcript $SID 5 ok' "a hub whose transcript is 5 min old is not silent"
 neg_bg sbnojob 14 'rm -rf "$CLAUDE_CONFIG_DIR/jobs/${SID:0:8}"' "no saved options of the background session → notify only"
-grep -q "agent-hub: sbnojob — hub silent [0-9]* min, 1 lines waiting" "$R/notify.log"; check $? 0 "…and the owner is notified (stage name, minutes, count)"
+grep -q "delamain: sbnojob — hub silent [0-9]* min, 1 lines waiting" "$R/notify.log"; check $? 0 "…and the owner is notified (stage name, minutes, count)"
 neg_bg sbwaiting 15 'FX rows "$FAKE_WD_ROWS" ${SID:0:8} $SID background waiting "$CWD"' "a hub waiting for an answer (status waiting) is not stopped"
 B16=$(U 16); mk_bhub sbfail $B16; FX jline sbfail 16 "[exec-1] DONE a line is waiting"
 reset_log; FAKE_WD_AGENTS=fail WD run --stage "$TS" > "$R/tick.out" 2>&1
 check "$(( $(resumed) + $(stopped) ))" 0 "R3 negative: \`claude agents --json\` fails (busy unknown) → no stop, no resume"
-grep -q "agent-hub: sbfail — hub silent" "$R/notify.log"; check $? 0 "…the owner is notified instead"
+grep -q "delamain: sbfail — hub silent" "$R/notify.log"; check $? 0 "…the owner is notified instead"
 # failures of the wake itself: the owner is told, nothing else is started
 B17=$(U 17); mk_bhub sbcopy $B17; FX jline sbcopy 16 "[exec-1] DONE a line is waiting"
 reset_log; FAKE_WD_RESUME=copy WD run --stage "$TS" > "$R/tick.out" 2>&1
@@ -243,11 +247,11 @@ assert not [r for r in json.load(open(sys.argv[1])) if r["id"].startswith("cc")]
 PY
 check $? 0 "…and no copy is listed any more"
 grep -q "\[watchdog\] wake of hub-4 failed (.*the CLI started a copy of the session" "$(J sbcopy)"; check $? 0 "…the journal records the failed wake"
-grep -q "agent-hub: sbcopy — wake failed" "$R/notify.log"; check $? 0 "…and the owner is notified"
+grep -q "delamain: sbcopy — wake failed" "$R/notify.log"; check $? 0 "…and the owner is notified"
 B18=$(U 18); mk_bhub sbstop $B18; FX jline sbstop 16 "[exec-1] DONE a line is waiting"
 reset_log; FAKE_WD_STOP=fail WD run --stage "$TS" > "$R/tick.out" 2>&1
 check "$(resumed)" 0 "R3 claude-bg: claude stop fails → no resume"
-grep -q "agent-hub: sbstop — wake failed" "$R/notify.log"; check $? 0 "…the owner is notified"
+grep -q "delamain: sbstop — wake failed" "$R/notify.log"; check $? 0 "…the owner is notified"
 # H1: a session that appears during the resume without the CLI naming it as a copy is not tied to this call: never stopped
 B21=$(U 21); mk_bhub sbstr $B21; FX jline sbstr 16 "[exec-1] DONE a line is waiting"
 reset_log; : > "$R/notify.log"; FAKE_WD_RESUME=stranger WD run --stage "$TS" > "$R/tick.out" 2>&1
@@ -260,7 +264,7 @@ assert "feedface" in ids, ids
 PY
 check $? 0 "H1: …and it is still listed"
 grep -q "wake of hub-4 failed (.*a new session appeared during the resume, not stopped" "$(J sbstr)"; check $? 0 "H1: the journal says a new session appeared, not stopped"
-grep -q "agent-hub: sbstr — wake failed" "$R/notify.log"; check $? 0 "H1: …and the owner is notified"
+grep -q "delamain: sbstr — wake failed" "$R/notify.log"; check $? 0 "H1: …and the owner is notified"
 # M1: the session turned interactive (opened in a terminal) after the first look: not stopped, not resumed
 B22=$(U 22); mk_bhub sbkind $B22; FX jline sbkind 16 "[exec-1] DONE a line is waiting"
 reset_log; : > "$R/notify.log"; FAKE_WD_KIND=interactive FAKE_WD_KIND_FROM=2 WD run --stage "$TS" > "$R/tick.out" 2>&1
@@ -271,7 +275,7 @@ B23=$(U 23); mk_bhub sbcf $B23; FX jline sbcf 16 "[exec-1] DONE a line is waitin
 reset_log; : > "$R/notify.log"; FAKE_WD_RESUME=copy FAKE_WD_STOP=copy-fail WD run --stage "$TS" > "$R/tick.out" 2>&1
 grep -q "the cleanup failed (claude stop exit 1" "$(J sbcf)"; check $? 0 "M2: a failing stop of the copy → the journal says the cleanup failed"
 grep -q "the copy was stopped" "$(J sbcf)"; check $? 1 "M2 negative: …and does not claim the copy was stopped"
-grep -q "agent-hub: sbcf — wake failed" "$R/notify.log"; check $? 0 "M2: …the owner is notified"
+grep -q "delamain: sbcf — wake failed" "$R/notify.log"; check $? 0 "M2: …the owner is notified"
 B24=$(U 24); mk_bhub sbcg $B24; FX jline sbcg 16 "[exec-1] DONE a line is waiting"
 reset_log; FAKE_WD_RESUME=copy FAKE_WD_STOP=copy-ghost WD run --stage "$TS" > "$R/tick.out" 2>&1
 grep -q "the cleanup failed (it is still listed" "$(J sbcg)"; check $? 0 "M2: a stop that exits 0 but leaves the copy listed → the cleanup failed too"
@@ -295,7 +299,7 @@ reset_log; : > "$R/notify.log"; AGENT_HUB_WATCHDOG_STOP_WAIT=1 FAKE_WD_STOP_LING
 check "$(resumed)" 0 "A1 negative: the old process still runs when the wait is over → no resume in this tick"
 kill $LP; wait $LP 2>/dev/null; LP=
 grep -q "wake of hub-4 failed (.*is still exiting after 1 s: not resuming now" "$(J sbstuck)"; check $? 0 "A1: …the journal says so"
-grep -q "agent-hub: sbstuck — wake failed" "$R/notify.log"; check $? 0 "A1: …and the owner is notified"
+grep -q "delamain: sbstuck — wake failed" "$R/notify.log"; check $? 0 "A1: …and the owner is notified"
 python3 - "$FAKE_WD_ROWS" <<'PY'
 import json, sys
 assert not json.load(open(sys.argv[1])), "a session was started"
@@ -345,7 +349,7 @@ PY
 reset_log; : > "$R/notify.log"; A1_T0=$(date +%s); A1T 0
 check "$(stopped):$(resumed)" "0:0" "A1 r2: a listed idle row without a pid → no claude stop, no resume"
 grep -q "wake of hub-4 failed (.*the hub's row has no pid, so a stop's release cannot be told: not stopping" "$(J sbnopid)"; check $? 0 "A1 r2: …the journal says why"
-grep -q "agent-hub: sbnopid — wake failed" "$R/notify.log"; check $? 0 "A1 r2: …and the owner is notified"
+grep -q "delamain: sbnopid — wake failed" "$R/notify.log"; check $? 0 "A1 r2: …and the owner is notified"
 A1T 20; check "$(stopped):$(resumed)" "0:0" "A1 r2: …and a later tick does not stop or resume it either"
 # stop succeeded but the re-list fails, or still shows the row: the process identity is saved at once; a later tick, with the hub
 # unlisted and the old process alive, does not resume
@@ -376,7 +380,7 @@ check "$(calls | tr '\n' '|')" "agents|agents|resume $B19 1 --bg|agents|" "R3 cl
 B20=$(U 20); mk_bhub sbterm $B20; FX jline sbterm 16 "[exec-1] DONE a line is waiting"; FX hubfield sbterm host term; FX rows "$FAKE_WD_ROWS"
 reset_log; tick > /dev/null
 check "$(( $(resumed) + $(stopped) ))" 0 "R3 negative: not listed and not started in the background (host term) → notify only"
-grep -q "agent-hub: sbterm — hub silent" "$R/notify.log"; check $? 0 "…the owner is notified"
+grep -q "delamain: sbterm — hub silent" "$R/notify.log"; check $? 0 "…the owner is notified"
 
 # ---------------------------------------------------------------- R3 notify-only hosts
 D1=$(U 31); D1CLI=$(U 32); mkdir -p "$CLAUDE_SESSIONS_DIR/a/b"
@@ -385,11 +389,11 @@ TS=sdesk; mkdir -p "$R/sdesk/coordinator/work"; "$B/roles" set --stage sdesk hub
 FX backdate sdesk 120; FX transcript "$D1CLI" 20 ok; FX jline sdesk 16 "[exec-1] DONE a line for the desktop hub"
 reset_log; tick > /dev/null
 check "$(( $(resumed) + $(stopped) ))" 0 "R3 notify-only: a Desktop hub is never stopped or resumed"
-grep -q "agent-hub: sdesk — hub silent [0-9]* min, 1 lines waiting" "$R/notify.log"; check $? 0 "R3 notify-only: …it gets a notification"
+grep -q "delamain: sdesk — hub silent [0-9]* min, 1 lines waiting" "$R/notify.log"; check $? 0 "R3 notify-only: …it gets a notification"
 I1=$(U 33); mk_bhub sterm2 $I1; FX hubfield sterm2 host term; FX jline sterm2 16 "[exec-1] DONE a line for the terminal hub"
 FX rows "$FAKE_WD_ROWS" ${I1:0:8} $I1 interactive idle "$CWD"; reset_log; tick > /dev/null
 check "$(( $(resumed) + $(stopped) ))" 0 "R3 notify-only: a terminal (interactive) hub is never stopped or resumed"
-grep -q "agent-hub: sterm2 — hub silent" "$R/notify.log"; check $? 0 "R3 notify-only: …it gets a notification"
+grep -q "delamain: sterm2 — hub silent" "$R/notify.log"; check $? 0 "R3 notify-only: …it gets a notification"
 
 # ---------------------------------------------------------------- R4: the last turn died on an API error
 R4A=$(U 41); mk_bhub sr4 $R4A; FX transcript $R4A 16 error
@@ -487,7 +491,7 @@ at = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=float(sys.argv[2])
 json.dump({"chain": 1, "pending": {"n": 5, "kind": "bg", "at": at, "id": "abcd1234"}}, open(sys.argv[1], "w"))
 PY
 tick > /dev/null; tick > /dev/null
-check "$(count 'agent-hub: ssh — handoff stuck' "$R/notify.log")" 1 "safety: a handoff stuck for 2 h → the owner is notified once (two ticks)"
+check "$(count 'delamain: ssh — handoff stuck' "$R/notify.log")" 1 "safety: a handoff stuck for 2 h → the owner is notified once (two ticks)"
 check "$(( $(resumed) + $(stopped) ))" 0 "safety: …and nothing is started or resumed"
 check "$(python3 -c "import json;print(json.load(open('$R/ssh/auto-handoff.json'))['pending']['n'])")" 5 "safety: …the pending record is left alone"
 # a replaced hub starts clean
@@ -523,7 +527,7 @@ bo 45;  check "$(resumed)" 3 "backoff: …the third at +45 min (30 min after the
 bo 104; check "$(resumed)" 3 "backoff: …none at +104 min"
 bo 105; check "$(resumed)" 4 "backoff: …the fourth at +105 min (60 min after the third)"
 check "$(count 'wake of hub-4 failed' "$(J sbo)")" 4 "backoff: every failed attempt is journaled"
-check "$(count 'agent-hub: sbo — wake failed' "$R/notify.log")" 4 "backoff: …and the owner notified each time"
+check "$(count 'delamain: sbo — wake failed' "$R/notify.log")" 4 "backoff: …and the owner notified each time"
 # the hub shows activity after a wake: the episode is over, a later silence starts a new one at once
 FX_NOW=$(utc_iso 106) FX age "$R/claude-home/projects/p/$B81.jsonl" 0
 bo 110; check "$(state_val stages sbo hub episode)" "" "backoff: activity after the wake resets the episode"
@@ -535,10 +539,10 @@ check "$(state_val stages sbo hub episode attempts)" 1 "backoff: …with one att
 B82=$(U 82); mk_bhub sbv $B82; FX jline sbv 16 "[exec-1] DONE a line while the wake leaves no trace"; reset_log
 bv(){ AGENT_HUB_WATCHDOG_NOW=$(utc_iso "$1") WD run --stage sbv > "$R/tick.out" 2>&1; }
 : > "$R/notify.log"; bv 0; check "$(resumed)" 1 "wake verification: the wake exits 0"
-bv 3; check "$(count 'agent-hub: sbv' "$R/notify.log")" 0 "wake verification: nothing is said within 5 min"
-bv 6; check "$(count 'agent-hub: sbv — wake failed' "$R/notify.log")" 1 "wake verification: no activity of the hub 5 min after the wake → failed, the owner is notified"
+bv 3; check "$(count 'delamain: sbv' "$R/notify.log")" 0 "wake verification: nothing is said within 5 min"
+bv 6; check "$(count 'delamain: sbv — wake failed' "$R/notify.log")" 1 "wake verification: no activity of the hub 5 min after the wake → failed, the owner is notified"
 grep -q "\[watchdog\] wake of hub-4 failed (no activity of the hub within 5 min)" "$(J sbv)"; check $? 0 "wake verification: …and the journal says so"
-bv 7; check "$(count 'agent-hub: sbv — wake failed' "$R/notify.log")" 1 "wake verification: …only once"
+bv 7; check "$(count 'delamain: sbv — wake failed' "$R/notify.log")" 1 "wake verification: …only once"
 # R4: a hub that fails again after the wake (another API error record) is not "recovered": the backoff goes on
 B83=$(U 83); mk_bhub sr4loop $B83; FX transcript $B83 16 error; reset_log
 bl(){ AGENT_HUB_WATCHDOG_NOW=$(utc_iso "$1") WD run --stage sr4loop > "$R/tick.out" 2>&1; }
@@ -562,8 +566,8 @@ FX jline spr 16 "[exec-1] DONE needle-zq41 the secret line text"
 $B/ask add --stage spr --blocks x --default "needle-qq77 default" --due 2020-01-01T10:00 "needle-qq78 secret question" > /dev/null
 : > "$R/notify.log"; : > "$R/remote.log"
 AGENT_HUB_NOTIFY_CMD="[\"$FB/remotecmd\",\"--data\",\"{message}\"]" WD run --stage spr > "$R/tick.out" 2>&1
-grep -q "agent-hub: spr — hub silent [0-9]* min, 1 lines waiting" "$R/notify.log"; check $? 0 "privacy: the local notification carries the stage name, minutes and the count"
-grep -q "^remote: --data agent-hub: spr — hub silent [0-9]* min, 1 lines waiting$" "$R/remote.log"; check $? 0 "privacy: …and so does the remote one (the {message} placeholder replaced)"
+grep -q "delamain: spr — hub silent [0-9]* min, 1 lines waiting" "$R/notify.log"; check $? 0 "privacy: the local notification carries the stage name, minutes and the count"
+grep -q "^remote: --data delamain: spr — hub silent [0-9]* min, 1 lines waiting$" "$R/remote.log"; check $? 0 "privacy: …and so does the remote one (the {message} placeholder replaced)"
 leaks=$(cat "$R/notify.log" "$R/remote.log" | grep -c -e needle -e "$D2" -e "$D2CLI" -e 'hub-5' -e '/'); check "$leaks" 0 "privacy: no line text, question text, session id, tag or path in any notification"
 grep -q needle-zq41 "$(J spr)"; check $? 0 "privacy control: the secret text is in the journal, so the grep above could have found it"
 

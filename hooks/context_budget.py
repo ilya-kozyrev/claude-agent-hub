@@ -27,8 +27,9 @@ handoff`, `hub succeed` with the hub's model, effort (the hook input's `effort.l
 reason says "hand over now" and Bash, Write, Edit and NotebookEdit are gated too: Bash passes only when every command of
 the line is `hub handoff`, `hub succeed`, `hub desktop-*`, `jlog` or `jwait` (no substitution, no subshell), a file tool only on a
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
-"[agent-hub auto-handoff k/N]" and does not start with the watchdog's "[agent-hub watchdog]" (the owner spoke) resets the
-stage's automatic-handoff chain.
+"[agent-hub auto-handoff k/N]" (written under the name used before the rename; "[delamain auto-handoff k/N]" counts too)
+and does not start with the watchdog's "[agent-hub watchdog]" (the name before the rename, still written; "[delamain watchdog]"
+counts too) means the owner spoke and resets the stage's automatic-handoff chain.
 
 Settings (hub home config.json or environment; docs/reference.md "Agent discipline"):
   AGENT_HUB_CONTEXT_BUDGET       on | off (default on)
@@ -60,9 +61,18 @@ DEFAULT_ESCAPE = r"HANDOFF-[^\s/\\'\"`]*\.md|handoff-ok"
 AUTOPILOT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit", "apply_patch")
 AUTOPILOT_FILE = re.compile(r"(?:^|/)HANDOFF-[^/\s]*\.md$")
 SEPARATORS = (";", "&&", "||", "|", "&")
-DEFAULT_TODO = ("What to do: write a handoff with the agent-hub:handoff skill (the plugin's "
-                "templates/HANDOFF-template.md, at most 12 KB; the chronology goes to the journal) and continue in a "
-                "new session from it.")
+
+
+def default_todo() -> str:
+    """The "what to do" sentence. The skill is named in both forms for one release (rename:keep): a session started
+    before the rename runs this hook from the updated plugin folder but knows the skill only as `agent-hub:handoff`."""
+    try:
+        import subagent_rules as sr  # noqa: E402  (bin/ is on sys.path once hubcore() ran)
+        skill = sr.named("handoff")  # rename:transition
+    except Exception:  # noqa: BLE001 — fail-open: the current name alone
+        skill = "`delamain:handoff`"
+    return (f"What to do: write a handoff with the skill {skill} using the plugin's templates/HANDOFF-template.md "
+            "(at most 12 KB; the chronology goes to the journal) and continue in a new session from it.")
 
 
 def autopilot():
@@ -316,7 +326,7 @@ def main() -> None:
     warn = hc.int_setting("AGENT_HUB_CONTEXT_WARN", defaults["warn"])
     block = hc.int_setting("AGENT_HUB_CONTEXT_BLOCK", defaults["block"])
     step = hc.int_setting("AGENT_HUB_CONTEXT_WARN_STEP", defaults["step"])
-    todo = hc.setting("AGENT_HUB_CONTEXT_TODO") or DEFAULT_TODO
+    todo = hc.setting("AGENT_HUB_CONTEXT_TODO") or default_todo()
     escape_src = hc.setting("AGENT_HUB_CONTEXT_ESCAPE") or DEFAULT_ESCAPE
     try:
         escape = re.compile(escape_src)

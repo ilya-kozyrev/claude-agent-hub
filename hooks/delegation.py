@@ -3,7 +3,9 @@
 
 Hook subcommands (hook JSON on stdin):
   session-start  SessionStart: inject the policy text of the session's level           (only when the dial is on)
-  prompt         UserPromptSubmit: re-inject it when the level changed since the last injection (dial on)
+  prompt         UserPromptSubmit: re-inject it when the level changed since the last injection (dial on); and, dial
+                 on or off, a note when the prompt starts with the slash command of a skill under the plugin's former
+                 name (a successor started by an older hub), see former_name_context()
   pre-tool       PreToolUse on Agent|Task|Workflow: AGENT_HUB_DELEGATION_RULES (dial on; may test the level),
                  then AGENT_HUB_EFFORT_RULES (always, Agent/Task only) — the first deny wins
 
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -50,6 +53,13 @@ except Exception:  # noqa: BLE001 — fail-open: as a hook, never block a sessio
 
 PRUNE_AFTER_DAYS = 30
 LEVELS = range(0, 6)
+# rename:transition — the plugin's name before the rename. A hub on an older plugin copy starts its successor with the prompt
+# `/agent-hub:hub take over stage …` (the command before the rename); the successor is a new session that has only this
+# plugin's `/delamain:hub`, and a model that gets an unknown slash command as plain text may refuse to follow it
+# (Haiku did, CLI 2.1.289).
+FORMER_PLUGIN = sr.LEGACY_PLUGIN_NAME  # rename:transition
+# rename:transition
+FORMER_COMMAND_RE = re.compile(r"\s*/" + re.escape(FORMER_PLUGIN) + r":([A-Za-z0-9][A-Za-z0-9_-]*)(?=\s|\Z)")
 BUILTIN_LEVELS = {
     0: ("OFF", "Do everything yourself. No subagents (the Agent and Workflow tools are blocked by a hook) and no "
                "background sessions for your own work; parallelise with background Bash if needed."),
@@ -156,6 +166,39 @@ def prune() -> None:
                 pass
 
 
+def plugin_name() -> str:  # rename:transition (only former_name_context uses it)
+    """This plugin's name (the namespace of its skills), from its manifest."""
+    for manifest in (".claude-plugin", ".codex-plugin"):
+        try:
+            name = json.loads((Path(PLUGIN_ROOT) / manifest / "plugin.json").read_text(encoding="utf-8")).get("name")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(name, str) and name:
+            return name
+    return "delamain"
+
+
+def own_skills() -> set:  # rename:transition (only former_name_context uses it)
+    """The names of this plugin's skills: the folders under skills/ that hold a SKILL.md (read, never a list to go stale)."""
+    return {p.parent.name for p in (Path(PLUGIN_ROOT) / "skills").glob("*/SKILL.md")}
+
+
+def former_name_context(prompt) -> str | None:  # rename:transition
+    """A note for the model when the prompt starts with `/agent-hub:<skill>` (the command before the rename) and <skill> is
+    one of this plugin's skills, else None: the harness does not know the former slash command and hands it to the model as text. Any other prompt
+    (plain text, `/delamain:…`, another plugin's `/foo:hub`, an unknown skill) gets nothing. The text names no tool and
+    decides nothing, so it is harmless where the former command never arrives (Codex)."""
+    m = FORMER_COMMAND_RE.match(prompt) if isinstance(prompt, str) else None
+    if not m:  # nearly every prompt: no file is read for it
+        return None
+    name, plugin = m.group(1), plugin_name()
+    if plugin == FORMER_PLUGIN or name not in own_skills():
+        return None
+    return (f"`/{FORMER_PLUGIN}:{name}` is the former name of this plugin's skill `/{plugin}:{name}` (the plugin "
+            f"{FORMER_PLUGIN} was renamed to {plugin}). Invoke the skill {sr.named(name, plugin)} and carry out the "
+            f"rest of the prompt as its arguments.")
+
+
 def emit(event: str, **fields) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, **fields}}, ensure_ascii=False))
 
@@ -193,20 +236,28 @@ def main(argv: list) -> int:
         try:
             data = hook_input()
             hc.use_cwd(data.get("cwd"))  # the hub home (its .state, its config.json) of the session's directory
-            if not enabled():
-                return 0
-            sid = data.get("session_id")
-            level, _ = resolve(sid)
-            marker = state_root() / "injected" / sid if sid else None
-            if cmd == "session-start":
-                if marker:
-                    write(marker, str(level))
-                prune()
-                emit("SessionStart", additionalContext=policy(level))
-            elif (read_level(marker) if marker else None) != level:
-                if marker:
-                    write(marker, str(level))
-                emit("UserPromptSubmit", additionalContext=f"Delegation level changed to {level}. " + policy(level))
+            event = "SessionStart" if cmd == "session-start" else "UserPromptSubmit"
+            parts = []
+            if enabled():
+                sid = data.get("session_id")
+                level, _ = resolve(sid)
+                marker = state_root() / "injected" / sid if sid else None
+                if cmd == "session-start":
+                    if marker:
+                        write(marker, str(level))
+                    prune()
+                    parts.append(policy(level))
+                elif (read_level(marker) if marker else None) != level:
+                    if marker:
+                        write(marker, str(level))
+                    parts.append(f"Delegation level changed to {level}. " + policy(level))
+            # rename:transition — independent of the dial: it is about the prompt, not about delegation
+            if cmd == "prompt":
+                note = former_name_context(data.get("prompt"))
+                if note:
+                    parts.append(note)
+            if parts:
+                emit(event, additionalContext="\n\n".join(parts))
         except Exception:  # noqa: BLE001 — fail-open
             pass
         return 0

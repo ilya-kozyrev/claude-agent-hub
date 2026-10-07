@@ -43,7 +43,7 @@ for label, change in (
         print('PASS reject ' + label)
     else:
         raise AssertionError('negative control accepted: ' + label)
-assert market['name'] == 'agent-hub-codex'
+assert market['name'] == 'delamain-codex'
 entry = next(p for p in market['plugins'] if p['name'] == manifest['name'])
 assert entry['source'] == {'source': 'local', 'path': './'}
 print('PASS native marketplace resolves repository root')
@@ -68,11 +68,11 @@ if command -v codex >/dev/null 2>&1; then
   export CODEX_HOME="$TASK_TMP/codex-home"
   mkdir -p "$CODEX_HOME"
   codex plugin marketplace add "$ROOT" --json > "$TASK_TMP/marketplace.json"
-  codex plugin add agent-hub@agent-hub-codex --json > "$TASK_TMP/install.json"
+  codex plugin add delamain@delamain-codex --json > "$TASK_TMP/install.json"
   python3 - "$TASK_TMP/install.json" <<'PY'
 import json, pathlib, sys
 installed = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert installed['pluginId'] == 'agent-hub@agent-hub-codex'
+assert installed['pluginId'] == 'delamain@delamain-codex'
 root = pathlib.Path(installed['installedPath'])
 manifest = json.loads((root / '.codex-plugin/plugin.json').read_text())
 assert (root / manifest['hooks']).is_file()

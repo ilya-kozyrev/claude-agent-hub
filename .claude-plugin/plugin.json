@@ -1,13 +1,13 @@
 {
-  "name": "agent-hub",
+  "name": "delamain",
   "version": "0.9.2",
   "description": "Run a hub session that spawns and steers detached Claude Code and Codex agents: briefs, a shared journal, inboxes, an owner-question register, a lock board, handoffs, and the agent-top console.",
   "author": {
     "name": "Ilya Kozyrev",
     "url": "https://github.com/ilya-kozyrev"
   },
-  "homepage": "https://github.com/ilya-kozyrev/claude-agent-hub",
-  "repository": "https://github.com/ilya-kozyrev/claude-agent-hub",
+  "homepage": "https://github.com/ilya-kozyrev/delamain",
+  "repository": "https://github.com/ilya-kozyrev/delamain",
   "license": "MIT",
   "keywords": ["agents", "headless", "orchestration", "multi-agent", "journal", "handoff", "locks", "coordination"]
 }

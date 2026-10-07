@@ -255,21 +255,21 @@ wd uninstall --scheduler cron; check "$(grep -c . $CT)" 0 "…and uninstall remo
 reset_fakes
 new_home
 wd notify-test; check $RC 0 "notify-test with a local notifier exits 0"
-check "$(count 'agent-hub: test notification' $FAKE_DIR/local.log)" 1 "osascript or notify-send called once with 'agent-hub: test notification'"
+check "$(count 'delamain: test notification' $FAKE_DIR/local.log)" 1 "osascript or notify-send called once with 'delamain: test notification'"
 [ -e $FAKE_DIR/remote.log ]; check $? 1 "negative: no remote command configured, none called"
 has '^local: ok'; check $? 0 "…and the output names the channel"
 rm -f $FAKE_DIR/local.log
 AGENT_HUB_NOTIFY_CMD="[\"$FAKE_DIR/remote.sh\",\"--data\",\"{message}\"]" wd notify-test; check $RC 0 "notify-test with a remote command exits 0"
-check "$(count 'agent-hub: test notification' $FAKE_DIR/local.log)" 1 "…the local notifier was called once"
+check "$(count 'delamain: test notification' $FAKE_DIR/local.log)" 1 "…the local notifier was called once"
 check "$(cat $FAKE_DIR/remote.log)" "--call--
 --data
-agent-hub: test notification" "…the remote got the substituted message as one argument"
+delamain: test notification" "…the remote got the substituted message as one argument"
 grep -q '{message}' $FAKE_DIR/remote.log; check $? 1 "…no {message} literal left"
 has '^remote: ok'; check $? 0 "…and the output says remote ok"
 : > $FAKE_DIR/remote.log; rm -f $FAKE_DIR/local.log
 AGENT_HUB_NOTIFY_LOCAL=off AGENT_HUB_NOTIFY_CMD="[\"$FAKE_DIR/remote.sh\",\"{message}\"]" wd notify-test; check $RC 0 "remote only (local off) exits 0"
 [ -e $FAKE_DIR/local.log ]; check $? 1 "negative: local off, the local notifier is not called"
-check "$(count '^agent-hub: test notification$' $FAKE_DIR/remote.log)" 1 "…the remote is"
+check "$(count '^delamain: test notification$' $FAKE_DIR/remote.log)" 1 "…the remote is"
 AGENT_HUB_NOTIFY_LOCAL=off wd notify-test; check $RC 1 "negative: local off and no remote: exit 1"
 has 'no channel'; check $? 0 "…says there is no channel"
 FAKE_REMOTE_RC=3 AGENT_HUB_NOTIFY_LOCAL=off AGENT_HUB_NOTIFY_CMD="[\"$FAKE_DIR/remote.sh\",\"{message}\"]" wd notify-test; check $RC 1 "negative: a remote that exits non-zero: exit 1"

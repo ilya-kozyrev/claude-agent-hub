@@ -37,7 +37,7 @@ host_cases = {'host_claude_home': ('claude', 'home'), 'host_claude_project': ('c
               'host_terminal_claude': ('claude', 'terminal')}
 if case in ('all', 'host', *host_cases):
     # A deliberately newer cache proves that cross-engine warnings are excluded, not merely absent.
-    cache = tmp/'codex/plugins/cache/market/agent-hub/999.0.0'
+    cache = tmp/'codex/plugins/cache/market/delamain/999.0.0'
     (cache/'bin').mkdir(parents=True)
     (cache/'.codex-plugin').mkdir()
     (cache/'.codex-plugin/plugin.json').write_text(json.dumps({'version':'999.0.0'}))
@@ -119,9 +119,9 @@ if case in ('all', 'runtime'):
     runtime=tmp/'runtime'; shutil.copytree(bins, runtime/'bin', ignore=shutil.ignore_patterns('__pycache__'))
     for engine in ('claude', 'codex'):
         manifest=runtime/f'.{engine}-plugin/plugin.json'; manifest.parent.mkdir()
-        manifest.write_text(json.dumps({'name':'agent-hub','version':'0.9.0' if engine=='claude' else '0.8.0'}))
+        manifest.write_text(json.dumps({'name':'delamain','version':'0.9.0' if engine=='claude' else '0.8.0'}))
     def cache(engine, folder, version=None):
-        path=tmp/engine/'plugins/cache/market/agent-hub'/folder
+        path=tmp/engine/'plugins/cache/market/delamain'/folder
         (path/'bin').mkdir(parents=True)
         if version is not None:
             manifest=path/f'.{engine}-plugin/plugin.json'; manifest.parent.mkdir()
@@ -133,19 +133,28 @@ if case in ('all', 'runtime'):
         extra={'AGENT_HUB_ENGINE':engine, 'CODEX_THREAD_ID':old} if engine=='codex' else {'AGENT_HUB_ENGINE':engine,'CLAUDE_CODE_SESSION_ID':old}
         r=call(runtime/'bin/agent', 'status','--stage','stage-a', extra=extra)
         assert r.returncode==0, r.stderr
-        assert f'agent-hub {expected} ({engine}; {runtime}/bin)' in r.stdout, r.stdout
+        assert f'delamain {expected} ({engine}; {runtime}/bin)' in r.stdout, r.stdout
         assert ('newer' in r.stdout) == (engine=='claude'), r.stdout
     cache('codex', '0.9.2'); cache('codex', '0.9.1')
     for engine in ('claude','codex'):
         extra={'AGENT_HUB_ENGINE':engine, 'CODEX_THREAD_ID':new} if engine=='codex' else {'AGENT_HUB_ENGINE':engine,'CLAUDE_CODE_SESSION_ID':new}
         r=call(runtime/'bin/hub','takeover','--stage','stage-a','--session','self','--dry-run', extra=extra)
         assert r.returncode==0, (r.stdout,r.stderr)
-        assert 'Plugin runtime: agent-hub' in r.stdout and str(runtime/'bin') in r.stdout, r.stdout
+        assert 'Plugin runtime: delamain' in r.stdout and str(runtime/'bin') in r.stdout, r.stdout
         expected='0.9.2' if engine=='codex' else '0.10.0'
         assert f'newer {engine} plugin {expected}' in r.stdout, r.stdout
         digest=r.stdout[r.stdout.index('DIGEST'):]
         assert len(digest.encode()) <= 3072
         assert ('yielded shell session' in digest) == (engine=='codex')
+    # The rename: a newer cache folder under the plugin's name before it is an installed copy too; another name is not.
+    for name, counts in (('delamain', True), ('agent-hub', True), ('other-plugin', False)):  # rename:keep
+        cfg = tmp/f'rename-{name}'
+        (cfg/'plugins/cache/market'/name/'9.9.9/bin').mkdir(parents=True)
+        os.environ['CLAUDE_CONFIG_DIR'] = str(cfg)
+        line = hc.plugin_runtime_line('claude')
+        assert ('ATTENTION: newer claude plugin 9.9.9' in line) == counts, (name, line)
+    os.environ['CLAUDE_CONFIG_DIR'] = str(tmp/'claude')
+    print('PASS rename: the runtime header sees a newer cache under the current and the former plugin name, not under another')
     # An unreadable runtime version cannot honestly be ordered against the caches.
     (runtime/'.claude-plugin/plugin.json').write_text('{}'); (runtime/'.codex-plugin/plugin.json').write_text('{}')
     r=call(runtime/'bin/agent','status','--stage','stage-a',extra={'AGENT_HUB_ENGINE':'codex'})

@@ -264,10 +264,12 @@ usage 320000
 cb UserPromptSubmit | grep -q 'Context budget: 320k'; check $? 0 "budget: warns on crossing 300k (default)"
 cb PostToolUse Bash > $R/cb1.out; check "$(wc -c < $R/cb1.out | tr -d ' ')" 0 "budget: no second warning in the same step"
 usage 352000
-cb PostToolUse Bash | grep -q 'agent-hub:handoff'; check $? 0 "budget: warns again a step later and points at agent-hub:handoff"
+cb PostToolUse Bash > $R/cb1b.out; grep -q 'delamain:handoff' $R/cb1b.out; check $? 0 "budget: warns again a step later and points at delamain:handoff"
+grep -qF '`agent-hub:handoff` in a session started before the rename' $R/cb1b.out; check $? 0 "budget: …and names the skill in its former form for a session started before the rename"  # rename:keep
 cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 1 "budget: below the block threshold, Agent passes"
 usage 510000
-cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 0 "budget: at 500k Agent is denied"
+cb PreToolUse Agent '{"prompt":"go"}' > $R/cb1c.out; grep -q '"deny"' $R/cb1c.out; check $? 0 "budget: at 500k Agent is denied"
+grep -qF 'delamain:handoff' $R/cb1c.out && grep -qF '`agent-hub:handoff` in a session started before the rename' $R/cb1c.out; check $? 0 "budget: the deny reason names the skill in both forms too"  # rename:keep
 cb PreToolUse SendMessage '{"message":"go"}' | grep -q '"deny"'; check $? 0 "budget: SendMessage is denied"
 cb PreToolUse Bash '{"command":"ls"}' | grep -q '"deny"'; check $? 1 "budget: Bash is not gated"
 cb PreToolUse Agent '{"prompt":"take over from /x/HANDOFF-hub-a-2026.md"}' | grep -q '"deny"'; check $? 1 "budget: a handoff path passes"
@@ -306,12 +308,40 @@ ss(){ echo "{\"session_id\":\"$1\"}" | python3 $HOOKS/delegation.py ${2:-session
 ss s1 > $R/d0.out; check "$(wc -c < $R/d0.out | tr -d ' ')" 0 "dial off (default): nothing injected"
 dden Agent general-purpose; check $? 1 "dial off, no rules: every Agent call passes"
 CLAUDE_CODE_SESSION_ID=s1 $B/delegation show | grep -q 'dial is off'; check $? 0 "show says the dial is off"
+# The plugin's name before the rename: a successor started by an older hub gets `/agent-hub:<skill> …` as plain text (the harness
+# does not know that command). The hook adds a note, whether or not the dial is on. Names of the skills come from skills/.
+fp(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":sys.argv[2],"prompt":sys.argv[1]}))' "$1" "${2:-$R/proj}" | python3 $HOOKS/delegation.py prompt; }  # rename:keep
+SKILLS=$(cd "$T/../skills" && ls -d */ | tr -d /)
+echo "$SKILLS" | grep -qx hub && echo "$SKILLS" | grep -qx status; check $? 0 "former name: the skills folder lists the real skills the tests below walk through"
+for sk in $SKILLS; do
+  fp "/agent-hub:$sk take over stage x from /y: run it" > $R/fn.out  # rename:keep
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; sk=sys.argv[2]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "former name" in t and "/agent-hub:"+sk in t and "`delamain:"+sk+"`" in t and "rest of the prompt as its arguments" in t and "`agent-hub:"+sk+"` in a session started before the rename" in t, t' $R/fn.out $sk  # rename:keep
+  check $? 0 "former name, dial off: /agent-hub:$sk names the skill delamain:$sk"  # rename:keep
+done
+fp "  /agent-hub:status list the stages" | grep -q 'delamain:status'; check $? 0 "former name: leading whitespace is allowed"  # rename:keep
+fp "/agent-hub:hub" | grep -q 'delamain:hub'; check $? 0 "former name: the bare command, no arguments"  # rename:keep
+for neg in "/foo:hub take over stage x" "/agent-hub:no-such-skill take over" "/delamain:hub take over stage x" "/agent-hub:hubx foo" "/agent-hub: hub" "please run /agent-hub:hub" "how is it going?" ""; do  # rename:keep
+  fp "$neg" > $R/fn2.out; check "$(wc -c < $R/fn2.out | tr -d ' ')" 0 "former name, negative: nothing for [$neg]"
+done
+echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/"}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a hook input with no prompt"
+echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":["/agent-hub:hub"]}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a prompt that is not a string"  # rename:keep
+fp "/agent-hub:hub take over" | python3 -c 'import json,sys; json.load(sys.stdin)'; check $? 0 "former name: the output is one JSON document"  # rename:keep
+# the skill names and the plugin's name are read from the plugin, not listed in the hook
+FAKE=$R/fakeplug; mkdir -p $FAKE/skills/alpha $FAKE/.claude-plugin; ln -s "$T/../bin" $FAKE/bin; : > $FAKE/skills/alpha/SKILL.md
+echo '{"name": "fakeplug"}' > $FAKE/.claude-plugin/plugin.json
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":sys.argv[1]}))' "/agent-hub:alpha go" | PLUGIN_ROOT=$FAKE python3 $HOOKS/delegation.py prompt | grep -q 'skill `fakeplug:alpha`'; check $? 0 "former name: skill and plugin names come from the plugin root (a skill added there is covered)"  # rename:keep
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":sys.argv[1]}))' "/agent-hub:hub go" | PLUGIN_ROOT=$FAKE python3 $HOOKS/delegation.py prompt > $R/fn4.out; check "$(wc -c < $R/fn4.out | tr -d ' ')" 0 "former name, negative: a skill the plugin root does not have gets nothing"  # rename:keep
+echo '{"name": "agent-hub"}' > $FAKE/.claude-plugin/plugin.json  # rename:keep
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":sys.argv[1]}))' "/agent-hub:alpha go" | PLUGIN_ROOT=$FAKE python3 $HOOKS/delegation.py prompt > $R/fn5.out; check "$(wc -c < $R/fn5.out | tr -d ' ')" 0 "former name, negative: a copy that still carries the former name has nothing to point to"  # rename:keep
 echo '{"AGENT_HUB_DELEGATION": true}' > $R/config.json
 ss s1 | grep -q 'Delegation level 3/5 (BALANCED)'; check $? 0 "dial on: level 3 by default, injected at session start"
 ss s1 prompt > $R/d1.out; check "$(wc -c < $R/d1.out | tr -d ' ')" 0 "prompt: no re-injection while the level is unchanged"
 ss s3 > /dev/null; $B/delegation set 1 --global > /dev/null; ss s3 prompt > $R/d2.out
 grep -q 'Delegation level changed to 1' $R/d2.out && ! ss s3 prompt | grep -q .; check $? 0 "prompt: re-injected once after the level changed elsewhere"
 rm $R/.state/delegation/level
+fp "/agent-hub:hub take over stage x" > $R/fn6.out; python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert t.startswith("Delegation level changed to 3. ") and t.rstrip().endswith("rest of the prompt as its arguments."), t; assert "`delamain:hub`" in t' $R/fn6.out; check $? 0 "former name, dial on: the note is appended to the level change in one injection"  # rename:keep
+fp "/agent-hub:hub take over stage x" > $R/fn7.out; python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert not t.startswith("Delegation level"), t; assert "`delamain:hub`" in t' $R/fn7.out; check $? 0 "former name, dial on: with the level unchanged only the note is injected"  # rename:keep
+fp "how is it going?" > $R/fn8.out; check "$(wc -c < $R/fn8.out | tr -d ' ')" 0 "former name, dial on: a plain prompt injects nothing"
 CLAUDE_CODE_SESSION_ID=s1 $B/delegation set 0 | grep -q 'Delegation level 0/5 (OFF)'; check $? 0 "set 0 for the session prints the new policy"
 ss s1 prompt > $R/d2b.out; check "$(wc -c < $R/d2b.out | tr -d ' ')" 0 "prompt: no re-injection of what set already printed"
 dden Agent general-purpose haiku; check $? 0 "level 0: Agent denied"
@@ -346,20 +376,20 @@ allow|Agent|Explore|haiku|any type on haiku
 deny|Agent|fork|haiku|fork is always denied
 deny|Agent|general-purpose|opus|unpinned definition inherits the session effort
 deny|Agent||opus|no type = general-purpose
-allow|Agent|agent-hub:worker-high|opus|plugin worker, explicit model
-allow|Agent|agent-hub:worker-medium|opus|plugin worker at medium
-deny|Agent|agent-hub:worker-high||plugin worker without a model inherits it
-deny|Agent|agent-hub:worker-xhigh|opus|xhigh is not for non-Sonnet models
-allow|Agent|agent-hub:worker-xhigh|sonnet|Sonnet at xhigh
-allow|Agent|agent-hub:worker-high|sonnet|Sonnet at high
-deny|Agent|agent-hub:worker-medium|sonnet|Sonnet never at medium
-deny|Agent|agent-hub:worker-low|sonnet|Sonnet never at low
+allow|Agent|delamain:worker-high|opus|plugin worker, explicit model
+allow|Agent|delamain:worker-medium|opus|plugin worker at medium
+deny|Agent|delamain:worker-high||plugin worker without a model inherits it
+deny|Agent|delamain:worker-xhigh|opus|xhigh is not for non-Sonnet models
+allow|Agent|delamain:worker-xhigh|sonnet|Sonnet at xhigh
+allow|Agent|delamain:worker-high|sonnet|Sonnet at high
+deny|Agent|delamain:worker-medium|sonnet|Sonnet never at medium
+deny|Agent|delamain:worker-low|sonnet|Sonnet never at low
 allow|Agent|worker-high|opus|plugin worker called without its prefix
 allow|Agent|my-helper||user agent pinning effort and model
 deny|Agent|lazy|opus|project agent without a pinned effort
 allow|Workflow|||the example has no Workflow rule
 EOF
-dg Agent agent-hub:worker-medium sonnet | grep -q 'agent-hub:worker-medium at effort medium'; check $? 0 "example policy: the Sonnet reason names type and effort"
+dg Agent delamain:worker-medium sonnet | grep -q 'delamain:worker-medium at effort medium'; check $? 0 "example policy: the Sonnet reason names type and effort"
 echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"modle": "x"}, "decision": "deny"}]}' > $R/config.json
 dg Agent general-purpose opus > $R/d3.out 2> $R/d3.err; check "$(wc -c < $R/d3.out | tr -d ' ')" 0 "malformed rules: fail-open, no decision"
 grep -q "unknown field 'modle'" $R/d3.err; check $? 0 "malformed rules: reported on stderr"
@@ -370,17 +400,56 @@ mkdir -p $R/proj/.agent-hub $R/other/.git; cp $EXAMPLE $R/config.json
 echo '{"AGENT_HUB_EFFORT_RULES": {"opus": "low"}}' > $R/proj/.agent-hub/config.json
 dden Agent general-purpose opus $R/other; check $? 0 "effort rules: the hub home's apply in a repository without its own"
 dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: a repository's rules do not replace the user's (any deny wins)"
-dg Agent agent-hub:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type agent-hub:worker-high). \[AGENT_HUB_EFFORT_RULES (proj/.agent-hub) rule 1\]'; check $? 0 "effort rules: the repository adds a restriction (shorthand), the set and rule are named"
-dden Agent agent-hub:worker-high opus $R/other; check $? 1 "effort rules: …which does not apply outside it"
-dden Agent agent-hub:worker-low opus $R/proj; check $? 1 "effort rules: shorthand allows the listed effort"
+dg Agent delamain:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type delamain:worker-high). \[AGENT_HUB_EFFORT_RULES (proj/.agent-hub) rule 1\]'; check $? 0 "effort rules: the repository adds a restriction (shorthand), the set and rule are named"
+dden Agent delamain:worker-high opus $R/other; check $? 1 "effort rules: …which does not apply outside it"
+dden Agent delamain:worker-low opus $R/proj; check $? 1 "effort rules: shorthand allows the listed effort"
 echo '{"AGENT_HUB_EFFORT_RULES": []}' > $R/proj/.agent-hub/config.json
 dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: an empty repository list does not switch the user's off"
 dg Agent general-purpose opus $R/proj | grep -q 'AGENT_HUB_EFFORT_RULES (hub home) rule'; check $? 0 "effort rules: the user's deny names the hub home set"
 dden Task general-purpose opus $R/other; check $? 0 "effort rules: the Task tool is checked like Agent"
-$B/delegation try --cwd $R/other agent-hub:worker-high > $R/try1.out; check $? 1 "delegation try TYPE without a model: deny (model inherited), exit 1"
+$B/delegation try --cwd $R/other delamain:worker-high > $R/try1.out; check $? 1 "delegation try TYPE without a model: deny (model inherited), exit 1"
 grep -q '"model_from": "inherit"' $R/try1.out; check $? 0 "delegation try: prints the call's fields"
-$B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
+$B/delegation try --cwd $R/other delamain:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
 rm $R/proj/.agent-hub/config.json
+
+# the rename: a rule written with the plugin's former prefix applies to the same agent under the current name
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "agent-hub:worker-high"}, "decision": "deny", "reason": "legacy rule"}]}' > $R/config.json  # rename:keep
+dg Agent delamain:worker-high opus | grep -q 'legacy rule'; check $? 0 "rename: a rule for the former prefix denies delamain:worker-high"
+dden Agent agent-hub:worker-high opus; check $? 0 "rename: …and an agent still called by the former prefix"  # rename:keep
+dden Agent delamain:worker-low opus; check $? 1 "rename, negative: …not another agent of this plugin"
+dden Agent foo:worker-high opus; check $? 1 "rename, negative: …not another plugin's worker-high"
+dden Agent worker-high opus; check $? 1 "rename, negative: …nor the bare name (an exact rule stays exact)"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": ["foo:*", "agent-hub:worker-*"]}, "decision": "deny", "reason": "legacy glob"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-medium opus; check $? 0 "rename: a glob and a list with the former prefix match delamain:worker-medium"
+dden Agent foo:anything opus; check $? 0 "rename: …and the other item of the list still matches"
+dden Agent bar:worker-medium opus; check $? 1 "rename, negative: …and an unrelated prefix does not"
+$B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '"defined": "true"'; check $? 0 "rename: the definition of an agent called by the former prefix is found"  # rename:keep
+$B/delegation try --cwd $R/other foo:worker-high opus | grep -q '"defined": "false"'; check $? 0 "rename, negative: …and of another plugin's agent is not"
+# the rename, globs without the colon: a pattern for either name of this plugin matches both spellings of its agents
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "legacy bare glob"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-high opus; check $? 0 "rename: deny agent-hub* denies delamain:worker-high"  # rename:keep
+dden Agent agent-hub:worker-high opus; check $? 0 "rename: deny agent-hub* denies agent-hub:worker-high"  # rename:keep
+dden Agent foo:worker-high opus; check $? 1 "rename, negative: agent-hub* does not match foo:worker-high"  # rename:keep
+dden Agent worker-high opus; check $? 1 "rename, negative: agent-hub* does not match the bare name worker-high"  # rename:keep
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "delamain*"}, "decision": "deny", "reason": "current bare glob"}]}' > $R/config.json
+dden Agent delamain:worker-high opus; check $? 0 "rename: deny delamain* denies delamain:worker-high"
+dden Agent agent-hub:worker-high opus; check $? 0 "rename: deny delamain* denies a call still using agent-hub:worker-high"  # rename:keep
+dden Agent foo:worker-high opus; check $? 1 "rename, negative: delamain* does not match foo:worker-high"
+dden Agent worker-high opus; check $? 1 "rename, negative: delamain* does not match the bare name worker-high"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": ["agent-hub*", "other-plugin:*"]}, "decision": "deny", "reason": "list"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-low opus; check $? 0 "rename: a list with agent-hub* matches delamain:worker-low"  # rename:keep
+dden Agent other-plugin:x opus; check $? 0 "rename: …and the other item of the list still matches"
+dden Agent bar:worker-low opus; check $? 1 "rename, negative: …and an unrelated namespace does not"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "delamain:worker-low"}, "decision": "allow"}, {"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "after the allow"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-low opus; check $? 1 "rename, order: an allow rule placed before the deny still wins for delamain:worker-low"
+dden Agent agent-hub:worker-low opus; check $? 1 "rename, order: …and for the same agent called by the former prefix"  # rename:keep
+dden Agent delamain:worker-high opus; check $? 0 "rename, order: …while the deny applies to the other agents of the plugin"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "first"}, {"when": {"subagent_type": "delamain:worker-low"}, "decision": "allow"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-low opus; check $? 0 "rename, order: a deny placed before the allow wins"
+echo '{"AGENT_HUB_DELEGATION": "on", "AGENT_HUB_DELEGATION_RULES": [{"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "dial rule"}]}' > $R/config.json  # rename:keep
+dg Agent delamain:worker-high | grep -q 'dial rule'; check $? 0 "rename: the same glob in AGENT_HUB_DELEGATION_RULES denies delamain:worker-high (one matching function)"
+dden Agent foo:worker-high; check $? 1 "rename, negative: …and not foo:worker-high"
+cp $EXAMPLE $R/config.json
 
 # agent spawn applies AGENT_HUB_EFFORT_RULES (stand-in CLI; a denied spawn never starts)
 export HUB_STAGE=stage-a HUB_TAG=hub-test CLAUDE_BIN=$T/fake_claude.py; W=$R/w; mkdir -p $W; echo "brief" > $W/b.md

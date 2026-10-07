@@ -19,10 +19,10 @@ jobs:
         with:
           python-version: '3.11'
       - name: Run lifecycle, policy and compatibility controls
-        run: bash tests/run_all.sh "$RUNNER_TEMP/agent-hub-tests"
+        run: bash tests/run_all.sh "$RUNNER_TEMP/delamain-tests"
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-logs-${{ matrix.os }}
-          path: ${{ runner.temp }}/agent-hub-tests/
+          path: ${{ runner.temp }}/delamain-tests/

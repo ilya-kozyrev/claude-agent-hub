@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+- **BREAKING: agent-hub is now Delamain.** New plugin id `delamain` (Claude Code `delamain@delamain`, Codex
+  `delamain@delamain-codex`) in the repository `ilya-kozyrev/delamain`. The slash commands and skills are
+  `/delamain:hub`, `/delamain:setup`, `/delamain:status`, `/delamain:handoff`, `/delamain:delegation` and
+  `/delamain:agent-top`; the worker subagents are `delamain:worker-low`, `delamain:worker-medium`,
+  `delamain:worker-high` and `delamain:worker-xhigh`. The messages the tools print start with `delamain:` (stderr,
+  hook text, watchdog notifications and `watchdog notify-test`), and the dispatcher marker they write is
+  `# delamain: dispatcher`. The name comes from the AI that runs the cab fleet in Cyberpunk 2077.
+  `docs/a-day-with-agent-hub.md` is now `docs/a-day-with-delamain.md`.
+- **Two markers are still written under the old name in this release.** The auto-handoff marker stays
+  `[agent-hub auto-handoff k/N]` and the watchdog wake prefix stays `[agent-hub watchdog]`: a hub that keeps running on
+  an older plugin copy after the update has the older hooks, which know only these forms (its autopilot hook would take a
+  successor's prompt for the owner speaking and reset the automatic-handoff chain). Both forms are read everywhere
+  (`[delamain auto-handoff k/N]` and `[delamain watchdog]` too; the exemption of the watchdog's wake prompt from "the
+  owner spoke", added in 0.9.2, holds for both forms); the switch to the new forms comes in a later release.
+- **For one release the hook texts name this plugin's skills in both forms.** A session started before the update (its
+  plugin still registered as `agent-hub`, for example one that runs the plugin straight from the folder that has just
+  been updated) knows `agent-hub:handoff`, not `delamain:handoff`. So the texts that the hooks and tools inject, the
+  context budget's "what to do" sentence and its deny reason, the `lock` message about an unknown resource and the note
+  for a prompt that starts with `/agent-hub:<skill>`, give the name as `delamain:<name>` and, in a short parenthesis,
+  `agent-hub:<name>` in a session started before the rename. The single new form comes in a later release.
+- **What did not change, so stages, agents and configurations keep working:** the `AGENT_HUB_*` environment variables,
+  the project directory `.agent-hub/` (`config.json`, `lock-rules.json`, `local/`), the default hub home `~/agent-hub`
+  (and the older `~/.claude/agent-hub`, `hub home migrate`), the command names in `bin/` (`hub`, `agent`, `agent-top`,
+  `tell`, …) and the watchdog's entries (the `# agent-hub-watchdog` cron marker and the `io.agent-hub.watchdog.*`
+  launchd labels, so an installed job is still found). Data and project configurations need nothing.
+- **The old forms are still read.** A successor started by the previous version keeps its chain
+  (`[agent-hub auto-handoff k/N]` and `[delamain auto-handoff k/N]` both count as the marker), a successor that an older
+  hub started with the prompt `/agent-hub:hub take over stage …` still takes over (it is a new session that has only
+  `/delamain:hub`, and the model gets the unknown command as plain text: the prompt hook `hooks/delegation.py prompt`
+  adds a note that `/agent-hub:<skill>` is the former name of this plugin's skill `/delamain:<skill>`, to invoke it and
+  carry out the rest of the prompt as its arguments; any other prompt, including a different plugin's command or an
+  unknown skill, gets nothing), a personal dispatcher with `# agent-hub: dispatcher` is still
+  the plugin's own, `cache/*/agent-hub/*/bin` of a Claude or Codex install made before the rename is still recognised,
+  a subagent rule written with the prefix `agent-hub:` applies to the same agent under `delamain:`, and the dev copy of
+  the agent-top mod also answers `/agent-hub:agent-top`. Names you wrote by hand are not rewritten: personal settings,
+  CLAUDE.md or AGENTS.md instructions and aliases that name `agent-hub:worker-*` or `/agent-hub:hub` must be changed
+  to the new names, because the old names no longer resolve to an agent or a skill.
+- **Migration, Claude Code.** Existing installs move through the new `renames` map in `.claude-plugin/marketplace.json`
+  (`agent-hub` → `delamain`): the marketplace keeps the name it was registered under (`claude-agent-hub`), so there is
+  nothing to uninstall or add again. Update the marketplace (`/plugin marketplace update claude-agent-hub`, in a shell
+  `claude plugin marketplace update claude-agent-hub`; auto-update does it too), then run
+  `/plugin install delamain@claude-agent-hub` once (`claude plugin install delamain@claude-agent-hub`): a marketplace
+  added from a git repository reports the plugin as not cached until that install. Restart the sessions. The cache
+  folder becomes `~/.claude/plugins/cache/claude-agent-hub/delamain/<version>/`. If the watchdog is installed, run
+  `watchdog install` again from the new plugin: its job still points at the old `bin/`, which is removed later
+  (`watchdog status` reports it). A new install is `/plugin marketplace add ilya-kozyrev/delamain` and
+  `/plugin install delamain@delamain`.
+- **Migration, Codex.** Codex has no rename map: replace the plugin, between sessions (removing the old plugin deletes
+  its cache, and a Codex session still running on it loses its hooks). Remove the old plugin first, so the hooks do not
+  run twice: `codex plugin remove agent-hub@agent-hub-codex`, `codex plugin marketplace remove agent-hub-codex`; update
+  your checkout (`git -C /absolute/path/to/checkout pull`); then `codex plugin marketplace add /absolute/path/to/checkout`
+  and `codex plugin add delamain@delamain-codex`. Restart the Codex chat and review and trust the new plugin's hooks
+  ([Codex setup](docs/codex.md#install-in-codex)). If the watchdog is installed, run `watchdog install` again from the new
+  plugin: the job still points at the `bin/` that `codex plugin remove` deleted.
+
 ## 0.9.2 — 2026-10-07
 
 - **The watchdog no longer starts a copy of a hub it has just stopped, and its wake prompt no longer resets the

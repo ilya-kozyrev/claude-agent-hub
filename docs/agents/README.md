@@ -1,6 +1,6 @@
 # Agent entry point
 
-Use this page when a user asks whether to install agent-hub, when operating an installed plugin,
+Use this page when a user asks whether to install Delamain, when operating an installed plugin,
 or when changing this repository. Select the matching branch below before loading more documents.
 Paths resolve from this page; installed tools and resources resolve from the **plugin root**,
 two directories above `skills/hub/SKILL.md`. The same files are readable on GitHub before cloning.
@@ -36,7 +36,7 @@ two directories above `skills/hub/SKILL.md`. The same files are readable on GitH
 
 1. For a new installation, follow [Claude installation](../install.md) or [Codex installation](../codex.md#install-in-codex)
    for the selected host. Confirm its installed skills are available; review the permissions and hook trust there.
-   Done when the host can load `agent-hub:setup` and `agent-hub:hub`.
+   Done when the host can load `delamain:setup` and `delamain:hub`.
 2. For repository setup, load [the setup skill](../../skills/setup/SKILL.md). It owns resource discovery,
    configuration and positive/negative lock controls. Done when its report accounts for each configured resource
    and both controls pass.

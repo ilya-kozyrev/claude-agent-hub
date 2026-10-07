@@ -1,8 +1,8 @@
 {
-  "name": "agent-hub-codex",
+  "name": "delamain-codex",
   "plugins": [
     {
-      "name": "agent-hub",
+      "name": "delamain",
       "source": {
         "source": "local",
         "path": "./"

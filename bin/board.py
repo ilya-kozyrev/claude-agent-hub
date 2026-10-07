@@ -41,7 +41,7 @@ _BLOCK = re.compile(r"^```locks[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILI
 
 HEADER = """# Agent lock board
 
-Who holds a shared resource right now. The `board_locks` hook of the agent-hub plugin refuses a
+Who holds a shared resource right now. The `board_locks` hook of the Delamain plugin refuses a
 command that touches a resource under **another session's active** lock; your own lock, an expired
 lock or no lock passes. Escape hatch: `# lock-ok: <reason>` in the command itself (it stays in the
 transcript).

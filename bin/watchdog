@@ -6,7 +6,7 @@ One run is one tick: it reads, acts and exits. No daemon, no model. Run it by ha
   watchdog run [--dry-run] [--stage S] [--json]   one tick; --dry-run prints `[plan] …` and writes nothing
   watchdog install | uninstall [--scheduler launchd|cron]   the 5-minute job (launchd on macOS, cron elsewhere)
   watchdog status                                  the job, the last tick, each stage's episode, markers, channels
-  watchdog notify-test                             send `agent-hub: test notification` through every channel
+  watchdog notify-test                             send `delamain: test notification` through every channel
   watchdog quiet [--stage S] --reason "…" [--until ISO|HH:MM | --for 8h]   pause the wake-ups of a stage
   watchdog quiet --stage S --clear                 lift the pause; `watchdog quiet` alone lists every marker
 
@@ -311,7 +311,7 @@ def notify_message(stage: str, kind: str, silent_min: int = 0, lines: int = 0) -
         tail = f"hub silent {silent_min} min" + (f", {lines} lines waiting" if lines else "")
     else:
         tail = {"turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck"}[kind]
-    return f"agent-hub: {stage} — {tail}"
+    return f"delamain: {stage} — {tail}"
 
 
 def local_notifier(message: str):
@@ -322,9 +322,9 @@ def local_notifier(message: str):
         if not exe:
             return None
         text = message.replace("\\", "\\\\").replace('"', '\\"')
-        return "local", [exe, "-e", f'display notification "{text}" with title "agent-hub"']
+        return "local", [exe, "-e", f'display notification "{text}" with title "delamain"']
     exe = shutil.which("notify-send")
-    return ("local", [exe, "agent-hub", message]) if exe else None
+    return ("local", [exe, "delamain", message]) if exe else None
 
 
 def remote_notifier(message: str):
@@ -1122,7 +1122,7 @@ def render_shim() -> str:
     codex = shutil.which(hc.setting("CODEX_BIN") or "codex")
     if codex:
         env["CODEX_BIN"] = codex
-    lines = ["#!/bin/sh", "# agent-hub watchdog: written by `watchdog install`; run it again after a plugin update",
+    lines = ["#!/bin/sh", "# delamain watchdog: written by `watchdog install`; run it again after a plugin update",
              f"# bin: {hc.BIN}"] + [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
     lines.append(f"exec {shlex.quote(sys.executable)} {shlex.quote(str(hc.BIN / 'watchdog'))} run")
     return "\n".join(lines) + "\n"
@@ -1284,7 +1284,7 @@ def cmd_status(a) -> int:
 
 
 def cmd_notify_test(a) -> int:
-    results = notify("agent-hub: test notification", False)
+    results = notify("delamain: test notification", False)
     if not results:
         print("no channel: local notifications are off or the system has none, and AGENT_HUB_NOTIFY_CMD is empty")
         return 1

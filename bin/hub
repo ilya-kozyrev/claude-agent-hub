@@ -119,7 +119,8 @@ chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owne
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
 (`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode, an explicit
 effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else the effort this hub runs at now — `hub effort`; when that cannot be read,
-succeed exits 1 and starts nothing) and the prompt "/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]", reads its id and Remote Control link,
+succeed exits 1 and starts nothing) and the prompt "/delamain:hub take over stage … [agent-hub auto-handoff k/N]" (the marker keeps the name used before the rename for
+one release), reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
 When the background session cannot start (CLI not logged in, the main checkout untrusted) it starts a headless hub
 with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
@@ -1256,7 +1257,7 @@ def cmd_handoff(a) -> int:
     live_rows = []
     sessions = hub_sessions(stage, a.session, me)
     if not sessions:
-        print("agent-hub: no hub session known (roles `hub`, or --session): its sub-agents were not checked",
+        print("delamain: no hub session known (roles `hub`, or --session): its sub-agents were not checked",
               file=sys.stderr)
     for cli, hub_rec in sessions:
         live_rows += subagent_rows(live_subagents(cli, hub_rec), cli if len(sessions) > 1 else "")

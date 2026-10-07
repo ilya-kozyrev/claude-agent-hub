@@ -1,10 +1,10 @@
 ---
 name: setup
-description: Set up agent-hub for a repository — ask which shared resources the project has (protected branches, environments, deploys, migrations, anything else), which commands touch each, write <repo>/.agent-hub/lock-rules.json and config.json, prove the lock hook with positive and negative checks, then propose standing permissions from what the project and the person show. Use right after installing the plugin, when a repository has no .agent-hub/ yet, or when the project gains a new shared resource.
+description: Set up Delamain for a repository — ask which shared resources the project has (protected branches, environments, deploys, migrations, anything else), which commands touch each, write <repo>/.agent-hub/lock-rules.json and config.json, prove the lock hook with positive and negative checks, then propose standing permissions from what the project and the person show. Use right after installing the plugin, when a repository has no .agent-hub/ yet, or when the project gains a new shared resource.
 argument-hint: "[repository path] [--defaults]"
 ---
 
-# agent-hub setup for a repository
+# Delamain setup for a repository
 
 Run bundled commands with the host's shell tool. Resolve the plugin root from `PLUGIN_ROOT`,
 `CLAUDE_PLUGIN_ROOT`, or this skill's installed path; use `<plugin-root>/bin/<tool>` when PATH is missing
@@ -106,7 +106,7 @@ For question 9, on yes (the hub home's settings are hub-wide; a repository's `co
    to the hub home's `config.json` (keep its other keys):
    `"AGENT_HUB_NOTIFY_CMD": ["curl", "-fsS", "-d", "{message}", "https://ntfy.sh/<topic>"]`. The command runs without a
    shell; `{message}` is the stage name, minutes and counts only.
-3. `watchdog notify-test` sends `agent-hub: test notification` through every channel; ask the person whether it
+3. `watchdog notify-test` sends `delamain: test notification` through every channel; ask the person whether it
    arrived (on macOS the local one is sent with `osascript` and may need the notification permission).
 4. `watchdog run --dry-run` prints what the watchdog would do now and writes nothing; show it.
 5. If `~/.claude/scheduled-tasks/night-nudge` exists, tell the person that the watchdog replaces that Desktop task and

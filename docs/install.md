@@ -2,20 +2,20 @@
 
 **Platform.** macOS and Linux; Python and the selected CLI on `PATH` (standard library only).
 Windows is unsupported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself runs natively on
-Windows ([setup](https://code.claude.com/docs/en/setup)); the limit is agent-hub's. WSL is untested.
+Windows ([setup](https://code.claude.com/docs/en/setup)); the limit is Delamain's. WSL is untested.
 
 Follow the [README's three-step recipe](../README.md#start): install, set up the project, then give the hub a job.
-If you start the hub first, it offers `agent-hub:setup` when the repository has no `.agent-hub/`.
+If you start the hub first, it offers `delamain:setup` when the repository has no `.agent-hub/`.
 
 **Claude Code:** Python 3.10+ and Claude Code 2.1.287+; older CLI versions are unsupported.
 
 ```text
-/plugin marketplace add ilya-kozyrev/claude-agent-hub
-/plugin install agent-hub@claude-agent-hub
+/plugin marketplace add ilya-kozyrev/delamain
+/plugin install delamain@delamain
 ```
 
 After Claude installation, follow the activation instruction in the install summary and confirm
-`/agent-hub:hub` appears. See [official installation instructions](https://code.claude.com/docs/en/discover-plugins)
+`/delamain:hub` appears. See [official installation instructions](https://code.claude.com/docs/en/discover-plugins)
 (checked 2026-10-05).
 
 > **Permissions.** Headless agents run with `--permission-mode bypassPermissions` by default: a `claude -p` run has
@@ -48,9 +48,10 @@ are separate controls.
   `jwait`, `agent`, `ask`, `roles`, `lock`, `agent-spawn`, …) resolves outside it; the fix is to put the plugin's `bin/`
   first on `PATH` or remove the old tool. A command that resolves into an installed plugin's `bin/` (the Claude or Codex
   plugin cache, the marketplace folder) is not reported. To keep a personal shim that dispatches into the plugin (say
-  `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# agent-hub: dispatcher`
+  `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# delamain: dispatcher`
   among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
-- **Four skills.** `hub` (the workflow), `handoff`, `setup` (`agent-hub:setup`) and `delegation`; four pinned-effort
+  A shim written before the rename may keep its `# agent-hub: dispatcher` line: it is still recognised.
+- **Four skills.** `hub` (the workflow), `handoff`, `setup` (`delamain:setup`) and `delegation`; four pinned-effort
   Claude worker subagents. `/agent-top` is not a skill: in Claude Code the mod answers it (see [Monitoring agents](monitoring.md#agent-top-inside-claude-code-a-live-pane)).
   Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
 - **Hooks**, each with its own reach (the [agent-discipline](reference.md#agent-discipline) hooks — context budget, polling guard,
@@ -65,12 +66,12 @@ are separate controls.
   - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
     `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
     time in the same places as `questions`, and once per distinct set of paths elsewhere.
-- Nothing else: no daemon, and nothing is written to your repositories until you run `agent-hub:setup`. The hub's own
+- Nothing else: no daemon, and nothing is written to your repositories until you run `delamain:setup`. The hub's own
   files go to `~/agent-hub` (created by `hub start`; see [Where the hub's files live](reference.md#where-the-hubs-files-live)).
 
-### After install: run `agent-hub:setup` in each repository
+### After install: run `delamain:setup` in each repository
 
-Ask your coordinator to use the `agent-hub:setup` skill in the repository's checkout. A new, empty project may skip it for now:
+Ask your coordinator to use the `delamain:setup` skill in the repository's checkout. A new, empty project may skip it for now:
 the hub offers it when it is needed. It looks at the repository, then asks one round of numbered questions with a
 recommended answer for each: which branches are protected, which environments two sessions must not change at once,
 which commands touch each. It writes `.agent-hub/lock-rules.json` and `.agent-hub/config.json` and proves the rules
@@ -83,7 +84,7 @@ The hub agrees a Business DoD before autonomous work, using the
 [planning recipe](../skills/hub/SKILL.md#planning-a-stage-agree-the-business-result-before-autonomous-work).
 A clear request already supplies it; otherwise clarify business-material ambiguity with the `grilling` skill from
 [mattpocock/skills](https://github.com/mattpocock/skills) (MIT): rounds of numbered questions, each with a recommended
-answer, stopping once the business result is clear. agent-hub does not bundle it; install it next to this plugin:
+answer, stopping once the business result is clear. Delamain does not bundle it; install it next to this plugin:
 
 ```text
 /plugin marketplace add mattpocock/skills

@@ -56,10 +56,10 @@ grep -q 'shadow\|linkbin' $P/s3.out; check $? 1 "negative: a symlink into the pl
 grep -q '^ATTENTION' $P/s4.out; check $? 1 "…prints no ATTENTION line"
 # a personal dispatcher into the plugin: its own marker line (symlinks resolved), or a copy inside an installed plugin's bin/
 mkdir -p $P/disp $P/disp-nomark $P/disp-late
-printf '#!/bin/sh\n# agent-hub: dispatcher\nexec true\n' > $P/disp/agent-hub-tool
-printf '#!/bin/sh\nexec true\n' > $P/disp-nomark/agent-hub-tool
-{ printf '#!/bin/sh\n'; for i in $(seq 1 20); do echo "# filler $i"; done; echo '# agent-hub: dispatcher'; } > $P/disp-late/agent-hub-tool
-for d in disp disp-nomark disp-late; do chmod +x $P/$d/agent-hub-tool; for t in hub jlog; do ln -s agent-hub-tool $P/$d/$t; done; done
+printf '#!/bin/sh\n# delamain: dispatcher\nexec true\n' > $P/disp/delamain-tool
+printf '#!/bin/sh\nexec true\n' > $P/disp-nomark/delamain-tool
+{ printf '#!/bin/sh\n'; for i in $(seq 1 20); do echo "# filler $i"; done; echo '# delamain: dispatcher'; } > $P/disp-late/delamain-tool
+for d in disp disp-nomark disp-late; do chmod +x $P/$d/delamain-tool; for t in hub jlog; do ln -s delamain-tool $P/$d/$t; done; done
 (PATH="$P/disp:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d1.out 2>&1; check $? 0 "hub start with a marked dispatcher first on PATH"
 grep -q 'ATTENTION' $P/d1.out; check $? 1 "…no warning: a symlink to a file with the dispatcher marker is the plugin's own"
 (PATH="$P/disp-nomark:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d2.out 2>&1
@@ -68,21 +68,46 @@ grep -q "ATTENTION: \`hub\` is $P/disp-nomark/hub, \`jlog\` is $P/disp-nomark/jl
 grep -q "ATTENTION: \`hub\` is $P/disp-late/hub" $P/d3.out; check $? 0 "negative: a marker far from the top of the file does not count"
 (PATH="$P/shadow:$P/disp:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d4.out 2>&1
 grep -q "ATTENTION: \`hub\` is $P/shadow/hub, \`jlog\` is $P/shadow/jlog" $P/d4.out; check $? 0 "negative: a foreign hub (GitHub CLI style) ahead of the dispatcher is still reported"
-CC=$P/cfg; mkdir -p $CC/plugins/cache/mk/agent-hub/99.0.0/bin $CC/plugins/marketplaces/self/bin; : > $CC/plugins/marketplaces/self/bin/hubcore.py
-for t in hub jlog; do printf '#!/bin/sh\necho installed %s\n' $t > $CC/plugins/cache/mk/agent-hub/99.0.0/bin/$t; chmod +x $CC/plugins/cache/mk/agent-hub/99.0.0/bin/$t; done
+# the rename: a dispatcher written before it carries the old marker line and stays the plugin's own; another product's does not
+mkdir -p $P/disp-old $P/disp-other
+printf '#!/bin/sh\n# agent-hub: dispatcher\nexec true\n' > $P/disp-old/delamain-tool  # rename:keep
+printf '#!/bin/sh\n# other: dispatcher\nexec true\n' > $P/disp-other/delamain-tool
+for d in disp-old disp-other; do chmod +x $P/$d/delamain-tool; for t in hub jlog; do ln -s delamain-tool $P/$d/$t; done; done
+(PATH="$P/disp-old:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d9.out 2>&1; check $? 0 "rename: hub start with a dispatcher carrying the old marker line first on PATH"
+grep -q 'ATTENTION' $P/d9.out; check $? 1 "rename: …no warning: the old marker line still marks a dispatcher"
+(PATH="$P/disp-other:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d10.out 2>&1
+grep -q "ATTENTION: \`hub\` is $P/disp-other/hub, \`jlog\` is $P/disp-other/jlog" $P/d10.out; check $? 0 "rename, negative: a dispatcher marked '# other: dispatcher' is still reported"
+CC=$P/cfg; mkdir -p $CC/plugins/cache/mk/delamain/99.0.0/bin $CC/plugins/marketplaces/self/bin; : > $CC/plugins/marketplaces/self/bin/hubcore.py
+for t in hub jlog; do printf '#!/bin/sh\necho installed %s\n' $t > $CC/plugins/cache/mk/delamain/99.0.0/bin/$t; chmod +x $CC/plugins/cache/mk/delamain/99.0.0/bin/$t; done
 printf '#!/bin/sh\n' > $CC/plugins/marketplaces/self/bin/lock; chmod +x $CC/plugins/marketplaces/self/bin/lock
-(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/agent-hub/99.0.0/bin:$CC/plugins/marketplaces/self/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d5.out 2>&1
+(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/delamain/99.0.0/bin:$CC/plugins/marketplaces/self/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d5.out 2>&1
 grep -q "not the plugin's own tool" $P/d5.out; check $? 1 "a command inside an installed plugin's cache or marketplace bin/ is the plugin's own"
-(CLAUDE_CONFIG_DIR=$P/elsewhere PATH="$CC/plugins/cache/mk/agent-hub/99.0.0/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d6.out 2>&1
-grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/agent-hub/99.0.0/bin/hub" $P/d6.out; check $? 0 "negative: the same directory is foreign when it is not under an installed plugin location"
-mkdir -p $CC/plugins/cache/mk/agent-hub/0.0.1/bin $CC/plugins/marketplaces/old/bin $CC/plugins/marketplaces/old/.claude-plugin
-printf '#!/bin/sh\n' > $CC/plugins/cache/mk/agent-hub/0.0.1/bin/hub; printf '#!/bin/sh\n' > $CC/plugins/marketplaces/old/bin/lock; : > $CC/plugins/marketplaces/old/bin/hubcore.py
-chmod +x $CC/plugins/cache/mk/agent-hub/0.0.1/bin/hub $CC/plugins/marketplaces/old/bin/lock
-printf '{"name": "agent-hub", "version": "0.0.2"}\n' > $CC/plugins/marketplaces/old/.claude-plugin/plugin.json
-(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/agent-hub/0.0.1/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d7.out 2>&1
-grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/agent-hub/0.0.1/bin/hub" $P/d7.out; check $? 0 "negative: an installed copy older than this plugin (cache folder 0.0.1) is still a shadow"
+(CLAUDE_CONFIG_DIR=$P/elsewhere PATH="$CC/plugins/cache/mk/delamain/99.0.0/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d6.out 2>&1
+grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/delamain/99.0.0/bin/hub" $P/d6.out; check $? 0 "negative: the same directory is foreign when it is not under an installed plugin location"
+mkdir -p $CC/plugins/cache/mk/delamain/0.0.1/bin $CC/plugins/marketplaces/old/bin $CC/plugins/marketplaces/old/.claude-plugin
+printf '#!/bin/sh\n' > $CC/plugins/cache/mk/delamain/0.0.1/bin/hub; printf '#!/bin/sh\n' > $CC/plugins/marketplaces/old/bin/lock; : > $CC/plugins/marketplaces/old/bin/hubcore.py
+chmod +x $CC/plugins/cache/mk/delamain/0.0.1/bin/hub $CC/plugins/marketplaces/old/bin/lock
+printf '{"name": "delamain", "version": "0.0.2"}\n' > $CC/plugins/marketplaces/old/.claude-plugin/plugin.json
+(CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/cache/mk/delamain/0.0.1/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d7.out 2>&1
+grep -q "ATTENTION: \`hub\` is $CC/plugins/cache/mk/delamain/0.0.1/bin/hub" $P/d7.out; check $? 0 "negative: an installed copy older than this plugin (cache folder 0.0.1) is still a shadow"
 (CLAUDE_CONFIG_DIR=$CC PATH="$CC/plugins/marketplaces/old/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/d8.out 2>&1
 grep -q "ATTENTION: \`lock\` is $CC/plugins/marketplaces/old/bin/lock" $P/d8.out; check $? 0 "negative: …and so is a marketplace copy whose manifest says 0.0.2"
+# the rename: caches of the Claude and Codex configs hold the plugin under its current name or, for a copy installed before it, the old one
+CX=$P/cdx; OLDN=agent-hub  # rename:keep
+for cfg in $CC/plugins $CX/plugins; do
+  for n in delamain $OLDN other-plugin; do
+    mkdir -p $cfg/cache/mk/$n/99.0.0/bin; printf '#!/bin/sh\n' > $cfg/cache/mk/$n/99.0.0/bin/hub; chmod +x $cfg/cache/mk/$n/99.0.0/bin/hub
+  done
+done
+for eng in claude codex; do
+  cfg=$CC/plugins; [ $eng = codex ] && cfg=$CX/plugins
+  for n in delamain $OLDN; do
+    (CLAUDE_CONFIG_DIR=$CC CODEX_HOME=$CX PATH="$cfg/cache/mk/$n/99.0.0/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/c1.out 2>&1
+    grep -q "not the plugin's own tool" $P/c1.out; check $? 1 "rename: the $eng cache/*/$n/*/bin is the plugin's own"
+  done
+  (CLAUDE_CONFIG_DIR=$CC CODEX_HOME=$CX PATH="$cfg/cache/mk/other-plugin/99.0.0/bin:$BP:$P/pybin" $B/hub start --stage web --session $H1 --dry-run) > $P/c2.out 2>&1
+  grep -q "ATTENTION: \`hub\` is $cfg/cache/mk/other-plugin/99.0.0/bin/hub" $P/c2.out; check $? 0 "rename, negative: the $eng cache/*/other-plugin/*/bin is still a shadow"
+done
 
 # ---- the SessionStart hook
 hook(){ # hook CWD [PATH]: the hook's output for a session starting in CWD

@@ -11,7 +11,9 @@ No matching rule = allow. `when` keys (all must match; a value is a glob or a li
 
     tool           Agent | Task | Workflow | agent-spawn
     level          the delegation level "0".."5", or "off" when the dial is off
-    subagent_type  the Agent call's subagent_type ("" when not given; plugin agents as "plugin:name")
+    subagent_type  the Agent call's subagent_type ("" when not given; plugin agents as "plugin:name"); this plugin's
+                   agents match a glob written for either of its names: `delamain:worker-high` and
+                   `agent-hub:worker-high` (the name before the rename) are one agent
     defined        "true" when a definition file for subagent_type was found, else "false"
     model          the model the subagent runs on: the call's `model`, else the definition's `model:`, else
                    "inherit"; for agent spawn both the alias given and the id it maps to are tried
@@ -43,15 +45,43 @@ DECISIONS = ("allow", "deny")
 PLUGIN_ROOT = Path(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 
+LEGACY_PLUGIN_NAME = "agent-hub"  # rename:keep
+
+
 def plugin_name() -> str:
     try:
         return json.loads((PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["name"]
     except (OSError, ValueError, KeyError):
-        return "agent-hub"
+        return "delamain"
+
+
+def named(local: str, plugin: Optional[str] = None) -> str:  # rename:transition
+    """A skill or agent of this plugin as the texts that hooks and tools inject must name it for one release: the
+    current name and, because a session started before the rename knows the plugin only under the old name,
+    `agent-hub:<same name>` with a short note (rename:keep). Built from plugin_name() and LEGACY_PLUGIN_NAME, like
+    current_type(), so the two forms cannot drift apart."""
+    plugin = plugin or plugin_name()
+    current = f"`{plugin}:{local}`"
+    if plugin == LEGACY_PLUGIN_NAME:
+        return current
+    return f"{current} (`{LEGACY_PLUGIN_NAME}:{local}` in a session started before the rename)"
+
+
+def current_type(typ) -> str:
+    """A subagent type with the plugin prefix from before the rename (the old plugin name and a colon) turned into this
+    plugin's (`delamain:worker-high`); anything else as it is. A rule written for the old prefix, an agent called by
+    it and the definition lookup all go through here, so they mean the same agent."""
+    typ = str(typ)
+    prefix = LEGACY_PLUGIN_NAME + ":"
+    if typ.lower().startswith(prefix):
+        name = plugin_name()
+        if name != LEGACY_PLUGIN_NAME:
+            return name + ":" + typ[len(prefix):]
+    return typ
 
 
 def _warn(msg: str) -> None:
-    print(f"agent-hub: {msg}", file=sys.stderr)
+    print(f"delamain: {msg}", file=sys.stderr)
 
 
 # ------------------------------------------------------------------ agent definitions
@@ -108,6 +138,7 @@ def agent_definition(name: str, cwd=None) -> Optional[dict]:
     ~/.claude/agents, then this plugin's agents/ (an unambiguous plugin agent may be called without its prefix)."""
     if not name or "/" in name or name.startswith("."):
         return None
+    name = current_type(name)
     if ":" in name:
         parts = name.split(":")
         return _find_in(plugin_agent_dirs(parts[0]), parts[-1])
@@ -174,6 +205,37 @@ def _match(value, pattern) -> bool:
     return any(fnmatch.fnmatchcase(str(v).lower(), str(p).lower()) for v in values for p in pats)
 
 
+def type_forms(typ) -> list:
+    """Every spelling of a subagent type that means the same agent. This plugin's agents have two: under the current
+    plugin name and under the one before the rename (`delamain:worker-high`, `agent-hub:worker-high`); any other
+    namespace, and a bare name, has only its own."""
+    typ = str(typ)
+    current = current_type(typ)
+    forms = [typ]
+    if current != typ:
+        forms.append(current)
+    elif current.lower().startswith(plugin_name().lower() + ":"):
+        forms.append(LEGACY_PLUGIN_NAME + ":" + current[len(plugin_name()) + 1:])
+    return forms
+
+
+def _rule_matches(rule: dict, call: dict) -> bool:
+    """Whether every `when` key of `rule` matches `call`. subagent_type is the one key compared through the rename: a
+    pattern (as written, and in the current plugin name's form) is tried against every form of the call's type
+    (type_forms). So a rule for `delamain*` or for `agent-hub*` (the name before the rename) means the same agents
+    whichever of the two names the call or the rule uses. The first matching rule still decides (evaluate)."""
+    for k, pattern in (rule.get("when") or {}).items():
+        value = call.get(k, "")
+        if k == "subagent_type":
+            values = value if isinstance(value, list) else [value]
+            value = [form for v in values for form in type_forms(v)]
+            pats = pattern if isinstance(pattern, list) else [pattern]
+            pattern = [form for p in pats for form in dict.fromkeys([str(p), current_type(p)])]
+        if not _match(value, pattern):
+            return False
+    return True
+
+
 class _Fields(dict):
     def __missing__(self, key):
         return "{" + key + "}"
@@ -189,7 +251,7 @@ def evaluate(rules, call: dict, label: str = "rules"):
         _warn(f"{label} ignored: " + "; ".join(errs))
         return None
     for i, r in enumerate(rules):
-        if all(_match(call.get(k, ""), v) for k, v in (r.get("when") or {}).items()):
+        if _rule_matches(r, call):
             shown = {k: ("/".join(v) if isinstance(v, list) else v) or "-" for k, v in call.items()}
             reason = str(r.get("reason") or f"denied by {label} #{i}")
             try:
