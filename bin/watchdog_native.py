@@ -32,6 +32,36 @@ def consumer():
     return sid
 
 
+def recipient_activity(path, sid, since, now):
+    """Only a new own turn proves recipient progress; work/registration/file touches do not."""
+    if path is None or since is None:
+        return False
+    try:
+        with path.open("rb") as f:
+            head = json.loads(f.readline(256_001))
+            birth = codex_rollouts.epoch(head.get("timestamp"))
+            if head.get("payload", {}).get("id") != sid or birth is None:
+                return False
+            f.seek(0, 2); offset = max(0, f.tell() - 512_000); f.seek(offset)
+            if offset:
+                f.readline()
+            data = f.read()
+        if not data.endswith(b"\n"):
+            return False
+        for line in data.splitlines():
+            ev = json.loads(line); payload = ev.get("payload")
+            if ev.get("type") != "event_msg" or not isinstance(payload, dict) or payload.get("type") != "task_started":
+                continue
+            at = codex_rollouts.epoch(ev.get("timestamp")); started = payload.get("started_at")
+            if (type(started) is int and at is not None and isinstance(payload.get("turn_id"), str) and payload["turn_id"]
+                    and started >= max(int(birth), int(since.timestamp()))
+                    and since.timestamp() < at <= now.timestamp() and started <= at):
+                return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return False
+
+
 def candidate(wd, tick, stage):
     rec = hc.roles_load(stage)["roles"].get("hub") or {}
     sid = wc._session(rec)
@@ -59,16 +89,17 @@ def candidate(wd, tick, stage):
     # One app thread may be registered in more than one stage. Serialize all
     # native claims by UUID, not merely by stage, including lost API replies.
     for other_stage, saved_state in tick.state["stages"].items():
-        if other_stage == stage:
-            continue
         other = saved_state.get("native_episode")
         if not isinstance(other, dict) or str(other.get("session", "")).lower() != sid.lower():
             continue
         acted = wd.parse_ts(other.get("acted_at"))
-        if acted and last and last > acted:
-            continue  # actual recipient activity is new evidence, never an idle assertion
+        progressed = recipient_activity(rollout[0] if rollout else None, sid, acted, tick.now)
+        if other.get("result") == "unknown" and not progressed:
+            return None, "the UUID has unknown delivery with no verified recipient turn progress"
+        if other_stage == stage or progressed:
+            continue
         nxt = wd.parse_ts(other.get("next_try_at"))
-        if other.get("result") == "unknown" or (other.get("result") != "completed-skip" and nxt and tick.now < nxt):
+        if other.get("result") != "completed-skip" and nxt and tick.now < nxt:
             return None, "the same UUID has an unresolved/cooling native attempt in another stage"
     identity = fingerprint(rec)
     stage_state = tick.state["stages"].get(stage, {})
@@ -80,12 +111,12 @@ def candidate(wd, tick, stage):
             return None, "standalone delivery attempt cooldown; notification-only cooldown is ignored"
     saved = stage_state.get("native_episode")
     ep = saved if isinstance(saved, dict) and saved.get("registry_fingerprint") == identity else {}
-    if ep.get("result") in ("unknown", "completed-skip") and ep.get("work_fingerprint") == work_id:
-        return None, "same fingerprint has unknown delivery or was confirmed complete; no blind retry"
+    if ep.get("result") == "completed-skip" and ep.get("work_fingerprint") == work_id:
+        return None, "same fingerprint was confirmed complete; no stale-work retry"
     if ep.get("result") == "completed-skip":
         ep = {}  # a new work fingerprint re-arms, without closing the whole stage
     acted = wd.parse_ts(ep.get("acted_at"))
-    recovered = acted and last and last > acted and not (error and error["at"] > acted)
+    recovered = recipient_activity(rollout[0] if rollout else None, sid, acted, tick.now) and not (error and error["at"] > acted)
     nxt = wd.parse_ts(ep.get("next_try_at"))
     if nxt and tick.now < nxt and not recovered:
         return None, "native attempt cooldown (including unknown delivery)"
@@ -149,7 +180,8 @@ def claim(wd, a):
                        "attempt": token, "consumer": caller}
             tick.state["stages"].setdefault(a.stage, {})["native_episode"] = episode
             wd.save_state(tick.state)  # before the native API: a lost reply cannot immediately send twice
-            return {**public(out), "attempt": token, "outcome": "unknown", "next_try_at": episode["next_try_at"]}
+            return {**public(out), "attempt": token, "outcome": "unknown", "next_try_at": episode["next_try_at"],
+                    "failed_turn": out["failed_turn"]}
 
 
 def ack(wd, a):

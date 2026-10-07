@@ -26,6 +26,8 @@ a substitute. Do not create another user chat, launch a daemon, open a private p
    candidate and an `attempt` token; unknown delivery is saved **before** any native send. Re-read native state if the
    previous idle evidence is no longer current. A changed/unknown state gets no send; ack `failed` only when certain
    no message was submitted. Do not retry a failed preflight with a different UUID or manufacture idle evidence.
+   For R4 the receipt also carries `failed_turn` (turn id, timestamp, typed error): compare it with the actual latest
+   native terminal turn before sending. A mismatched/superseded turn gets no retry, even if the current thread is idle.
 5. If the verified latest request is complete and the local candidate is stale, claim that exact fingerprint but
    send nothing; ack `completed-skip`. This suppresses only that stale work fingerprint. New pending work re-arms.
    Otherwise call supported `send_message_to_thread` with exactly the receipt UUID and its literal `message`.
@@ -38,7 +40,9 @@ a substitute. Do not create another user chat, launch a daemon, open a private p
 
    Use `sent` for explicit acceptance, `failed` for explicit no-delivery rejection, `unknown` for an ambiguous
    result/timeout, or `completed-skip` for verified stale completed work without any send. A lost or unknown receipt
-   suppresses blind retries of the same fingerprint, across stages sharing the UUID. Never call a second transport.
+   holds the UUID across stages until a new own turn proves recipient activity; new journal work, expired backoff,
+   file touches or re-registration alone do not release it. An unacknowledged original receipt can still record a
+   verified delivery outcome. Never call a second transport.
    Ack may refuse if the hub was retired/replaced, quieted or entered a pending handoff; report that receipt outcome
    to the coordinator, without retrying the native send. A duplicate ack of the same outcome is harmless.
 

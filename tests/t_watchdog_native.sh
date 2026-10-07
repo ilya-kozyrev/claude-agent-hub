@@ -58,6 +58,23 @@ assert run('native-plan','--json','--stage','same-thread')==[]
 assert plan()['candidates']==[]
 run(*claim_args,ok=False)
 assert run('native-plan','--json','--stage','native',extra={'AGENT_HUB_WATCHDOG_NOW':(now+timedelta(hours=2)).isoformat()})==[]
+original_journal=journal.read_text()
+with journal.open('a') as f:f.write(f'- {now-timedelta(minutes=20):%H:%M} [executor] DONE another work item\n')
+future={'AGENT_HUB_WATCHDOG_NOW':(now+timedelta(hours=2)).isoformat()}
+assert run('native-plan','--json','--stage','native',extra=future)==[],'new work alone released unknown delivery'
+hc.roles_save('native',{'roles':{'hub':{**rec,'title':'re-registered same UUID'}},'retired':[]})
+assert run('native-plan','--json','--stage','native',extra=future)==[],'re-registration released unknown delivery'
+hc.roles_save('native',{'roles':{'hub':rec},'retired':[]})
+os.utime(rollout,(now.timestamp()+60,now.timestamp()+60))
+assert run('native-plan','--json','--stage','native',extra=future)==[],'file touch released unknown delivery'
+progress={'type':'event_msg','timestamp':(now+timedelta(minutes=1)).isoformat(),
+          'payload':{'type':'task_started','turn_id':'new-own-turn','started_at':int(now.timestamp()+60)}}
+original_rollout=rollout.read_text()
+with rollout.open('a') as f:f.write(json.dumps(progress)+'\n')
+os.utime(rollout,(now.timestamp()+60,now.timestamp()+60))
+assert run('native-plan','--json','--stage','native',extra=future),'actual recipient turn progress did not release unknown hold'
+rollout.write_text(original_rollout);os.utime(rollout,(ago,ago));journal.write_text(original_journal)
+print('PASS UUID-wide unknown hold survives new work, expired backoff, re-registration and file touch; only own-turn progress releases it')
 print('PASS app-only claim records unknown BEFORE transport and blocks a duplicate even without ack')
 ack_args=['native-ack',*base,'--attempt',attempt['attempt'],'--outcome','sent']
 run(*ack_args,ok=False,extra={'CODEX_THREAD_ID':other})
@@ -113,6 +130,10 @@ events=[{'type':'session_meta','timestamp':rec['set_at'],'payload':{'id':sid}},
                     'error':{'codex_error_info':'server_overloaded'}}}]
 rollout.write_text(''.join(json.dumps(e)+'\n' for e in events));os.utime(rollout,(ago,ago))
 assert plan()['candidates'][0]['reason']=='R4'
+r4=plan()['candidates'][0]
+r4_receipt=run('native-claim','--stage','native','--session',sid,'--fingerprint',r4['fingerprint'])
+assert r4_receipt['failed_turn']['turn_id']=='fixture' and r4_receipt['failed_turn']['error']=='server_overloaded'
+state.write_text(json.dumps({'stages':{}}))
 assert run('native-plan','--json','--stage','native',extra={'AGENT_HUB_WATCHDOG_API_ERROR':'off'})==[]
 events[-1]['payload']['error']['codex_error_info']='usage_limit_exceeded'
 rollout.write_text(''.join(json.dumps(e)+'\n' for e in events));os.utime(rollout,(ago,ago))

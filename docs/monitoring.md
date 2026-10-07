@@ -134,7 +134,8 @@ claim before calling native `send_message_to_thread` on exactly that UUID.
 adds `--attempt TOKEN --outcome sent|failed|unknown|completed-skip` and rechecks identity/quiet/pending before writing
 an outcome. Native backoff is separate from standalone notification cooldown; actual standalone delivery attempts
 still suppress overlapping dispatch. Claims are serialized and protected across stages sharing a UUID. Unacknowledged
-or unknown delivery blocks blind retries of the same fingerprint. `completed-skip` suppresses only stale completed
+or unknown delivery holds the UUID until verified new own-turn activity, even across new work or re-registration;
+expired backoff and file touches do not release it. `completed-skip` suppresses only stale completed
 work, without closing a whole stage; a new work fingerprint re-arms.
 
 The [heartbeat prompt](../templates/codex-watchdog-heartbeat.md) defines the native read/check/send/ack procedure,
