@@ -181,5 +181,9 @@ running and that no copy appeared.
 A second probe (2026-10-07, 2.1.289) found one more window. After `claude stop` a session with Remote Control drops out of
 `claude agents --json` about 1.7 s before its process has exited and the daemon has released it; a resume in that window
 started a copy (4 of 4), a resume after the stopped row's pid had exited continued the same id (3 of 3). The watchdog
-therefore waits for that pid to exit (up to 30 s, polling every 0.2 s) before it resumes; if the process is still there
-it does not resume in this tick and says so, and the next tick finds the hub unlisted and resumes it.
+therefore waits for that process to exit (up to 30 s, polling every 0.2 s) before it resumes. The process is identified
+by its pid and its start time (a reused pid is another process). If it is still there after the wait, the watchdog keeps
+its identity in the hub's state (`state.json`, `hub.stopped`) and does not resume in this tick, nor in any later tick
+(also not when the hub is no longer listed) until that process is seen gone. Once released it reads `claude agents --json`
+once more: a hub listed again (the owner resumed it meanwhile) cancels the wake. A stopped row without a pid cannot be
+checked, so there is no resume in that tick; the next tick resumes the then unlisted hub.

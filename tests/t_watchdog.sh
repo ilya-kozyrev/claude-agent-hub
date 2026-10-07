@@ -194,7 +194,7 @@ stopped(){ calls | grep -c '^stop'; }
 # positive: an idle listed hub, silent, one line waiting → claude stop, then --bg --resume <same id> with no other flag
 B1=$(U 11); mk_bhub sb1 $B1; FX jline sb1 16 "[exec-1] DONE the build finished"
 reset_log; check "$(tick)" 0 "R3 claude-bg: tick exits 0"
-check "$(calls | tr '\n' '|')" "agents|agents|stop ${B1:0:8}|agents|resume $B1 1 --bg|agents|" "R3 claude-bg: stop the listed idle hub, then resume the same id; the text is the only argument besides --bg --resume"
+check "$(calls | tr '\n' '|')" "agents|agents|stop ${B1:0:8}|agents|agents|resume $B1 1 --bg|agents|" "R3 claude-bg: stop the listed idle hub, then resume the same id; the text is the only argument besides --bg --resume"
 python3 - "$FAKE_WD_ROWS" "$B1" <<'PY'
 import json, sys
 rows = json.load(open(sys.argv[1])); assert [r["sessionId"] for r in rows] == [sys.argv[2]], rows
@@ -281,7 +281,7 @@ grep -q "the copy was stopped" "$(J sbcg)"; check $? 1 "M2 negative: …not clai
 B25=$(U 25); mk_bhub sblinger $B25; FX jline sblinger 16 "[exec-1] DONE a line is waiting"
 sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${B25:0:8} $B25 background idle "$CWD" $LP
 reset_log; FAKE_WD_STOP_LINGER=2 WD run --stage "$TS" > "$R/tick.out" 2>&1
-check "$(calls | tr '\n' '|')" "agents|agents|stop ${B25:0:8}|agents|resume $B25 1 --bg|agents|" "A1 claude-bg: stop, then one resume of the same id"
+check "$(calls | tr '\n' '|')" "agents|agents|stop ${B25:0:8}|agents|agents|resume $B25 1 --bg|agents|" "A1 claude-bg: stop, then one resume of the same id"
 python3 - "$FAKE_WD_ROWS" "$B25" <<'PY'
 import json, sys
 rows = json.load(open(sys.argv[1])); assert [r["sessionId"] for r in rows] == [sys.argv[2]], rows
@@ -291,9 +291,9 @@ kill -0 $LP 2>/dev/null; check $? 1 "A1: …and the resume came after the old pr
 grep -q "\[watchdog\] woke hub-4" "$(J sblinger)"; check $? 0 "A1: …the journal says the hub was woken"
 B26=$(U 26); mk_bhub sbstuck $B26; FX jline sbstuck 16 "[exec-1] DONE a line is waiting"
 sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${B26:0:8} $B26 background idle "$CWD" $LP
-reset_log; : > "$R/notify.log"; AGENT_HUB_WATCHDOG_STOP_WAIT=1 FAKE_WD_STOP_LINGER=3 WD run --stage "$TS" > "$R/tick.out" 2>&1
+reset_log; : > "$R/notify.log"; AGENT_HUB_WATCHDOG_STOP_WAIT=1 FAKE_WD_STOP_LINGER=hold WD run --stage "$TS" > "$R/tick.out" 2>&1
 check "$(resumed)" 0 "A1 negative: the old process still runs when the wait is over → no resume in this tick"
-wait $LP 2>/dev/null; LP=
+kill $LP; wait $LP 2>/dev/null; LP=
 grep -q "wake of hub-4 failed (.*is still exiting after 1 s: not resuming now" "$(J sbstuck)"; check $? 0 "A1: …the journal says so"
 grep -q "agent-hub: sbstuck — wake failed" "$R/notify.log"; check $? 0 "A1: …and the owner is notified"
 python3 - "$FAKE_WD_ROWS" <<'PY'
@@ -301,6 +301,58 @@ import json, sys
 assert not json.load(open(sys.argv[1])), "a session was started"
 PY
 check $? 0 "A1: …and no session was started (neither a copy nor the hub)"
+# A1 r1: the stopped process's identity outlives the tick; a row without a pid; the hub resumed by the owner while we waited
+A1T(){ local m=$1; shift  # MINUTES ENV=VAL...: one tick at a fixed offset from one base time (the ticks of a scenario share a clock)
+  env AGENT_HUB_WATCHDOG_NOW=$(python3 -c 'import datetime as d,sys; print((d.datetime.fromtimestamp(int(sys.argv[1]), d.timezone.utc)+d.timedelta(minutes=int(sys.argv[2]))).strftime("%Y-%m-%dT%H:%M"))' "$A1_T0" "$m") "$@" \
+    "$B/watchdog" run --stage "$TS" > "$R/tick.out" 2>&1; }
+B27=$(U 27); mk_bhub sbpid $B27; FX jline sbpid 20 "[exec-1] DONE a line is waiting"
+sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${B27:0:8} $B27 background idle "$CWD" $LP
+reset_log; A1_T0=$(date +%s); A1T 0 AGENT_HUB_WATCHDOG_STOP_WAIT=1 FAKE_WD_STOP_LINGER=hold
+check "$(resumed)" 0 "A1 r1: the old process outlives the wait → no resume in the first tick"
+check "$(state_val stages sbpid hub stopped pid)" "$LP" "A1 r1: …its pid is kept in the hub's state"
+test -n "$(state_val stages sbpid hub stopped start)"; check $? 0 "A1 r1: …with its start time"
+A1T 20; check "$(resumed)" 0 "A1 r1: the next tick (hub unlisted, backoff over) does not resume over the living process"
+grep -q "still exiting: not resuming now, the next tick checks again" "$(J sbpid)"; check $? 0 "A1 r1: …and says why"
+kill $LP; wait $LP 2>/dev/null; LP=
+A1T 60; check "$(resumed)" 1 "A1 r1: once the process is gone, the tick after resumes"
+python3 - "$FAKE_WD_ROWS" "$B27" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1])); assert [r["sessionId"] for r in rows] == [sys.argv[2]], rows
+PY
+check $? 0 "A1 r1: …the same session, no copy"
+check "$(state_val stages sbpid hub stopped pid)" "" "A1 r1: …and the record of the stopped process is cleared"
+# a reused pid is not the hub: the same pid with another start time does not hold the resume back
+B28=$(U 28); mk_bhub sbreuse $B28; FX jline sbreuse 20 "[exec-1] DONE a line is waiting"
+sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${B28:0:8} $B28 background idle "$CWD" $LP
+reset_log; A1_T0=$(date +%s); A1T 0 AGENT_HUB_WATCHDOG_STOP_WAIT=1 FAKE_WD_STOP_LINGER=hold
+python3 - "$R/.state/watchdog/state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["stages"]["sbreuse"]["hub"]["stopped"]["start"] = "Thu Jan  1 00:00:00 1970"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+A1T 20; check "$(resumed)" 1 "A1 r1: a live pid with another start time is another process → the resume is tried"
+kill $LP; wait $LP 2>/dev/null; LP=
+# a stopped row without a pid: no resume (no blind pause); the next tick resumes the then unlisted hub
+B29=$(U 29); mk_bhub sbnopid $B29; FX jline sbnopid 20 "[exec-1] DONE a line is waiting"
+FX rows "$FAKE_WD_ROWS" ${B29:0:8} $B29 background idle "$CWD" 0
+python3 - "$FAKE_WD_ROWS" <<'PY'                                          # listed as running only by its status: no pid, state not done
+import json, sys
+rows = json.load(open(sys.argv[1]))
+for r in rows:
+    r["state"] = "working"
+json.dump(rows, open(sys.argv[1], "w"))
+PY
+reset_log; A1_T0=$(date +%s); A1T 0
+check "$(stopped):$(resumed)" "1:0" "A1 r1: a row without a pid → stopped, but not resumed in this tick"
+grep -q "the stopped row has no pid" "$(J sbnopid)"; check $? 0 "A1 r1: …the journal says why"
+A1T 20; check "$(resumed)" 1 "A1 r1: …the next tick resumes the unlisted hub"
+# the owner resumed the hub while the watchdog waited for the old process: the wake is cancelled
+B30=$(U 30); mk_bhub sbrel $B30; FX jline sbrel 20 "[exec-1] DONE a line is waiting"
+sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${B30:0:8} $B30 background idle "$CWD" $LP
+reset_log; A1_T0=$(date +%s); A1T 0 FAKE_WD_STOP_LINGER=1 FAKE_WD_STOP_RELIST=1
+check "$(resumed)" 0 "A1 r1: the hub is listed again after the wait → no resume"
+grep -q "listed again (resumed meanwhile): the wake is cancelled" "$(J sbrel)"; check $? 0 "A1 r1: …the journal says so"
+wait $LP 2>/dev/null; LP=
 # a hub that is not listed (its process is gone) but was started in the background: resumed without a stop
 B19=$(U 19); mk_bhub sbgone $B19; FX jline sbgone 16 "[exec-1] DONE a line is waiting"; FX rows "$FAKE_WD_ROWS"
 reset_log; tick > /dev/null

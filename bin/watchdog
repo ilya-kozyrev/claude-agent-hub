@@ -70,7 +70,6 @@ CRON_MARKER = "# agent-hub-watchdog"
 NOTIFY_TIMEOUT_S = 20
 STOP_RELEASE_MAX_S = 30  # how long a stopped background session may take to exit before the resume is left to the next tick
 STOP_RELEASE_POLL_S = 0.2
-STOP_RELEASE_BLIND_S = 3  # a row without a pid: a fixed pause instead (the probed window was <= 1.7 s)
 
 
 # ---------------------------------------------------------------- settings and the clock
@@ -714,17 +713,34 @@ def stop_release_limit() -> float:
         return float(STOP_RELEASE_MAX_S)
 
 
-def released(pid) -> bool:
+def proc_start(pid):
+    """The start time `ps` prints for a pid (a string; stable for the life of the process), None when there is no such process."""
+    try:
+        res = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True, timeout=10,
+                             env={**os.environ, "LC_ALL": "C"}, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, OverflowError):
+        return None
+    return res.stdout.strip() or None
+
+
+def proc_alive(ident: dict) -> bool:
+    """Whether the process of a recorded identity ({pid, start}) still runs: the pid alone is not enough, a pid is reused.
+    A pid that runs with another start time is another process; without a recorded start time the pid decides."""
+    if not pid_alive(ident.get("pid")):
+        return False
+    if not ident.get("start"):
+        return True
+    now = proc_start(ident["pid"])
+    return now is None or now == ident["start"]  # `ps` saying nothing about a pid that answers a signal: assume it is the hub
+
+
+def released(ident: dict) -> bool:
     """After `claude stop` the listing drops the session about 1.7 s before the daemon has let it go: its process is
     still exiting, and a resume in that window starts a copy (probed on 2.1.289, work/watchdog-hotfix-probe.md). The
     session is released when the process of the row that was stopped is gone. True when it is, False when it is still
-    there after the limit. A row without a pid gets a short fixed pause instead."""
-    limit = stop_release_limit()
-    if not pid:
-        time.sleep(min(STOP_RELEASE_BLIND_S, limit))
-        return True
-    deadline = time.monotonic() + limit
-    while pid_alive(pid):
+    there after the limit."""
+    deadline = time.monotonic() + stop_release_limit()
+    while proc_alive(ident):
         if time.monotonic() >= deadline:
             return False
         time.sleep(STOP_RELEASE_POLL_S)
@@ -754,6 +770,14 @@ def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
         return {"ok": False, "how": how, "detail": "the hub's working directory cannot be found"}
     if tick.dry:
         return {"ok": True, "how": how, "detail": "not run (dry run)"}
+    hs = ((tick.state.get("stages") or {}).get(stage) or {}).get("hub")
+    hs = hs if isinstance(hs, dict) else {}
+    pend = hs.get("stopped")  # a hub stopped by an earlier tick whose process had not exited: still the same process?
+    if isinstance(pend, dict) and pend.get("session") == o["sid"]:
+        if proc_alive(pend):
+            return {"ok": False, "how": how, "detail": f"the hub stopped at {pend.get('at')} (pid {pend.get('pid')}) is still "
+                                                       "exiting: not resuming now, the next tick checks again"}
+        hs.pop("stopped", None)
     # the state right before the resume, not the tick's reading: never a copy of a session that runs
     rows = autopilot.list_agents(cli.path, cwd)
     if rows is None:
@@ -763,15 +787,27 @@ def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
         if row.get("status") != "idle" or row.get("kind") != "background":
             # a session the owner opened in a terminal meanwhile is interactive: stopping it would end their window
             return {"ok": False, "how": how, "detail": f"the hub is {row.get('kind')}/{row.get('status')} now: not woken"}
+        pid = row.get("pid")
+        ident = {"pid": pid, "start": proc_start(pid) if pid else None, "session": o["sid"], "at": iso(tick.now)}  # before the stop
         stop = run([cli.path, "stop", row.get("id") or sid8], 30, cwd)
         if stop.returncode != 0:
             return {"ok": False, "how": how, "detail": f"claude stop exit {stop.returncode}: {first_line(stop.stderr or stop.stdout)}"}
         rows = autopilot.list_agents(cli.path, cwd)
         if rows is None or running_row(rows, o["sid"]) is not None:
             return {"ok": False, "how": how, "detail": "the hub is still listed after claude stop: not resuming"}
-        if not released(row.get("pid")):
-            return {"ok": False, "how": how, "detail": f"the stopped hub (pid {row.get('pid')}) is still exiting after "
-                                                       f"{stop_release_limit():g} s: not resuming now, the next tick resumes it"}
+        if not pid:
+            return {"ok": False, "how": how, "detail": "the stopped row has no pid, so its release cannot be told: not "
+                                                       "resuming now, the next tick resumes the then unlisted hub"}
+        hs["stopped"] = ident  # kept until the process is seen gone: a later tick must not resume over it
+        if not released(ident):
+            return {"ok": False, "how": how, "detail": f"the stopped hub (pid {pid}) is still exiting after "
+                                                       f"{stop_release_limit():g} s: not resuming now, the next tick checks again"}
+        hs.pop("stopped", None)
+        rows = autopilot.list_agents(cli.path, cwd)  # the owner may have resumed the hub while we waited
+        if rows is None:
+            return {"ok": False, "how": how, "detail": "`claude agents --json` failed: not resuming blind"}
+        if running_row(rows, o["sid"]) is not None:
+            return {"ok": False, "how": how, "detail": "the hub is listed again (resumed meanwhile): the wake is cancelled"}
     before = {r.get("id") for r in rows}
     res = run([cli.path, "--bg", "--resume", o["sid"], text], 90, cwd)
     out = autopilot.clean((res.stdout or "") + "\n" + (res.stderr or ""))

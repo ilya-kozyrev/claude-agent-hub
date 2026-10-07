@@ -5,8 +5,10 @@
 - **The watchdog no longer starts a copy of a hub it has just stopped, and its wake prompt no longer resets the
   autopilot's handoff chain.** A live probe on claude 2.1.289 showed that after `claude stop` a Remote Control session
   leaves `claude agents --json` about 1.7 s before its process has exited, and a resume in that window starts a copy
-  (4 of 4); `watchdog` now waits for the stopped row's pid to exit (up to 30 s) before `claude --bg --resume`, resumes
-  the same id (3 of 3 in the probe) and, if the process is still there, leaves the wake to the next tick. A
+  (4 of 4); `watchdog` now waits for the stopped process (pid and start time) to exit (up to 30 s) before `claude --bg
+  --resume`, resumes the same id (3 of 3 in the probe) and, if the process is still there, resumes in no later tick
+  until it is seen gone (the identity is kept in the hub's state); a row without a pid is not resumed in that tick, and a
+  hub listed again after the wait (the owner resumed it) cancels the wake. A
   wake prompt that starts with `[agent-hub watchdog]` is recognised as agent-hub's own and does not reset the chain
   (`owner_spoke` in `bin/autopilot.py`, used by the Claude and the Codex hook path alike); a prompt typed by the owner
   still does. Tests: `tests/t_watchdog.sh` (a stand-in `claude` whose stopped process lingers; fails on 0.9.1),

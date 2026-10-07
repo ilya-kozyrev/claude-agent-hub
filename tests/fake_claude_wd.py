@@ -11,9 +11,11 @@ FAKE_WD_STOP=copy-fail                     `stop` of a copy (id cc…) exits 1; 
 FAKE_WD_STOP=copy-ghost                    `stop` of a copy exits 0 but the copy stays listed
 FAKE_WD_KIND=interactive FAKE_WD_KIND_FROM=2  from the 2nd `agents --json` call on, every row says that kind (the owner
                                            opened the session in a terminal meanwhile)
-FAKE_WD_STOP_LINGER=<seconds>              `stop` drops the row at once but the process of the row (its pid) is killed only
-                                           that many seconds later (the daemon's release window of the real CLI, probed on
+FAKE_WD_STOP_LINGER=<seconds>|hold         `stop` drops the row at once but the process of the row (its pid) is killed only
+                                           that many seconds later (`hold`: never, the test ends it) (the daemon's release window of the real CLI, probed on
                                            2.1.289); a resume while that pid is still alive starts a copy
+FAKE_WD_STOP_RELIST=1                      the row is listed again (the owner resumed the session) from the 2nd `agents` call
+                                           after the stop
 FAKE_WD_RESUME=copy                        `--bg --resume` always starts a copy (a new row, a different session id)
 FAKE_WD_RESUME=stranger                    `--bg --resume` continues the same id, and an unrelated session (feedface) appears
                                            at the same time without any "copy" message
@@ -53,6 +55,16 @@ if cmd == "agents":
     if os.environ.get("FAKE_WD_AGENTS") == "fail":
         sys.stderr.write("fake claude: agents failed\n")
         sys.exit(1)
+    try:
+        relist = json.load(open(rows_file + ".relist"))
+        relist["left"] -= 1
+        if relist["left"] <= 0:
+            save(rows() + [relist["row"]])
+            os.unlink(rows_file + ".relist")
+        else:
+            json.dump(relist, open(rows_file + ".relist", "w"))
+    except (OSError, TypeError, ValueError):
+        pass
     out = rows()
     kind, calls = os.environ.get("FAKE_WD_KIND"), 0
     if kind:
@@ -76,8 +88,12 @@ elif cmd == "stop":
     if linger and gone and gone[0].get("pid"):
         with open(rows_file + ".lingering", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"sid": gone[0].get("sessionId"), "pid": gone[0]["pid"]}) + "\n")
-        subprocess.Popen(["sh", "-c", f"sleep {float(linger)}; kill {int(gone[0]['pid'])}"], start_new_session=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.environ.get("FAKE_WD_STOP_RELIST"):  # the row comes back at the 2nd `agents` call after the stop
+            with open(rows_file + ".relist", "w", encoding="utf-8") as fh:
+                json.dump({"row": dict(gone[0], pid=NO_PROCESS), "left": 2}, fh)
+        if linger != "hold":
+            subprocess.Popen(["sh", "-c", f"sleep {float(linger)}; kill {int(gone[0]['pid'])}"], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"stopped {target}")
 elif cmd == "--bg" and "--resume" in argv:
     sid = argv[argv.index("--resume") + 1]
