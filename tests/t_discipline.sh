@@ -395,6 +395,30 @@ dden Agent foo:anything opus; check $? 0 "rename: …and the other item of the l
 dden Agent bar:worker-medium opus; check $? 1 "rename, negative: …and an unrelated prefix does not"
 $B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '"defined": "true"'; check $? 0 "rename: the definition of an agent called by the former prefix is found"  # rename:keep
 $B/delegation try --cwd $R/other foo:worker-high opus | grep -q '"defined": "false"'; check $? 0 "rename, negative: …and of another plugin's agent is not"
+# the rename, globs without the colon: a pattern for either name of this plugin matches both spellings of its agents
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "legacy bare glob"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-high opus; check $? 0 "rename: deny agent-hub* denies delamain:worker-high"  # rename:keep
+dden Agent agent-hub:worker-high opus; check $? 0 "rename: deny agent-hub* denies agent-hub:worker-high"  # rename:keep
+dden Agent foo:worker-high opus; check $? 1 "rename, negative: agent-hub* does not match foo:worker-high"  # rename:keep
+dden Agent worker-high opus; check $? 1 "rename, negative: agent-hub* does not match the bare name worker-high"  # rename:keep
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "delamain*"}, "decision": "deny", "reason": "current bare glob"}]}' > $R/config.json
+dden Agent delamain:worker-high opus; check $? 0 "rename: deny delamain* denies delamain:worker-high"
+dden Agent agent-hub:worker-high opus; check $? 0 "rename: deny delamain* denies a call still using agent-hub:worker-high"  # rename:keep
+dden Agent foo:worker-high opus; check $? 1 "rename, negative: delamain* does not match foo:worker-high"
+dden Agent worker-high opus; check $? 1 "rename, negative: delamain* does not match the bare name worker-high"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": ["agent-hub*", "other-plugin:*"]}, "decision": "deny", "reason": "list"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-low opus; check $? 0 "rename: a list with agent-hub* matches delamain:worker-low"  # rename:keep
+dden Agent other-plugin:x opus; check $? 0 "rename: …and the other item of the list still matches"
+dden Agent bar:worker-low opus; check $? 1 "rename, negative: …and an unrelated namespace does not"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "delamain:worker-low"}, "decision": "allow"}, {"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "after the allow"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-low opus; check $? 1 "rename, order: an allow rule placed before the deny still wins for delamain:worker-low"
+dden Agent agent-hub:worker-low opus; check $? 1 "rename, order: …and for the same agent called by the former prefix"  # rename:keep
+dden Agent delamain:worker-high opus; check $? 0 "rename, order: …while the deny applies to the other agents of the plugin"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "first"}, {"when": {"subagent_type": "delamain:worker-low"}, "decision": "allow"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-low opus; check $? 0 "rename, order: a deny placed before the allow wins"
+echo '{"AGENT_HUB_DELEGATION": "on", "AGENT_HUB_DELEGATION_RULES": [{"when": {"subagent_type": "agent-hub*"}, "decision": "deny", "reason": "dial rule"}]}' > $R/config.json  # rename:keep
+dg Agent delamain:worker-high | grep -q 'dial rule'; check $? 0 "rename: the same glob in AGENT_HUB_DELEGATION_RULES denies delamain:worker-high (one matching function)"
+dden Agent foo:worker-high; check $? 1 "rename, negative: …and not foo:worker-high"
 cp $EXAMPLE $R/config.json
 
 # agent spawn applies AGENT_HUB_EFFORT_RULES (stand-in CLI; a denied spawn never starts)

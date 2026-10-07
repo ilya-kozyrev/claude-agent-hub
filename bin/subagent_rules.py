@@ -11,8 +11,9 @@ No matching rule = allow. `when` keys (all must match; a value is a glob or a li
 
     tool           Agent | Task | Workflow | agent-spawn
     level          the delegation level "0".."5", or "off" when the dial is off
-    subagent_type  the Agent call's subagent_type ("" when not given; plugin agents as "plugin:name"); a rule or a call
-                   that uses the plugin's former prefix means the same agent under the current plugin name
+    subagent_type  the Agent call's subagent_type ("" when not given; plugin agents as "plugin:name"); this plugin's
+                   agents match a glob written for either of its names: `delamain:worker-high` and
+                   `agent-hub:worker-high` (the name before the rename) are one agent
     defined        "true" when a definition file for subagent_type was found, else "false"
     model          the model the subagent runs on: the call's `model`, else the definition's `model:`, else
                    "inherit"; for agent spawn both the alias given and the id it maps to are tried
@@ -192,14 +193,32 @@ def _match(value, pattern) -> bool:
     return any(fnmatch.fnmatchcase(str(v).lower(), str(p).lower()) for v in values for p in pats)
 
 
+def type_forms(typ) -> list:
+    """Every spelling of a subagent type that means the same agent. This plugin's agents have two: under the current
+    plugin name and under the one before the rename (`delamain:worker-high`, `agent-hub:worker-high`); any other
+    namespace, and a bare name, has only its own."""
+    typ = str(typ)
+    current = current_type(typ)
+    forms = [typ]
+    if current != typ:
+        forms.append(current)
+    elif current.lower().startswith(plugin_name().lower() + ":"):
+        forms.append(LEGACY_PLUGIN_NAME + ":" + current[len(plugin_name()) + 1:])
+    return forms
+
+
 def _rule_matches(rule: dict, call: dict) -> bool:
-    """Whether every `when` key of `rule` matches `call`. subagent_type is compared through current_type on both
-    sides: a rule for the plugin's former prefix applies to the same agent under the current name."""
+    """Whether every `when` key of `rule` matches `call`. subagent_type is the one key compared through the rename: a
+    pattern (as written, and in the current plugin name's form) is tried against every form of the call's type
+    (type_forms). So a rule for `delamain*` or for `agent-hub*` (the name before the rename) means the same agents
+    whichever of the two names the call or the rule uses. The first matching rule still decides (evaluate)."""
     for k, pattern in (rule.get("when") or {}).items():
         value = call.get(k, "")
         if k == "subagent_type":
-            value = [current_type(v) for v in value] if isinstance(value, list) else current_type(value)
-            pattern = [current_type(p) for p in pattern] if isinstance(pattern, list) else current_type(pattern)
+            values = value if isinstance(value, list) else [value]
+            value = [form for v in values for form in type_forms(v)]
+            pats = pattern if isinstance(pattern, list) else [pattern]
+            pattern = [form for p in pats for form in dict.fromkeys([str(p), current_type(p)])]
         if not _match(value, pattern):
             return False
     return True
