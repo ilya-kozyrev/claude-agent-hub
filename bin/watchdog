@@ -28,7 +28,7 @@ AGENT_HUB_NOTIFY_LOCAL (on), AGENT_HUB_NOTIFY_CMD (a JSON argv with {message}; e
 AGENT_HUB_SPAWN_HOLD_LOAD (empty = off), AGENT_HUB_SPAWN_HOLD (warn|refuse).
 What leaves the machine: the stage name, minutes, counts and the event word. Never line text, session ids, tags, paths.
 Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick; AGENT_HUB_WATCHDOG_LOAD=<load>[:<cores>]
-replaces the measured load.
+replaces the measured load; AGENT_HUB_WATCHDOG_STOP_WAIT=<seconds> replaces the 30 s that a stopped hub may take to exit.
 Exit: 0 ok (also: another tick is running, the watchdog is off), 1 failure, 2 usage.
 """
 from __future__ import annotations
@@ -47,6 +47,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -67,6 +68,9 @@ CLAUDE_BUSY_STATUSES = ("busy", "waiting", "running")
 JOB_LABEL_PREFIX = "io.agent-hub.watchdog."
 CRON_MARKER = "# agent-hub-watchdog"
 NOTIFY_TIMEOUT_S = 20
+STOP_RELEASE_MAX_S = 30  # how long a stopped background session may take to exit before the resume is left to the next tick
+STOP_RELEASE_POLL_S = 0.2
+STOP_RELEASE_BLIND_S = 3  # a row without a pid: a fixed pause instead (the probed window was <= 1.7 s)
 
 
 # ---------------------------------------------------------------- settings and the clock
@@ -644,16 +648,16 @@ def rule_r2(tick: Tick, stage: str, st: dict) -> None:
 def wake_text(stage: str, o: dict, lines: list, dead, night, bg: bool) -> str:
     parts = []
     if dead:
-        parts.append(f"[agent-hub watchdog] {stage}: your last turn ended on an API error at {dead[0]:%H:%M} "
+        parts.append(f"{autopilot.WATCHDOG_MARKER} {stage}: your last turn ended on an API error at {dead[0]:%H:%M} "
                      f"({dead[1]}); continue where you stopped.")
     if lines:
         since = f"{lines[0][0]:%H:%M}" if lines[0][0].date() == dt.datetime.now(hc.TZ).date() else f"{lines[0][0]:%Y-%m-%dT%H:%M}"
-        parts.append(("" if dead else f"[agent-hub watchdog] {stage}: ") + f"{len(lines)} journal lines addressed to you "
+        parts.append(("" if dead else f"{autopilot.WATCHDOG_MARKER} {stage}: ") + f"{len(lines)} journal lines addressed to you "
                      f"have waited since {since} and no jwait of yours is running. Run your digest jwait with "
                      f"--since {since}, handle what it shows, and keep one waiter.")
     if night:
         queue = night[1]
-        parts.append(("" if parts else f"[agent-hub watchdog] {stage}: ") + f"Night queue: continue with "
+        parts.append(("" if parts else f"{autopilot.WATCHDOG_MARKER} {stage}: ") + f"Night queue: continue with "
                      f"{hc.root() / stage / 'night-queue.md'} (open {queue['open']}, next: {queue.get('next') or '—'}). "
                      "The permission matrix is in the file; anything outside it — `ask add` with a default action, "
                      "then move on." + (f" The queue format is broken: `nightq check --stage {stage}`."
@@ -691,6 +695,42 @@ def wake_agent_send(stage: str, o: dict, text: str, dry: bool) -> dict:
     return {"ok": res.returncode == 0, "how": how, "detail": detail}
 
 
+def pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (ProcessLookupError, ValueError, TypeError, OverflowError):
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def stop_release_limit() -> float:
+    try:
+        return max(0.0, float(os.environ.get("AGENT_HUB_WATCHDOG_STOP_WAIT", "")))
+    except ValueError:
+        return float(STOP_RELEASE_MAX_S)
+
+
+def released(pid) -> bool:
+    """After `claude stop` the listing drops the session about 1.7 s before the daemon has let it go: its process is
+    still exiting, and a resume in that window starts a copy (probed on 2.1.289, work/watchdog-hotfix-probe.md). The
+    session is released when the process of the row that was stopped is gone. True when it is, False when it is still
+    there after the limit. A row without a pid gets a short fixed pause instead."""
+    limit = stop_release_limit()
+    if not pid:
+        time.sleep(min(STOP_RELEASE_BLIND_S, limit))
+        return True
+    deadline = time.monotonic() + limit
+    while pid_alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(STOP_RELEASE_POLL_S)
+    return True
+
+
 def started_copy(out: str):
     """The id a `claude --bg --resume` announced for a copy ("… so this started a copy as d335c079"), else None."""
     m = re.search(r"started a copy as ([0-9A-Za-z_-]+)", out)
@@ -698,8 +738,8 @@ def started_copy(out: str):
 
 
 def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
-    """`claude stop` when the session is listed (idle), then `claude --bg --resume <same id> "<text>"` with no other
-    flag: a background session keeps its own saved options (model, effort, permission mode, remote control), and flags
+    """`claude stop` when the session is listed (idle), wait until its process has exited, then
+    `claude --bg --resume <same id> "<text>"` with no other flag: a background session keeps its own saved options (model, effort, permission mode, remote control), and flags
     make the CLI start a copy instead (probed on 2.1.289, docs/monitoring.md). Never a copy, never blind."""
     sid8 = o["sid"][:8]
     how = (f"claude stop {sid8}; " if o["row"] is not None else "") + f"claude --bg --resume {sid8} \"<text>\""
@@ -729,6 +769,9 @@ def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
         rows = autopilot.list_agents(cli.path, cwd)
         if rows is None or running_row(rows, o["sid"]) is not None:
             return {"ok": False, "how": how, "detail": "the hub is still listed after claude stop: not resuming"}
+        if not released(row.get("pid")):
+            return {"ok": False, "how": how, "detail": f"the stopped hub (pid {row.get('pid')}) is still exiting after "
+                                                       f"{stop_release_limit():g} s: not resuming now, the next tick resumes it"}
     before = {r.get("id") for r in rows}
     res = run([cli.path, "--bg", "--resume", o["sid"], text], 90, cwd)
     out = autopilot.clean((res.stdout or "") + "\n" + (res.stderr or ""))

@@ -88,7 +88,7 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 | Hub host | What the watchdog does |
 |---|---|
 | Headless hub (an agent of `agent spawn`) | `agent send --stage S <role> "<text>"` (resumes the same session). |
-| `claude --bg` hub, idle | `claude stop <id>`, then `claude --bg --resume <full id> "<text>"`: the same session id, with no other flag. |
+| `claude --bg` hub, idle | `claude stop <id>`, wait until the stopped session's process has exited, then `claude --bg --resume <full id> "<text>"`: the same session id, with no other flag. |
 | `claude --bg` hub that is no longer listed | The same resume, when the hub was started in the background (`host: bg` in its `roles.json` record, else the pending record of `hub succeed` that started it) and the daemon still holds the session's saved options. |
 | `claude --bg` hub that is busy | Nothing: it is not silent. |
 | Desktop, terminal, a Claude session not started in the background, a Claude hub whose busy state cannot be read | A notification only. |
@@ -96,14 +96,17 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds
-that the background commands of the hub's last turn were stopped. It carries no line text.
+that the background commands of the hub's last turn were stopped. It carries no line text. It starts with
+`[agent-hub watchdog]`, which the context-budget hook (both engines) recognises as agent-hub's own prompt: it does not
+reset the autopilot's auto-handoff chain the way a prompt typed by the owner does.
 
 ### Safety
 
 - **Never a successor.** The watchdog runs `agent send`, `claude stop` and `claude --bg --resume` of the hub's own
   session id. It never runs `hub succeed`, `agent spawn` or a `claude --bg` without `--resume`. Right before a resume it
   reads `claude agents --json` again; if the hub is listed busy it does not wake it, and if the CLI starts a copy of the
-  session anyway, it stops the copy, counts the wake as failed and notifies.
+  session anyway, it stops the copy, counts the wake as failed and notifies; it does not resume a second time in the
+  same tick, the next tick (after the backoff) does.
 - **Do-not-wake marker.** `watchdog quiet --stage S --reason "…" [--for 8h | --until HH:MM|ISO]` writes
   `<stage>/do-not-wake.json` (who, when, until, reason); `watchdog quiet --stage S --clear` removes it; `watchdog quiet`
   alone lists every stage's marker. A marked stage gets no R3/R4 wake and no notification; R1 and R2 still write. An
@@ -174,3 +177,9 @@ A live probe on claude 2.1.289 (2026-10-07, a scratch `--bg` session) settled ho
 flag (`--model` was tried) started a copy, and so did the same command while the session was listed idle. Hence the
 order, stop the idle session, then resume it with no other flag, and the watchdog's check that nothing listed is
 running and that no copy appeared.
+
+A second probe (2026-10-07, 2.1.289) found one more window. After `claude stop` a session with Remote Control drops out of
+`claude agents --json` about 1.7 s before its process has exited and the daemon has released it; a resume in that window
+started a copy (4 of 4), a resume after the stopped row's pid had exited continued the same id (3 of 3). The watchdog
+therefore waits for that pid to exit (up to 30 s, polling every 0.2 s) before it resumes; if the process is still there
+it does not resume in this tick and says so, and the next tick finds the hub unlisted and resumes it.
