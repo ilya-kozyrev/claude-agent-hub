@@ -21,7 +21,7 @@ sessions or choose their permission mode):
   AGENT_HUB_SUCCESSOR_TIMEOUT          seconds to wait for the successor's takeover line (default 600)
 Chain state: <hub home>/<stage>/auto-handoff.json — `chain` (automatic handoffs since the owner last spoke) and
 `pending` (the successor started last). `hub succeed` adds one; a takeover that is not the pending successor's, and a
-prompt in the hub's session without the marker "[agent-hub auto-handoff k/N]" (the owner spoke), reset it.
+prompt in the hub's session without the marker "[delamain auto-handoff k/N]" (the owner spoke), reset it.
 """
 from __future__ import annotations
 
@@ -48,10 +48,10 @@ import session_effort  # noqa: E402
 # The tag of the plugin's own informational journal lines (a chain reset): not `hub`, which every hub's `jwait --tag hub`
 # wakes on, so the line stays readable in the journal and wakes nobody.
 SERVICE_TAG = "autopilot"
-# agent-hub's own prompts in a hub's session (not the owner speaking): the successor's take-over prompt carries MARKER_RE
+# Delamain's own prompts in a hub's session (not the owner speaking): the successor's take-over prompt carries MARKER_RE
 # anywhere in the text, the watchdog's wake text starts with WATCHDOG_MARKER. The one list of them: `owner_spoke`.
-MARKER_RE = re.compile(r"\[agent-hub auto-handoff (\d+)/(\d+)\]")
-WATCHDOG_MARKER = "[agent-hub watchdog]"
+MARKER_RE = re.compile(r"\[delamain auto-handoff (\d+)/(\d+)\]")
+WATCHDOG_MARKER = "[delamain watchdog]"
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
 BG_ID_RE = re.compile(r"backgrounded\s*·\s*(\S+)")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -240,7 +240,7 @@ def hub_stage_of(sid: str) -> Optional[str]:
 
 
 def owner_spoke(prompt) -> bool:
-    """A prompt typed by a person: none of agent-hub's own markers (the successor's, the watchdog's) and not a harness
+    """A prompt typed by a person: none of Delamain's own markers (the successor's, the watchdog's) and not a harness
     notice (they start with an XML-like tag)."""
     text = prompt if isinstance(prompt, str) else ""
     head = text.lstrip()
@@ -499,7 +499,7 @@ class Successor:
 
     @property
     def marker(self) -> str:
-        return f"[agent-hub auto-handoff {self.k}/{self.limit}]"
+        return f"[delamain auto-handoff {self.k}/{self.limit}]"
 
     def takeover_cmd(self) -> str:
         # no shell expansion (`--session self`, no AGENT_HUB_HOME= prefix: the session inherits the environment, E14,
@@ -508,7 +508,7 @@ class Successor:
                 f"--handoff {shlex.quote(str(self.handoff))}")
 
     def prompt(self) -> str:
-        return (f"/agent-hub:hub take over stage {self.stage} from {self.handoff}: run `{self.takeover_cmd()}`, then "
+        return (f"/delamain:hub take over stage {self.stage} from {self.handoff}: run `{self.takeover_cmd()}`, then "
                 f"follow its digest and the handoff. \"Hub {self.stage} #{self.n}\" handed over automatically and "
                 f"stopped; the owner may be away and reaches you here through Remote Control. {self.marker}")
 
@@ -652,7 +652,7 @@ You are the next hub of stage `{self.stage}`. "Hub {self.stage} #{self.n}" hande
 background Remote Control session could not start ({why}), so you run headless. The owner may be away: they reach you
 through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
 
-1. Load the hub skill (`/agent-hub:hub`) and take over: `{self.takeover_cmd()}`
+1. Load the hub skill (`/delamain:hub`) and take over: `{self.takeover_cmd()}`
    (`self` is this session: $CLAUDE_CODE_SESSION_ID, else the $AGENT_SESSION_ID `agent spawn` exports).
    Then follow the digest and the handoff `{self.handoff}`.
 2. You are a `claude -p` run: the end of your turn ends the process, and a background `jwait` dies with it. Wait with
@@ -721,7 +721,7 @@ class CodexSuccessor(Successor):
 You are the next hub of stage `{self.stage}`. Your predecessor handed over automatically and stopped.
 The owner may be away; they reach you through `ask` and `agent send hub-{self.succ} "…"`.
 
-1. Read the bundled hub skill at `{skill}` (or invoke the installed `agent-hub:hub` skill), then run
+1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill), then run
    `{self.takeover_cmd()}`. `self` resolves this worker's own session id. Follow its digest and `{self.handoff}`.
 2. Run the digest's first `jwait` once unconditionally to replay handover events. Then work the finite handoff queue
    to its completion/stop checks. Wait only while work or external events remain,
@@ -1323,7 +1323,7 @@ Run the digest's first `jwait` once unconditionally to replay handover events; u
 its execution session and exit status. Then work the finite handoff queue to its completion/stop checks.
 Wait only while work or external events remain.
 When nothing remains, journal DONE and finish. Owner questions use `ask`; consult the register, not copied decisions.
-[agent-hub auto-handoff {k}/{limit}]
+[delamain auto-handoff {k}/{limit}]
 '''
         args = {'title': hc.hub_title(stage, succ), 'prompt': prompt}
         if model:

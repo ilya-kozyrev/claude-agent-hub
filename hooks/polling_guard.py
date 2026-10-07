@@ -3,7 +3,7 @@
 
 A foreground wait holds the session for nothing: a `until …; do sleep 20; done` loop runs until the Bash timeout,
 and every one-off "is CI done yet?" read is a full turn that re-reads the whole context. The harness already
-wakes a session when a background command ends; agent-hub's `jwait` wakes it on journal lines, file output and
+wakes a session when a background command ends; Delamain's `jwait` wakes it on journal lines, file output and
 alarms. This hook denies:
 
 * a loop (`until` / `while` / `for`) with `sleep` inside that has no upper bound, or one above
@@ -161,9 +161,9 @@ class Config:
                 try:
                     out.append(re.compile(str(p), re.IGNORECASE))
                 except re.error as e:
-                    print(f"agent-hub: {name}: bad regex {p!r} ({e}); skipped", file=sys.stderr)
+                    print(f"delamain: {name}: bad regex {p!r} ({e}); skipped", file=sys.stderr)
             if src and not out:  # every configured pattern broken: not the same as a deliberate []
-                print(f"agent-hub: {name}: no valid pattern; using the defaults", file=sys.stderr)
+                print(f"delamain: {name}: no valid pattern; using the defaults", file=sys.stderr)
                 return [re.compile(p, re.IGNORECASE) for p in default]
             return out
 
@@ -420,8 +420,8 @@ def check(command: str, background: bool, cfg: Config):
 
 
 def message(kind: str, reason: str, cfg: Config) -> str:
-    head = ("Waiting in the foreground is not run (agent-hub polling guard)." if kind == "wait" else
-            "Reading CI status by hand in the foreground is not run (agent-hub polling guard): every such read is "
+    head = ("Waiting in the foreground is not run (Delamain polling guard)." if kind == "wait" else
+            "Reading CI status by hand in the foreground is not run (Delamain polling guard): every such read is "
             "a turn that re-reads the whole context.")
     instead = CODEX_INSTEAD if os.environ.get("AGENT_HUB_ENGINE") == "codex" or os.environ.get("CODEX_THREAD_ID") else INSTEAD
     return f"{head}\n\n{reason}\n\n" + instead.format(hint=cfg.hint, escape=cfg.escape_word)

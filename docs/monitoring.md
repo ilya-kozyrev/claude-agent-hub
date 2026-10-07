@@ -38,7 +38,7 @@ Desktop Code tab:
 
 - **`/agent-top [role] [--stage S] [--all]` opens a pane**, and so does the `agents ● 4 ✓ 9 ✗ 0` button in the prompt
   footer next to the model picker; a second `/agent-top` or a second press closes it. The mod registers `/agent-top`
-  itself and also answers `/agent-hub:agent-top`. It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
+  itself and also answers `/delamain:agent-top`. It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
   the `❯` cursor, Enter or the row's digit `1`–`9` opens the agent card), the **agent card** (state, model, turns, a
   context bar against the model's window, cost, result; a live feed of the last 30 events; `b` goes back), **Journal**
   (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks). Each agent is two lines with a
@@ -97,7 +97,7 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds
 that the background commands of the hub's last turn were stopped. It carries no line text. It starts with
-`[agent-hub watchdog]`, which the context-budget hook (both engines) recognises as agent-hub's own prompt: it does not
+`[delamain watchdog]`, which the context-budget hook (both engines) recognises as Delamain's own prompt: it does not
 reset the autopilot's auto-handoff chain the way a prompt typed by the owner does.
 
 ### Safety
@@ -139,7 +139,7 @@ tick would do.
 
 ### What leaves the machine
 
-A notification carries the stage name, minutes, counts and an event word, for example `agent-hub: payments — hub silent 47
+A notification carries the stage name, minutes, counts and an event word, for example `delamain: payments — hub silent 47
 min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`. Never line text,
 question text, session ids, tags or paths. Channels: the local one (macOS `osascript`, elsewhere `notify-send` when
 present; `AGENT_HUB_NOTIFY_LOCAL`, on by default) and a remote one you configure, `AGENT_HUB_NOTIFY_CMD`, a JSON argv
@@ -149,7 +149,7 @@ in the hub home's `config.json` in which `{message}` is replaced and which runs 
 { "AGENT_HUB_NOTIFY_CMD": ["curl", "-fsS", "-d", "{message}", "https://ntfy.sh/<topic>"] }
 ```
 
-`watchdog notify-test` sends `agent-hub: test notification` through every channel and exits 1 when none exists or one fails.
+`watchdog notify-test` sends `delamain: test notification` through every channel and exits 1 when none exists or one fails.
 
 ### Install, status, uninstall
 

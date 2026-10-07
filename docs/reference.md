@@ -79,9 +79,9 @@ cache for the host engine adds a warning; Claude uses `CLAUDE_CONFIG_DIR` or `~/
 or `~/.codex`. The other engine's newer version is not an update warning for this host.
 
 
-Start the first message of a session with `/agent-hub:hub`, for example `/agent-hub:hub I want CSV export on the
+Start the first message of a session with `/delamain:hub`, for example `/delamain:hub I want CSV export on the
 reports page …`. The slash command always loads the `hub` skill; a plain-language mention of it may be ignored by a
-smaller model, which then plans and codes on its own. In Codex, ask to use `agent-hub:hub` explicitly; see [Codex setup](codex.md).
+smaller model, which then plans and codes on its own. In Codex, ask to use `delamain:hub` explicitly; see [Codex setup](codex.md).
 Or run the following Claude-worker example yourself (substitute your project and brief paths):
 
 ```bash
@@ -156,7 +156,7 @@ such file, or on a machine without a hub home).
 The longer `templates/brief-executor-advanced.md` adds production permissions, size limits and evidence rules;
 `templates/brief-review.md` is the brief for a reviewer.
 
-A full working day, step by step: [docs/a-day-with-agent-hub.md](a-day-with-agent-hub.md).
+A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delamain.md).
 
 ## Cost and turn limits
 
@@ -167,7 +167,7 @@ A full working day, step by step: [docs/a-day-with-agent-hub.md](a-day-with-agen
   agent is the most expensive shape there is. [docs/why.md](why.md) lists measured examples from one project, such
   as an executor that ran 1,100 turns because it was never cut into pieces.
 - **Give every brief a turn limit and a stop condition**, and cut day-long work into pieces: a fresh agent for each, with
-  a short report or handoff file between them. The turn limit is a line in the brief; agent-hub does not enforce it.
+  a short report or handoff file between them. The turn limit is a line in the brief; Delamain does not enforce it.
 - **`agent-top` shows a dollar figure only when the CLI reports one** (a Claude agent's cost: the latest cumulative total
   of each of its sessions; a live run shows `—`). A hub is a Desktop or terminal session that logs tokens, not dollars, so
   its share of the stage's spend (`spend` in `agent-top --json`, a line in `--once`) is an estimate from its transcript,
@@ -448,7 +448,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 ### Configuration layers
 
 A team keeps its conventions in its repository instead of forking the plugin. The tools read the same file names
-from three places, most specific first (`agent-hub:setup` writes the first two files of the project layer for you):
+from three places, most specific first (`delamain:setup` writes the first two files of the project layer for you):
 
 | Layer | Where | Found by |
 |---|---|---|
@@ -566,7 +566,7 @@ worker subagents.
 
 | Hook | Default | Prevents |
 |---|---|---|
-| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`agent-hub:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and past the block threshold it is forced to. |
+| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`delamain:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and past the block threshold it is forced to. |
 | `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
 | `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. |
 
@@ -580,7 +580,7 @@ Use `agent send` to reach it; [Codex support](codex.md) describes its setup. The
 below applies to Claude.
 
 Off by default: it starts background sessions, which nobody should get unasked. Turn it on in the hub home's
-`config.json` (`"AGENT_HUB_AUTO_HANDOFF": "on"`; `agent-hub:setup` asks). Then, in the session registered as a stage's
+`config.json` (`"AGENT_HUB_AUTO_HANDOFF": "on"`; `delamain:setup` asks). Then, in the session registered as a stage's
 hub:
 
 1. At the warn threshold the context-budget message becomes the procedure: at the next quiet point (no agent waiting
@@ -589,7 +589,7 @@ hub:
    `--effort`, else `AGENT_HUB_SUCCESSOR_EFFORT`, else the effort the hub runs at now (`hub effort` shows it and where
    it was read). There is no default: when the hub's effort cannot be read, `hub succeed` exits 1 and starts nothing.
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
-   `/agent-hub:hub take over stage … [agent-hub auto-handoff k/N]`, journals its id, its Remote Control link and
+   `/delamain:hub take over stage … [delamain auto-handoff k/N]`, journals its id, its Remote Control link and
    `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
    The successor is a background Remote Control session, not a Claude Desktop session (see
    [where the owner finds it](#where-the-owner-finds-the-successor) below). It starts from the repository's main
@@ -654,12 +654,12 @@ successor in bypass mode a one-time `claude --dangerously-skip-permissions` in a
 ### Worker subagents
 
 A subagent runs at the effort its definition pins; without one it **inherits the session's effort**, so a session
-at a high effort makes every search subagent just as expensive. The plugin ships `agent-hub:worker-low`,
+at a high effort makes every search subagent just as expensive. The plugin ships `delamain:worker-low`,
 `worker-medium`, `worker-high` and `worker-xhigh`: general-purpose subagents that pin only the effort, so you choose
 the model per call:
 
 ```text
-Agent(subagent_type="agent-hub:worker-medium", model="sonnet", prompt=…)
+Agent(subagent_type="delamain:worker-medium", model="sonnet", prompt=…)
 ```
 
 There is no model-pinned variant: an effort rule can require or forbid any model × effort pair, so a combination such
@@ -679,7 +679,7 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_CONTEXT_BLOCK` | `500000` | hub home only | From here the tools below are denied. |
 | `AGENT_HUB_CONTEXT_BLOCK_TOOLS` | `["Agent", "Task", "SendMessage"]` | hub home only | Tools denied past the block threshold. |
 | `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it anywhere passes (handing over). Deliberately loose: the block is a nudge that leaves a trace in the transcript, not a lock — a prompt that merely cites a handoff file passes. |
-| `AGENT_HUB_CONTEXT_TODO` | points at `agent-hub:handoff` | hub home only | The "what to do" sentence of both messages. |
+| `AGENT_HUB_CONTEXT_TODO` | points at `delamain:handoff` | hub home only | The "what to do" sentence of both messages. |
 | `AGENT_HUB_STATE_DIR` | `<hub home>/.state` | hub home only | Warning buckets and delegation levels. |
 | `AGENT_HUB_AUTO_HANDOFF` | `off` | hub home only | `on` (or JSON `true`): [autopilot](#autopilot-the-hub-hands-over-by-itself) — the stage hub hands over to a successor by itself. |
 | `AGENT_HUB_AUTO_HANDOFF_CHAIN` | `10` | hub home only | Automatic handoffs in a row without the owner; `0` = never start a successor. |
@@ -708,7 +708,7 @@ match allows (each set on its own — see `AGENT_HUB_EFFORT_RULES` above). A rul
 |---|---|
 | `tool` | `Agent`, `Task`, `Workflow`, or `agent-spawn` |
 | `level` | the delegation level `0`-`5`, or `off` while the dial is off |
-| `subagent_type` | as called, e.g. `agent-hub:worker-high`, `Explore`, `fork`; empty when not given |
+| `subagent_type` | as called, e.g. `delamain:worker-high`, `Explore`, `fork`; empty when not given |
 | `defined` | `true` when a definition was found (project `.claude/agents`, `~/.claude/agents`, installed plugins' `agents/`) |
 | `model` | the call's `model`, else the definition's `model:`, else `inherit`; for `agent spawn` the alias and the id it maps to |
 | `model_from` | `param`, `definition` or `inherit` |
@@ -718,7 +718,7 @@ match allows (each set on its own — see `AGENT_HUB_EFFORT_RULES` above). A rul
 {"AGENT_HUB_EFFORT_RULES": [
   {"when": {"model": "*haiku*"}, "decision": "allow"},
   {"when": {"effort": ["inherit", "max"]}, "decision": "deny",
-   "reason": "Pin the effort: use agent-hub:worker-medium or worker-high ({subagent_type} at {effort})."}]}
+   "reason": "Pin the effort: use delamain:worker-medium or worker-high ({subagent_type} at {effort})."}]}
 ```
 
 The shorthand `{"AGENT_HUB_EFFORT_RULES": {"sonnet": "high|xhigh"}}` means "this model only at these efforts". The
@@ -736,7 +736,7 @@ worker with an explicit model, one mid-size model only at high or xhigh, forks d
 watchdog run [--dry-run] [--stage S] [--json]      one tick; --dry-run prints [plan] lines and writes nothing
 watchdog install | uninstall [--scheduler launchd|cron]   the job (default: launchd on macOS, cron elsewhere)
 watchdog status [--scheduler launchd|cron]         the job, the last tick, each stage's episode, markers, channels
-watchdog notify-test                               agent-hub: test notification through every channel
+watchdog notify-test                               delamain: test notification through every channel
 watchdog quiet [--stage S] --reason "…" [--until ISO|HH:MM | --for 8h]    pause the wake-ups of a stage
 watchdog quiet --stage S --clear                   lift the pause; `watchdog quiet` alone lists every marker
 ```
@@ -776,7 +776,7 @@ The Claude-specific facilities below apply when the selected host/engine is Clau
   service. Two people cannot share a hub home (see [Team use](#team-use)).
 - Locks guard only what the hook recognises: merges and pushes to protected branches, and the commands your
   `lock-rules.json` lists. A command run outside enabled, trusted host hooks, or one no rule matches, is not stopped.
-- The turn limit of a brief is an instruction to the agent, not something agent-hub enforces. Cost and plan limits are
+- The turn limit of a brief is an instruction to the agent, not something Delamain enforces. Cost and plan limits are
   Claude Code's, shared with your interactive session.
 - Night support is the [watchdog](#watchdog): it works for every engine and host it can wake (a headless hub, an idle
   `claude --bg` hub) and notifies for the rest; the Desktop scheduled task

@@ -21,7 +21,7 @@ from pathlib import Path
 from codex_compat import patch_contents
 
 REASON = (
-    "Handoff is {size} bytes > {limit}. Shorten it: follow the agent-hub handoff template "
+    "Handoff is {size} bytes > {limit}. Shorten it: follow the Delamain handoff template "
     "(templates/HANDOFF-template.md in the plugin; ≤ 12 KB, chronology goes to journal-<date>.md) and continue "
     "in a new session from it."
 )

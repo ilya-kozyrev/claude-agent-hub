@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SessionStart hook: one line when a command of the same name as one of the plugin's tools (any executable of its bin/:
 hub, jlog, jwait, agent, ask, roles, lock, …) comes before the plugin's bin/ on PATH — GitHub CLI `hub` from Homebrew is
-the usual one. The agent-hub commands then run the other program, and an agent's `jlog` writes to a journal the hub never
+the usual one. The Delamain commands then run the other program, and an agent's `jlog` writes to a journal the hub never
 reads.
 
 Also keeps $HUB_BIN, which the briefs and tools call as "$HUB_BIN/jlog", pointing at this plugin's bin/: a `claude --bg`
@@ -49,7 +49,7 @@ def correct_hub_bin() -> str:
         f.write(f"export HUB_BIN={shlex.quote(str(want))}\n")
     if not have:
         return ""
-    return (f"agent-hub: $HUB_BIN was {have}, another plugin version (a background session inherits the daemon's "
+    return (f"delamain: $HUB_BIN was {have}, another plugin version (a background session inherits the daemon's "
             f"environment); set to {want} for this session's commands")
 
 
@@ -85,7 +85,7 @@ def main() -> int:
         except OSError:
             pass
         hc.atomic_write(seen, signature)
-    lines.append("agent-hub: " + hc.shadow_warning(shadowed) + ". Tell the user about it in one line.")
+    lines.append("delamain: " + hc.shadow_warning(shadowed) + ". Tell the user about it in one line.")
     return emit(lines)
 
 

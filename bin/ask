@@ -84,7 +84,7 @@ SEARCH_CAP = 25
 FILE_INTRO = """# Owner questions — {stage}
 
 <!-- ask:v1 prefix={prefix} -->
-Kept by the `ask` tool of the agent-hub plugin (`ask --help`); hand edits are fine if they keep the entry format
+Kept by the `ask` tool of the Delamain plugin (`ask --help`); hand edits are fine if they keep the entry format
 below. `Q-…` is a question to the owner, `D-…` a decision an agent took "by default, the owner may contest", `P-…` a
 plan the owner approved (`ask plan`). An entry leaves the open list only with the owner's answer (`ask close`) or the owner withdrawing it (`ask withdraw`).
 Whoever receives the owner's answer also records it where decisions live (ADR, spec, roadmap). Statuses: `open`,

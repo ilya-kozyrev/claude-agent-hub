@@ -1,5 +1,5 @@
 {
-  "description": "agent-hub Codex lifecycle and supported local-tool guards. Tool hooks do not cover hosted tools or write_stdin input.",
+  "description": "Delamain Codex lifecycle and supported local-tool guards. Tool hooks do not cover hosted tools or write_stdin input.",
   "hooks": {
     "SessionStart": [
       {

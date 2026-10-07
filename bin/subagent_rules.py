@@ -51,7 +51,7 @@ def plugin_name() -> str:
 
 
 def _warn(msg: str) -> None:
-    print(f"agent-hub: {msg}", file=sys.stderr)
+    print(f"delamain: {msg}", file=sys.stderr)
 
 
 # ------------------------------------------------------------------ agent definitions

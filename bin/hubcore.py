@@ -770,7 +770,7 @@ _CONFIG_CACHE: dict = {}
 
 
 def _warn(msg: str) -> None:
-    print(f"agent-hub: {msg}", file=sys.stderr)
+    print(f"delamain: {msg}", file=sys.stderr)
 
 
 warn = _warn  # for the tools that report a bad setting themselves (bin/reviewers.py, `hub reviewer`)
@@ -865,7 +865,7 @@ def _zone() -> dt.tzinfo:
             from zoneinfo import ZoneInfo
             return ZoneInfo(name)
         except Exception:  # noqa: BLE001 — an unknown zone name falls back to local time
-            print(f"agent-hub: unknown AGENT_HUB_TZ {name!r}, using local time", file=sys.stderr)
+            print(f"delamain: unknown AGENT_HUB_TZ {name!r}, using local time", file=sys.stderr)
     return dt.datetime.now().astimezone().tzinfo
 
 
@@ -1125,7 +1125,7 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
     if cli is None or cli.version is None or cli.version >= MIN_CLI_VERSION:
         return None
     return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}, the "
-            "oldest version agent-hub supports: update Claude Code; with an older CLI the aliases (opus, sonnet, haiku, "
+            "oldest version Delamain supports: update Claude Code; with an older CLI the aliases (opus, sonnet, haiku, "
             "fable) resolve to older models and the agent-top mod does not run")
 
 
@@ -1139,7 +1139,7 @@ def plugin_tools() -> list:
 
 # A personal wrapper that dispatches into the plugin (a shim in ~/.local/bin that picks the newest installed `bin/`)
 # says so with this comment line near the top of its file; the shadow check then treats it as the plugin's own.
-DISPATCHER_MARKER = "# agent-hub: dispatcher"
+DISPATCHER_MARKER = "# delamain: dispatcher"
 
 
 def plugin_version(bin_dir, engine=None) -> Optional[tuple]:
@@ -1173,11 +1173,11 @@ def plugin_runtime_line(engine=None) -> str:
     running = BIN.resolve()
     current = plugin_version(running, engine)
     label = fmt_version(current) if current else "version unknown"
-    line = f"Plugin runtime: agent-hub {label} ({engine}; {running})"
+    line = f"Plugin runtime: delamain {label} ({engine}; {running})"
     config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") if engine == "codex" else Path(
         os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     newer = []
-    for candidate in (config / "plugins" / "cache").glob("*/agent-hub/*/bin"):
+    for candidate in (config / "plugins" / "cache").glob("*/delamain/*/bin"):
         if not candidate.is_dir():
             continue
         version = plugin_version(candidate, engine)
@@ -1202,8 +1202,8 @@ def review_helper_lines() -> int:
 
 
 def installed_plugin_bins() -> list:
-    """Real paths of the installed agent-hub plugin `bin/` directories that are not older than this plugin: the Claude
-    and Codex plugin caches (`<config>/plugins/cache/*/agent-hub/*/bin`) and a marketplace folder that is the plugin
+    """Real paths of the installed Delamain plugin `bin/` directories that are not older than this plugin: the Claude
+    and Codex plugin caches (`<config>/plugins/cache/*/delamain/*/bin`) and a marketplace folder that is the plugin
     itself (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
     $CODEX_HOME / ~/.codex. An older copy stays a shadow: it is the old tool on PATH the warning exists for (a version
     nobody can read counts as current)."""
@@ -1213,7 +1213,7 @@ def installed_plugin_bins() -> list:
     for config in (Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"),
                    Path(os.environ.get("CODEX_HOME") or home / ".codex")):
         plugins = config / "plugins"
-        found = list(plugins.glob("cache/*/agent-hub/*/bin")) + [
+        found = list(plugins.glob("cache/*/delamain/*/bin")) + [
             d for d in plugins.glob("marketplaces/*/bin") if (d / "hubcore.py").is_file()]
         for d in found:
             version = plugin_version(d)
@@ -1235,7 +1235,7 @@ def is_dispatcher(path) -> bool:
 def shadowed_tools(path=None) -> list:
     """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file that is not
     the plugin's own (`command -v`: the first match on PATH). Ours: a file whose real path is in this bin/ (a symlink
-    into it counts) or in an installed agent-hub plugin's bin/ that is not older than this one
+    into it counts) or in an installed Delamain plugin's bin/ that is not older than this one
     (installed_plugin_bins), or a personal dispatcher that carries the DISPATCHER_MARKER line (is_dispatcher)."""
     path = os.environ.get("PATH", "") if path is None else path
     out = []

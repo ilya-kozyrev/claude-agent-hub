@@ -1,4 +1,4 @@
-# Why and how agent-hub compares
+# Why and how Delamain compares
 
 ## Why
 
@@ -42,7 +42,7 @@ links below); `—` means the docs do not say.
 | **`claude -p --resume` by hand** | Yes: your own process; the conversation is stored and `--resume <id>` continues it [5][6] | Yes through cross-session messaging (v2.1.224+): a `-p` worker takes messages unattended if its `--settings` set `crossSessionInbound: accept`; not in `--bare` mode. Otherwise resume it with a new prompt [6][7] | `--session-id <uuid>` [5] | What you build: stdout, stream-json, files [6] | — | Wherever Claude Code runs [10]; `--max-turns`, `--max-budget-usd` [5] |
 | **Background sessions** (`claude --bg`, agent view) | Yes: a supervisor process runs them after you close the terminal or start another session [8] | Yes: reply from agent view or `claude attach <id>`; reachable by cross-session messaging [7][8] | A short ID printed at start (`claude logs / attach / stop <id>`) [5][8] | Its own conversation; each session moves into its own worktree before editing; results go to you, not to another session [2][8] | — | Research preview [2][8] |
 | **Agent teams** | No: the team config is removed when the session ends; `/resume` does not restore in-process teammates; one team per session [9] | The lead, the teammates and you; a team is not shared across sessions [9] | Names chosen by the lead; session IDs sit in runtime team config you must not edit [9] | A shared task list (`~/.claude/tasks/<team>/`) and JSON mailboxes [9] | Task claiming uses file locking; nothing for external resources, and teammates must own different files [9] | Experimental, off by default; split panes need tmux or iTerm2 [9] |
-| **agent-hub headless agents** | Yes: detached `claude -p` or `codex exec` in its own process group; survives the hub closing, compacting or handing over | Yes: `agent send` writes its inbox while it runs and resumes it after it exits | Yes: Claude `--session-id` or the Codex thread id, kept in `meta.json` | Files: brief, inbox, journal, reports, question register | A lock board enforced by a hook: merges to protected branches and the commands you list | macOS and Linux; a third-party plugin, MIT |
+| **Delamain headless agents** | Yes: detached `claude -p` or `codex exec` in its own process group; survives the hub closing, compacting or handing over | Yes: `agent send` writes its inbox while it runs and resumes it after it exits | Yes: Claude `--session-id` or the Codex thread id, kept in `meta.json` | Files: brief, inbox, journal, reports, question register | A lock board enforced by a hook: merges to protected branches and the commands you list | macOS and Linux; a third-party plugin, MIT |
 
 Sources, Claude Code documentation read on 2026-10-01:
 [1] [Subagents](https://code.claude.com/docs/en/sub-agents) ·
@@ -57,7 +57,7 @@ Sources, Claude Code documentation read on 2026-10-01:
 [10] [Advanced setup](https://code.claude.com/docs/en/setup) ·
 [11] [Worktrees](https://code.claude.com/docs/en/worktrees).
 
-What agent-hub adds is not a new way to start a second session. It is a worker that survives a session boundary and a
+What Delamain adds is not a new way to start a second session. It is a worker that survives a session boundary and a
 handoff, an id fixed at spawn so any session can message or resume it by role, files as the protocol (a journal any
 session can wait on, an owner-question register) and a lock board that refuses a merge, or a command you listed, for
 everyone but the holder. If a sub-agent, a background session or `claude -p` covers your case, use it. The argument is in

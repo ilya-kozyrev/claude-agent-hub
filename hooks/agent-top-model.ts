@@ -247,13 +247,13 @@ export function onceArgs(a: CommandArgs): string[] {
   return out
 }
 
-/** The dev copy of the mod is tested beside the installed agent-hub, whose own mod then registers the plain name. */
+/** The dev copy of the mod is tested beside the installed Delamain, whose own mod then registers the plain name. */
 const DEV_PLUGIN = 'agent-top-dev'
-const DEV_ALSO_ANSWERS = 'agent-hub:agent-top'
+const DEV_ALSO_ANSWERS = 'delamain:agent-top'
 
 /**
  * Whether `/command` is this module's: bare `agent-top`, `<this plugin>:agent-top`, and, in the dev copy only,
- * `agent-hub:agent-top`. Every other `<x>:agent-top` belongs to another plugin.
+ * `delamain:agent-top`. Every other `<x>:agent-top` belongs to another plugin.
  */
 export function isOwnCommand(command: string, pluginName: string): boolean {
   return command === 'agent-top' || command === `${pluginName}:agent-top` || (pluginName === DEV_PLUGIN && command === DEV_ALSO_ANSWERS)

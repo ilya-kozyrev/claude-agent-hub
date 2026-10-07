@@ -23,19 +23,19 @@ configuration use the standard-library TOML parser. The Claude engine continues 
 Clone the repository if you do not have a local checkout yet:
 
 ```sh
-git clone https://github.com/ilya-kozyrev/claude-agent-hub.git
-cd claude-agent-hub
+git clone https://github.com/ilya-kozyrev/delamain.git
+cd delamain
 ```
 
 Use that checkout's absolute path in the marketplace command:
 
 ```sh
-codex plugin marketplace add /absolute/path/to/claude-agent-hub
-codex plugin add agent-hub@agent-hub-codex
-codex plugin list --marketplace agent-hub-codex
+codex plugin marketplace add /absolute/path/to/delamain
+codex plugin add delamain@delamain-codex
+codex plugin list --marketplace delamain-codex
 ```
 
-Restart the Codex chat so it loads the installed skills, then ask for `agent-hub:setup` in the project.
+Restart the Codex chat so it loads the installed skills, then ask for `delamain:setup` in the project.
 Ask the session what is running; the `status` skill answers in words from fresh `agent-top` data.
 `.codex-plugin/plugin.json` packages `./skills/` and explicitly selects `./hooks/codex-hooks.json`;
 it does not load the Claude hook configuration. Installation and enabling do not grant hook trust: review
@@ -50,18 +50,18 @@ Use the installed plugin's `bin/` directory explicitly if a command is absent or
 ### Update to a new version
 
 `codex plugin add` for a new version deletes every older version directory under the plugin cache,
-`~/.codex/plugins/cache/<marketplace>/agent-hub/` (`$CODEX_HOME` moves it; the marketplace here is `agent-hub-codex`).
+`~/.codex/plugins/cache/<marketplace>/delamain/` (`$CODEX_HOME` moves it; the marketplace here is `delamain-codex`).
 A Codex session that is still running on an older version loses its hooks the moment its directory is gone: the lock
 guard and the other hooks stop applying to it. Before updating, copy the version directories aside; right after the
 `add`, put back every one that vanished and check with `diff -rq` against the copy:
 
 ```sh
-CACHE="${CODEX_HOME:-$HOME/.codex}/plugins/cache/agent-hub-codex/agent-hub"
+CACHE="${CODEX_HOME:-$HOME/.codex}/plugins/cache/delamain-codex/delamain"
 SAVE="$(mktemp -d)"
 cp -a "$CACHE/." "$SAVE/"                      # every version directory installed now
 
-git -C /absolute/path/to/claude-agent-hub pull
-codex plugin add agent-hub@agent-hub-codex
+git -C /absolute/path/to/delamain pull
+codex plugin add delamain@delamain-codex
 
 for dir in "$SAVE"/*/; do                      # put back each one the add removed
   v="$(basename "$dir")"
@@ -81,8 +81,8 @@ Codex support. That monitor does not understand Codex process tokens or JSON eve
 appear dead, with zero turns and an empty feed. Run the new installed plugin's `bin/agent-top` directly, or update
 your terminal PATH/symlinks to that directory, then quit and restart the old monitor.
 
-For a version-resolving personal wrapper, search both `~/.claude/plugins/cache/*/agent-hub/*/bin` and
-`~/.codex/plugins/cache/*/agent-hub/*/bin` (honour `CLAUDE_CONFIG_DIR` / `CODEX_HOME` overrides). Compare the numeric
+For a version-resolving personal wrapper, search both `~/.claude/plugins/cache/*/delamain/*/bin` and
+`~/.codex/plugins/cache/*/delamain/*/bin` (honour `CLAUDE_CONFIG_DIR` / `CODEX_HOME` overrides). Compare the numeric
 version component, not the full path, and use the newest shared runtime. The runtime supports both engines;
 choosing its installation directory does not choose the worker engine. Check the selected monitor with
 `<installed-plugin>/bin/agent-top --json --agent <role> --feed 10`, using the same hub home and stage as the UI.
@@ -140,7 +140,7 @@ See [Codex CLI options](https://learn.chatgpt.com/docs/cli/reference).
 Hook trust is a separate control. Detached Codex workers explicitly load the bundled Codex hooks and default
 `AGENT_HUB_CODEX_HOOK_TRUST=bypass`: the launcher passes `--dangerously-bypass-hook-trust` so autonomous runs do
 not wait for an interactive trust review. **That flag applies to every enabled non-managed hook in that invocation,
-including user and project hooks, not only agent-hub's hooks.** Use it with hook sources you have vetted.
+including user and project hooks, not only Delamain's hooks.** Use it with hook sources you have vetted.
 Set `AGENT_HUB_CODEX_HOOK_TRUST=reviewed` to require Codex's persisted trust instead; review/trust the definitions
 before starting a detached run. Changed hook definitions require renewed review in that mode.
 

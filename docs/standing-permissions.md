@@ -17,8 +17,8 @@ entries and with the stage's id prefix, written by `ask allow`:
 - kind: allow
 - status: allowed            (allowed | revoked: <reason> (<date> <HH:MM>))
 - scope: repo                (repo: the repository's actions, asked from any stage | stage: this stage only | all)
-- repo: claude-agent-hub     (the short name, for people; "*" with scope all)
-- repo-id: github.com/ilya-kozyrev/claude-agent-hub   (what matching uses; see below)
+- repo: delamain     (the short name, for people; "*" with scope all)
+- repo-id: github.com/ilya-kozyrev/delamain   (what matching uses; see below)
 - class: merge, release      (comma-separated keywords; the title is the class in free text)
 - words: «можно накатывать»  (the owner's words, required: no words, no permission)
 - asked: 2026-10-06 16:01    (given at)

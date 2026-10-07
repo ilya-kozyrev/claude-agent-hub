@@ -1,4 +1,4 @@
-# Shared helpers for the agent-hub test scripts (bash). Source it: . "$(dirname "$0")/lib.sh"
+# Shared helpers for the Delamain test scripts (bash). Source it: . "$(dirname "$0")/lib.sh"
 # Every test runs against a throw-away hub home; nothing here may touch the real one.
 set -u
 T="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

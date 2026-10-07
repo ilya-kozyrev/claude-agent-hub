@@ -264,7 +264,7 @@ usage 320000
 cb UserPromptSubmit | grep -q 'Context budget: 320k'; check $? 0 "budget: warns on crossing 300k (default)"
 cb PostToolUse Bash > $R/cb1.out; check "$(wc -c < $R/cb1.out | tr -d ' ')" 0 "budget: no second warning in the same step"
 usage 352000
-cb PostToolUse Bash | grep -q 'agent-hub:handoff'; check $? 0 "budget: warns again a step later and points at agent-hub:handoff"
+cb PostToolUse Bash | grep -q 'delamain:handoff'; check $? 0 "budget: warns again a step later and points at delamain:handoff"
 cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 1 "budget: below the block threshold, Agent passes"
 usage 510000
 cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 0 "budget: at 500k Agent is denied"
@@ -346,20 +346,20 @@ allow|Agent|Explore|haiku|any type on haiku
 deny|Agent|fork|haiku|fork is always denied
 deny|Agent|general-purpose|opus|unpinned definition inherits the session effort
 deny|Agent||opus|no type = general-purpose
-allow|Agent|agent-hub:worker-high|opus|plugin worker, explicit model
-allow|Agent|agent-hub:worker-medium|opus|plugin worker at medium
-deny|Agent|agent-hub:worker-high||plugin worker without a model inherits it
-deny|Agent|agent-hub:worker-xhigh|opus|xhigh is not for non-Sonnet models
-allow|Agent|agent-hub:worker-xhigh|sonnet|Sonnet at xhigh
-allow|Agent|agent-hub:worker-high|sonnet|Sonnet at high
-deny|Agent|agent-hub:worker-medium|sonnet|Sonnet never at medium
-deny|Agent|agent-hub:worker-low|sonnet|Sonnet never at low
+allow|Agent|delamain:worker-high|opus|plugin worker, explicit model
+allow|Agent|delamain:worker-medium|opus|plugin worker at medium
+deny|Agent|delamain:worker-high||plugin worker without a model inherits it
+deny|Agent|delamain:worker-xhigh|opus|xhigh is not for non-Sonnet models
+allow|Agent|delamain:worker-xhigh|sonnet|Sonnet at xhigh
+allow|Agent|delamain:worker-high|sonnet|Sonnet at high
+deny|Agent|delamain:worker-medium|sonnet|Sonnet never at medium
+deny|Agent|delamain:worker-low|sonnet|Sonnet never at low
 allow|Agent|worker-high|opus|plugin worker called without its prefix
 allow|Agent|my-helper||user agent pinning effort and model
 deny|Agent|lazy|opus|project agent without a pinned effort
 allow|Workflow|||the example has no Workflow rule
 EOF
-dg Agent agent-hub:worker-medium sonnet | grep -q 'agent-hub:worker-medium at effort medium'; check $? 0 "example policy: the Sonnet reason names type and effort"
+dg Agent delamain:worker-medium sonnet | grep -q 'delamain:worker-medium at effort medium'; check $? 0 "example policy: the Sonnet reason names type and effort"
 echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"modle": "x"}, "decision": "deny"}]}' > $R/config.json
 dg Agent general-purpose opus > $R/d3.out 2> $R/d3.err; check "$(wc -c < $R/d3.out | tr -d ' ')" 0 "malformed rules: fail-open, no decision"
 grep -q "unknown field 'modle'" $R/d3.err; check $? 0 "malformed rules: reported on stderr"
@@ -370,16 +370,16 @@ mkdir -p $R/proj/.agent-hub $R/other/.git; cp $EXAMPLE $R/config.json
 echo '{"AGENT_HUB_EFFORT_RULES": {"opus": "low"}}' > $R/proj/.agent-hub/config.json
 dden Agent general-purpose opus $R/other; check $? 0 "effort rules: the hub home's apply in a repository without its own"
 dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: a repository's rules do not replace the user's (any deny wins)"
-dg Agent agent-hub:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type agent-hub:worker-high). \[AGENT_HUB_EFFORT_RULES (proj/.agent-hub) rule 1\]'; check $? 0 "effort rules: the repository adds a restriction (shorthand), the set and rule are named"
-dden Agent agent-hub:worker-high opus $R/other; check $? 1 "effort rules: …which does not apply outside it"
-dden Agent agent-hub:worker-low opus $R/proj; check $? 1 "effort rules: shorthand allows the listed effort"
+dg Agent delamain:worker-high opus $R/proj | grep -q 'opus runs only at effort low (got high, type delamain:worker-high). \[AGENT_HUB_EFFORT_RULES (proj/.agent-hub) rule 1\]'; check $? 0 "effort rules: the repository adds a restriction (shorthand), the set and rule are named"
+dden Agent delamain:worker-high opus $R/other; check $? 1 "effort rules: …which does not apply outside it"
+dden Agent delamain:worker-low opus $R/proj; check $? 1 "effort rules: shorthand allows the listed effort"
 echo '{"AGENT_HUB_EFFORT_RULES": []}' > $R/proj/.agent-hub/config.json
 dden Agent general-purpose opus $R/proj; check $? 0 "effort rules: an empty repository list does not switch the user's off"
 dg Agent general-purpose opus $R/proj | grep -q 'AGENT_HUB_EFFORT_RULES (hub home) rule'; check $? 0 "effort rules: the user's deny names the hub home set"
 dden Task general-purpose opus $R/other; check $? 0 "effort rules: the Task tool is checked like Agent"
-$B/delegation try --cwd $R/other agent-hub:worker-high > $R/try1.out; check $? 1 "delegation try TYPE without a model: deny (model inherited), exit 1"
+$B/delegation try --cwd $R/other delamain:worker-high > $R/try1.out; check $? 1 "delegation try TYPE without a model: deny (model inherited), exit 1"
 grep -q '"model_from": "inherit"' $R/try1.out; check $? 0 "delegation try: prints the call's fields"
-$B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
+$B/delegation try --cwd $R/other delamain:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
 rm $R/proj/.agent-hub/config.json
 
 # agent spawn applies AGENT_HUB_EFFORT_RULES (stand-in CLI; a denied spawn never starts)

@@ -2,7 +2,7 @@
 
 This page follows one idea from the first sentence you type to merged code. It is about what **you** say and do, what
 the **hub** does on its own, and what the **agents** do. It is not a command reference: for that, see
-[a-day-with-agent-hub.md](a-day-with-agent-hub.md) (every command, in order) and [architecture.md](architecture.md)
+[a-day-with-delamain.md](a-day-with-delamain.md) (every command, in order) and [architecture.md](architecture.md)
 (file formats).
 
 The running example, used in every step: *"add CSV export to the reports page of my web app"*, with three agents
@@ -59,15 +59,15 @@ Read it top to bottom. Colour says who acts: **blue — you**, **yellow — the 
 Platform: macOS or Linux (Windows is not supported; see the [installation guide](install.md)).
 
 ```text
-/plugin marketplace add ilya-kozyrev/claude-agent-hub
-/plugin install agent-hub@claude-agent-hub
+/plugin marketplace add ilya-kozyrev/delamain
+/plugin install delamain@delamain
 ```
 
 Requirements (Claude Code 2.1.287 or later; older versions are unsupported) and the permissions note are in the
 [installation guide](install.md). Read the permissions note before your
 first agent: headless agents run with `bypassPermissions` by default.
 
-Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`agent-hub:setup`** skill
+Then, in the checkout of each repository you will use with the hub, ask Claude to use the **`delamain:setup`** skill
 (a new, empty project: see [A new, empty project](#a-new-empty-project)). The skill asks which branches are
 protected, whether the project has environments or other resources that two sessions must not change at once (staging,
 a deploy window, a migration chain), and which commands touch each; writes `.agent-hub/lock-rules.json` and
@@ -88,7 +88,7 @@ prompt too, so grant the hub home once: `/add-dir ~/agent-hub` in the session, o
 
 `hub home` prints where the files are, why there, and these lines with your path filled in. Agents the hub starts, and
 its autopilot successor, get the grant from the tools. To keep the files inside the repository instead, put
-`{"AGENT_HUB_HOME": "project"}` in `.agent-hub/config.json` (`agent-hub:setup` asks; `git clean -fdx` deletes that
+`{"AGENT_HUB_HOME": "project"}` in `.agent-hub/config.json` (`delamain:setup` asks; `git clean -fdx` deletes that
 folder). An installation made with 0.6 or earlier keeps its files in the legacy `~/.claude/agent-hub` until you run
 `hub home migrate` (a dry run; then `--apply`). The full story is in the reference:
 [Where the hub's files live](reference.md#where-the-hubs-files-live).
@@ -106,7 +106,7 @@ the work (agents or not, worktrees, commits): it decides, says so in one line an
 
 ### A new, empty project
 
-A new, empty project may skip `agent-hub:setup` for now: the hub offers it when it is needed. A repository with no
+A new, empty project may skip `delamain:setup` for now: the hub offers it when it is needed. A repository with no
 commits cannot start an agent in a worktree (`agent spawn --worktree` refuses it), so the hub makes the first commit
 itself and says so in one line.
 
@@ -115,11 +115,11 @@ itself and says so in one line.
 ### 1. Open a session in your repo and describe the idea
 
 Start Claude Code in the repository you want to change (this chat becomes the **hub**) and say what you want, plainly.
-Start the message with `/agent-hub:hub`: the slash command always loads the skill, while a plain-language mention of it
+Start the message with `/delamain:hub`: the slash command always loads the skill, while a plain-language mention of it
 may be ignored by a smaller model, which then plans and codes on its own.
 
 ```text
-/agent-hub:hub I want CSV export on the reports page of this web app: a button that downloads
+/delamain:hub I want CSV export on the reports page of this web app: a button that downloads
 the table as CSV, filtered the same way as the table. Plan it as one stage called csv-export. Don't start
 anything before I approve the plan.
 ```
@@ -128,11 +128,11 @@ anything before I approve the plan.
   `hub start --stage csv-export --goal "Export the table as CSV" --session self` (the stage name says what the work is, the
   goal is one line in your words — the hub asks for it if your task does not give it). That creates the stage directory, registers this
   session as `hub-1`, writes the start line to the journal and prints the first `jwait` command. (If you skipped the setup
-  above and the repository has no `.agent-hub/`, the hub offers the `agent-hub:setup` skill first.) A hub works in a
+  above and the repository has no `.agent-hub/`, the hub offers the `delamain:setup` skill first.) A hub works in a
   fresh worktree of the project, never in your main clone: when the chat was opened there, `hub start` creates the
   worktree, prints `MOVE <path>` and exits; the hub moves its session there and runs it again.
 - **You see:** the stage start line and a short description of the result. Questions appear only if an answer
-  materially changes that result. Use `/agent-hub:hub` to load the workflow reliably.
+  materially changes that result. Use `/delamain:hub` to load the workflow reliably.
 - **Wait:** seconds.
 - **Next:** clarify the result if needed; otherwise review the plan you explicitly requested.
 
@@ -254,7 +254,7 @@ Have a reviewer agent check PR 41 and 42 against the brief. Report only real pro
 
 Merging to main is the one step the plugin guards on its own. A lock, `main-merge`, says who may merge right now, and a
 hook refuses `gh pr merge`, `glab mr merge` and a `git push` to a protected branch while *another* session holds the
-lock. Any other resource you named in `agent-hub:setup` works the same way.
+lock. Any other resource you named in `delamain:setup` works the same way.
 
 ```text
 Merge 41, then 42. Take the main-merge lock first so nobody else merges meanwhile.
@@ -279,7 +279,7 @@ Context is getting long. Write the handoff.
   question register filled in; the hub fills the rest (agreed Business DoD/source, first steps, queue, risks, worktrees to clean up) and tells you
   the path. It releases no locks. Agents keep running.
 - **Next session:** open a fresh chat in the repo and say
-  `/agent-hub:hub take over stage csv-export from <the handoff path>.` The new hub runs
+  `/delamain:hub take over stage csv-export from <the handoff path>.` The new hub runs
   `hub takeover --stage csv-export --session "$CLAUDE_CODE_SESSION_ID"`, which takes over the locks, registers itself as
   the next hub (`hub-2`: the number is derived from the registry; `--n` overrides it), and prints a digest of the
   handoff, the register and the live agents. It preserves the agreed result and chooses implementation details
@@ -290,7 +290,7 @@ Context is getting long. Write the handoff.
 Synthetic. Lines starting with `#` are annotations, not part of the chat.
 
 ```text
-You:  /agent-hub:hub Add CSV export to the reports page. One stage, csv-export. Plan first, start nothing.
+You:  /delamain:hub Add CSV export to the reports page. One stage, csv-export. Plan first, start nothing.
 # the hub loads the skill and reads the repo
 Hub:  No earlier decisions on "csv export" in the register. Grilling, round 1:
       Q1 Which columns? → recommended: visible ones, table order.
@@ -407,7 +407,7 @@ writes its handoff and waits for you; anything you type to the hub resets that c
 
 ## Where next
 
-- [a-day-with-agent-hub.md](a-day-with-agent-hub.md): the same flow at command level, with a night queue.
+- [a-day-with-delamain.md](a-day-with-delamain.md): the same flow at command level, with a night queue.
 - [architecture.md](architecture.md): roles, who writes which file, and the file formats.
 - [Comparison](comparison.md): built-in subagents and background sessions; [reference](reference.md): team use,
   configuration variables and limitations.

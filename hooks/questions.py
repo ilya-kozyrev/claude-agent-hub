@@ -70,7 +70,7 @@ def legacy_line() -> str:
     h = hc.home()
     if h.layer != "legacy" or not h.path.is_dir():
         return ""
-    return (f"agent-hub: the hub home is the legacy {h.path}, under ~/.claude, which Claude Code protects (every edit "
+    return (f"delamain: the hub home is the legacy {h.path}, under ~/.claude, which Claude Code protects (every edit "
             "there asks or is refused, the Bash sandbox refuses writes): `hub home` shows the choice, `hub home migrate` "
             f"moves it to {hc.user_home()}. Tell the user about it in one line.")
 

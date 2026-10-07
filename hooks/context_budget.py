@@ -27,7 +27,7 @@ handoff`, `hub succeed` with the hub's model, effort (the hook input's `effort.l
 reason says "hand over now" and Bash, Write, Edit and NotebookEdit are gated too: Bash passes only when every command of
 the line is `hub handoff`, `hub succeed`, `hub desktop-*`, `jlog` or `jwait` (no substitution, no subshell), a file tool only on a
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
-"[agent-hub auto-handoff k/N]" and does not start with the watchdog's "[agent-hub watchdog]" (the owner spoke) resets the
+"[delamain auto-handoff k/N]" and does not start with the watchdog's "[delamain watchdog]" (the owner spoke) resets the
 stage's automatic-handoff chain.
 
 Settings (hub home config.json or environment; docs/reference.md "Agent discipline"):
@@ -60,7 +60,7 @@ DEFAULT_ESCAPE = r"HANDOFF-[^\s/\\'\"`]*\.md|handoff-ok"
 AUTOPILOT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit", "apply_patch")
 AUTOPILOT_FILE = re.compile(r"(?:^|/)HANDOFF-[^/\s]*\.md$")
 SEPARATORS = (";", "&&", "||", "|", "&")
-DEFAULT_TODO = ("What to do: write a handoff with the agent-hub:handoff skill (the plugin's "
+DEFAULT_TODO = ("What to do: write a handoff with the delamain:handoff skill (the plugin's "
                 "templates/HANDOFF-template.md, at most 12 KB; the chronology goes to the journal) and continue in a "
                 "new session from it.")
 

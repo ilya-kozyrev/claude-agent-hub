@@ -1,4 +1,4 @@
-// agent-top as a Claude Code mod: the headless agents of the agent-hub plugin, live in a pane.
+// agent-top as a Claude Code mod: the headless agents of the Delamain plugin, live in a pane.
 //
 //   /agent-top [role] [--stage S] [--all]   opens the pane (a role opens that agent's card); a bare one closes it again
 //   pane views: Agents (a) · agent card (header + live feed) · Journal (j) · Summary (s: plan limits, owner questions, locks)
@@ -49,7 +49,7 @@ const DOCK_COLUMNS = 76 // body columns asked for beside a fullscreen transcript
 // the polls apart, never in parallel
 const CALL_TIMEOUT_MS = 60000
 const OPEN_WAIT_MS = 4000 // how long /agent-top waits for data before it answers; the pane fills when the data comes
-const SKILL_HINT = 'agent-top: the mod needs bin/agent-top of the agent-hub plugin'
+const SKILL_HINT = 'agent-top: the mod needs bin/agent-top of the Delamain plugin'
 
 type Called = { ok: true; stdout: string } | { ok: false; error: string; isMissing: boolean }
 
@@ -394,7 +394,7 @@ export const register: Register = on => {
   })
 
   // Bare `agent-top` is the command this module registers; `<this plugin>:agent-top`, the plugin-qualified name, is answered too;
-  // the dev copy (plugin `agent-top-dev`) also answers `agent-hub:agent-top`, the installed plugin's name it is tested
+  // the dev copy (plugin `agent-top-dev`) also answers `delamain:agent-top`, the installed plugin's name it is tested
   // beside. Another plugin's command of that name goes on to the engine.
   on('command.run', async ($, e, next) => {
     if (!isOwnCommand(e.command, $.plugin.name)) return next(e)
