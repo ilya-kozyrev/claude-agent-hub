@@ -393,9 +393,9 @@ export const register: Register = on => {
     return done
   })
 
-  // Bare `agent-top` is the command this module registers; `<this plugin>:agent-top`, the plugin-qualified name, is answered too;
-  // the dev copy (plugin `agent-top-dev`) also answers `delamain:agent-top` (and the installed plugin's name before the
-  // rename), the installed plugin's name it is tested beside. Another plugin's command of that name goes on to the engine.
+  // Bare `agent-top` is the command this module registers; `<this plugin>:agent-top`, the plugin-qualified name, is answered too,
+  // and, in the installed plugin and in the dev copy (plugin `agent-top-dev`, tested beside it), the command from before the
+  // rename. Another plugin's command of that name goes on to the engine.
   on('command.run', async ($, e, next) => {
     if (!isOwnCommand(e.command, $.plugin.name)) return next(e)
     const args = parseArgs(e.args)
