@@ -117,8 +117,10 @@ def guard(wd, state, sid, now, *, stage=None, native=False):
 
 
 def cli_claim(wd, tick, sid):
-    ep = {"session": sid, "attempt": uuid4().hex, "result": "unknown",
-          "acted_at": wd.iso(tick.now), "next_try_at": wd.iso(tick.now + tick.wake_after)}
+    token = uuid4().hex
+    claimed_at = wd.clock()  # the tick may have spent time observing other stages/RPCs
+    ep = {"session": sid, "attempt": token, "result": "unknown",
+          "acted_at": wd.iso(claimed_at), "next_try_at": wd.iso(claimed_at + tick.wake_after)}
     remember(tick.state, ep)
     wd.save_state(tick.state)  # persist before queue: interruption or timeout keeps the UUID fenced
     return ep

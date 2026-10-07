@@ -135,10 +135,11 @@ def claim(wd, a):
             attempts = int(ep.get("attempts", 0)) + 1
             delay = min(tick.wake_after * (2 ** min(attempts - 1, 16)), tick.backoff_max)
             token = uuid4().hex
+            claimed_at = wd.clock()  # candidate inspection is earlier than the actual reservation
             episode = {"registry_fingerprint": out["registry_fingerprint"], "work_fingerprint": out["work_fingerprint"],
                        "fingerprint": out["fingerprint"],
-                       "session": out["session"], "attempts": attempts, "acted_at": wd.iso(tick.now),
-                       "next_try_at": wd.iso(tick.now + delay), "result": "unknown",
+                       "session": out["session"], "attempts": attempts, "acted_at": wd.iso(claimed_at),
+                       "next_try_at": wd.iso(claimed_at + delay), "result": "unknown",
                        "attempt": token, "consumer": caller}
             receipts.remember(tick.state, episode)
             tick.state["stages"].setdefault(a.stage, {})["native_episode"] = episode

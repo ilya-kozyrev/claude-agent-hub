@@ -142,6 +142,41 @@ assert wr.guard(wd,wd.load_state(),b,future)=='' ,'a guard refusal was treated a
 progress(b,future+timedelta(minutes=1));clock(future+timedelta(hours=1))
 rearmed,why=candidate('other-cli-stage');assert rearmed,why
 print('PASS CLI timeout survives cached tick save, blocks both transports across stages, and own progress re-arms')
+# A turn before the actual reservation must not release its later unknown receipt.
+saved_rollout=paths[b].read_text();saved_mtime=paths[b].stat().st_mtime
+actual_claim=now+timedelta(hours=6)
+early_tick=actual_claim-timedelta(hours=1);between=actual_claim-timedelta(minutes=30)
+for transport in ('cli','native'):
+ paths[b].write_text(saved_rollout);os.utime(paths[b],(saved_mtime,)*2)
+ fresh();clock(early_tick)
+ if transport=='cli':
+  with wd.TickLock() as lock:
+   assert lock.held
+   t=wd.Tick(False,True);assert t.now==early_tick
+   progress(b,between);clock(actual_claim)
+   with patch.object(wc.codex_sessions,'runtime_status',return_value='idle'), \
+        patch.object(wc.engines,'codex_bin',return_value='fake-codex'), \
+        patch.object(wc.subprocess,'run',side_effect=subprocess.TimeoutExpired('queue',20)):
+    result=wc.wake('origin',hc.roles_load('origin')['roles']['hub'],'timing fixture',False,wd=wd,tick=t)
+   assert not result['ok'] and 'unknown' in result['detail']
+   wd.save_state(t.state)
+ else:
+  def before_reserve():
+   progress(b,between);clock(actual_claim)
+   return SimpleNamespace(hex='native-timing-fixture-token')
+  with patch.object(wn,'uuid4',side_effect=before_reserve):
+   claim('origin')
+ ep=wd.load_state()['uuid_receipts'][b]
+ assert ep['acted_at']==wd.iso(actual_claim),ep
+ assert ep['next_try_at']==wd.iso(actual_claim+wd.wake_after()),ep
+ clock(actual_claim+timedelta(hours=1))
+ assert not candidate('origin')[0],'pre-claim recipient turn released later unknown '+transport
+ assert wr.guard(wd,wd.load_state(),b,wd.clock()),transport
+ progress(b,actual_claim+timedelta(minutes=1))
+ rearmed,why=candidate('origin');assert rearmed,(transport,why)
+ assert wr.guard(wd,wd.load_state(),b,wd.clock())=='',transport
+paths[b].write_text(saved_rollout);os.utime(paths[b],(saved_mtime,)*2)
+print('PASS CLI/native claims stamp fresh clock and cooldown; pre-claim turn holds unknown, post-claim turn re-arms')
 # CompletedProcess is not delivery proof: signal and generic failure stay fenced.
 for exit_code in (-9,7,0):
  fresh();clock(future+timedelta(hours=1))
