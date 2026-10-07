@@ -135,6 +135,8 @@ assert wd.load_state()['uuid_receipts'][b]['result']=='unknown'
 clock(future);assert not candidate('origin')[0]
 register('other-cli-stage',b);assert not candidate('other-cli-stage')[0]
 tick('other-cli-stage');assert len(queues)==1
+progress(b,now+timedelta(minutes=2))
+assert wr.guard(wd,wd.load_state(),b,future)=='' ,'a guard refusal was treated as a fresh delivery'
 progress(b,future+timedelta(minutes=1));clock(future+timedelta(hours=1))
 rearmed,why=candidate('other-cli-stage');assert rearmed,why
 print('PASS CLI timeout survives cached tick save, blocks both transports across stages, and own progress re-arms')
@@ -142,7 +144,12 @@ for bad in ([],{a:None},{a:{'session':a,'result':'unexpected'}},{a:{'session':b,
  wd.save_state({'stages':{},'uuid_receipts':bad})
  assert not candidate('elsewhere')[0]
  tick('elsewhere');assert len(queues)==1
-print('PASS malformed shared ledger conservatively denies native and CLI')
+for raw in ('{broken','[]','{"stages":null}','{"stages":{"origin":5}}'):
+ (wd.wd_dir()/'state.json').write_text(raw)
+ assert not candidate('elsewhere')[0]
+ tick('elsewhere');assert len(queues)==1
+ assert not candidate('elsewhere')[0],'tick normalization removed corrupt-state fence'
+print('PASS malformed shared ledger/file conservatively denies native and CLI, including after normalization')
 fresh();clock(now)
 for marker,value in (('do-not-wake.json',{'until':None}),('auto-handoff.json',{'pending':{'id':b}})):
  p=root/'origin'/marker;p.write_text(json.dumps(value))

@@ -167,7 +167,10 @@ def ack(wd, a):
                 if ep.get("result") != a.outcome:
                     raise hc.Failure("native attempt already acknowledged with a different outcome")
                 return {"stage": a.stage, "session": a.session, "outcome": a.outcome, "already_acknowledged": True}
-            shared = state.get("uuid_receipts", {}).get(a.session.lower())
+            ledger = state.get("uuid_receipts", {})
+            if not isinstance(ledger, dict):
+                raise hc.Failure("native ack rejected: malformed UUID receipt ledger")
+            shared = ledger.get(a.session.lower())
             if shared is not None and (not isinstance(shared, dict) or shared.get("attempt") != a.attempt):
                 raise hc.Failure("native ack rejected: UUID receipt was superseded")
             ep.update(result=a.outcome, acknowledged_at=wd.iso(wd.clock()))

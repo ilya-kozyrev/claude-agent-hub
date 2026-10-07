@@ -184,19 +184,25 @@ def load_state() -> dict:
     with a warning, so one bad value cannot make every later tick fail on it."""
     try:
         data = json.loads((wd_dir() / "state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {"stages": {}}
+    except (OSError, ValueError):
+        # A damaged existing file may have contained unknown delivery receipts.
+        return {"stages": {}, "uuid_receipts": None}
     if not isinstance(data, dict):
         print("watchdog: state.json is not a JSON object: state reset", file=sys.stderr)
-        return {"stages": {}}
+        return {"stages": {}, "uuid_receipts": None}
     stages = data.get("stages")
     if not isinstance(stages, dict):
         if stages is not None or "stages" in data:
             print("watchdog: state.json `stages` is not an object: stages reset", file=sys.stderr)
         stages = {}
+        if "stages" in data:
+            data["uuid_receipts"] = None
     for name in [k for k, v in stages.items() if not isinstance(v, dict)]:
         print(f"watchdog: state.json entry of stage {name} is not an object: reset", file=sys.stderr)
         stages[name] = {}
+        data["uuid_receipts"] = None
     data["stages"] = stages
     return data
 
