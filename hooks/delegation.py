@@ -188,10 +188,11 @@ def former_name_context(prompt) -> str | None:
     (plain text, `/delamain:…`, another plugin's `/foo:hub`, an unknown skill) gets nothing. The text names no tool and
     decides nothing, so it is harmless where the former command never arrives (Codex)."""
     m = FORMER_COMMAND_RE.match(prompt) if isinstance(prompt, str) else None
-    plugin = plugin_name()
-    if not m or plugin == FORMER_PLUGIN or m.group(1) not in own_skills():
+    if not m:  # nearly every prompt: no file is read for it
         return None
-    name = m.group(1)
+    name, plugin = m.group(1), plugin_name()
+    if plugin == FORMER_PLUGIN or name not in own_skills():
+        return None
     return (f"`/{FORMER_PLUGIN}:{name}` is the former name of this plugin's skill `/{plugin}:{name}` (the plugin "
             f"{FORMER_PLUGIN} was renamed to {plugin}). Invoke the skill `{plugin}:{name}` and carry out the rest of "
             f"the prompt as its arguments.")
