@@ -209,7 +209,8 @@ def on_takeover(stage: str, n: int, auto: bool = False, session: str = "", locke
         pend = data.get("pending") or {}
         if (pend.get("surface") == "desktop" and pend.get("kind") == "desktop"
                 and pend.get("taken_over") and pend.get("n") == n and session == pend.get("id")
-                and hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session):
+                and hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
+                and hc.roles_load(stage)["roles"].get("hub", {}).get("tag") == f"hub-{n}"):
             # Refreshing the exact native successor is not a manual replacement.
             return
         if pend.get("n") == n and (auto or pend.get("taken_over")):
@@ -1595,7 +1596,7 @@ def desktop_identity_proof(stage, request, session, recovery=False, allow_move=F
                              and '; locks:' in parsed[2] and 'roles updated' in parsed[2])
         if not original or identities != {session}:
             raise hc.Failure('legacy original full UUID registration is absent or ambiguous; no state changed')
-    elif (current.get('surface') != 'desktop' or current.get('project_id') != pend.get('project_id')
+    if not recovery and (current.get('surface') != 'desktop' or current.get('project_id') != pend.get('project_id')
           or current.get('observed') != pend.get('observed')):
         raise hc.Failure('native registration evidence differs; no state changed')
     cwd = Path.cwd().resolve()

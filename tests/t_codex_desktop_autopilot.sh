@@ -253,7 +253,7 @@ assert 'registration' not in original['pending'] and 'actual_thread_id' not in o
 legacy_hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,freeze=registered['set_at'])
 corrupted=state(stage); refreshed=roles(stage)
 assert corrupted['pending']['id']==real[:8] and corrupted['pending']['kind']=='manual'
-assert refreshed['set_at']==registered['set_at'] and 'surface' not in refreshed
+assert refreshed==registered, ('legacy role boundary unexpectedly changed',registered,refreshed)
 r=hub('desktop-status','--stage','stage-a','--request',req,'--verified',ok=False)
 assert 'later hub' in r.stdout+r.stderr, (r.stdout,r.stderr)
 
@@ -282,7 +282,12 @@ env['CODEX_THREAD_ID']=real
 journal=next((stage/'coordinator/work').glob('journal-*.md')); saved_journal=journal.read_bytes()
 journal.write_text('')
 recover(ok=False)
+journal.write_bytes(saved_journal+b'\n- 00:00 [hub-2] start: "Other" (22222222-9999-4999-8999-999999999999, sid 22222222) replaced; locks: none; roles updated\n')
+recover(ok=False)
 journal.write_bytes(saved_journal)
+markers={key:env.pop(key) for key in engines.CODEX_APP_ENV if key in env}
+recover(ok=False)
+env.update(markers)
 recover()
 repaired=state(stage); restored=roles(stage)
 for key in ('request_id','n','at','taken_over','k','client_thread_id','requested','observed','project_id','cwd'):
