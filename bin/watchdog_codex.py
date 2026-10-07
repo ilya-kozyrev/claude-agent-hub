@@ -184,12 +184,12 @@ def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error
         return {"ok": False, "how": "notify", "detail": why}
     sid = _session(rec)
     fresh = wd.load_state()
+    # Keep even a refusing caller current: the enclosing tick saves it again.
+    if "uuid_receipts" in fresh:
+        tick.state["uuid_receipts"] = fresh["uuid_receipts"]
     why = receipts.guard(wd, fresh, sid, tick.now, stage=stage)
     if why:
         return {"ok": False, "how": "notify", "detail": why}
-    # Keep the caller's state object current; the enclosing tick saves it again.
-    if "uuid_receipts" in fresh:
-        tick.state["uuid_receipts"] = fresh["uuid_receipts"]
     claimed = None
     try:
         argv = [engines.codex_bin(rec.get("cwd")), "queue", "--thread", sid, "--message", text]

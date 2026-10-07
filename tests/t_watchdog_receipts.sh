@@ -94,11 +94,13 @@ register('origin',a,title='A returns after B takeover');tick('origin')
 assert queues==[] and wd.load_state()['uuid_receipts'][a]['attempt']==receipt_a['attempt']
 print('PASS regular rule_hub tick cannot queue native unknown across stages or after actor replacement')
 # Observe initially idle, then insert a native receipt before the final queue check.
-fresh();clock(now)
-with patch.object(wc.codex_sessions,'runtime_status',side_effect=lambda *args: (wd.save_state(
+fresh();clock(now);cached=wd.Tick(False,True)
+with wd.TickLock(), patch.object(wc.codex_sessions,'runtime_status',side_effect=lambda *args: (wd.save_state(
       {'stages':{},'uuid_receipts':{a:{'session':a,'result':'unknown','acted_at':now.isoformat()}}}) or 'idle')), \
      patch.object(wc.subprocess,'run',side_effect=queue):
- result=wc.wake('origin',hc.roles_load('origin')['roles']['hub'],'must not queue',False)
+ result=wc.wake('origin',hc.roles_load('origin')['roles']['hub'],'must not queue',False,wd=wd,tick=cached)
+ wd.save_state(cached.state)
+assert wd.load_state()['uuid_receipts'][a]['result']=='unknown'
 assert not result['ok'] and queues==[],result
 print('PASS final CLI pre-send guard reads current persisted receipts after runtime observation')
 # Restore the receipt for recovery controls.
