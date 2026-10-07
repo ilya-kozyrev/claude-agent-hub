@@ -115,6 +115,7 @@ assert not hc.roles_load('app-control')['roles']['hub'].get('host'),out
 print('PASS real R3 queue; same-shift host refresh; terminal retake and foreign UUID clear provenance')
 # Reset mutation history so the focused transport controls below have their own baseline.
 (root/'mutations.jsonl').unlink()
+hc.roles_save('stage-a',{'version':1,'roles':{'hub':rec},'retired':[]})
 expected={'busy','last_activity','dead_turn','transport','why'}
 mode('idle');got=wc.state('stage-a',rec,now)
 assert set(got)==expected and got['busy'] is False and got['transport']=='codex-queue',got
@@ -155,6 +156,19 @@ with patch.dict(os.environ,{'CODEX_BIN':'/nonexistent'}):
  assert not result['ok'] and result['how']=='notify' and calls()==before_calls,result
 print('PASS missing Codex binary returns unknown and notify wake without a mutation')
 mode('idle')
+for changed in (None,{**rec,'session':other,'cli_session_id':other},{**rec,'host':None}):
+ hc.roles_save('stage-a',{'version':1,'roles':{'hub':changed} if changed else {},'retired':[]})
+ before_calls=calls();result=wc.wake('stage-a',rec,'stale registry',False)
+ assert not result['ok'] and calls()==before_calls,(changed,result)
+hc.roles_save('stage-a',{'version':1,'roles':{'hub':rec},'retired':[]})
+quiet=home/'stage-a/do-not-wake.json';pending=home/'stage-a/auto-handoff.json'
+for path,value in ((quiet,{'reason':'fixture','until':None}),
+                   (pending,{'pending':{'id':other,'taken_over':False}})):
+ path.write_text(json.dumps(value));before_calls=calls()
+ result=wc.wake('stage-a',rec,'stale policy',False)
+ assert not result['ok'] and calls()==before_calls,(path,result)
+ path.unlink()
+print('PASS queue rechecks retired/replaced/revoked registry, quiet and pending takeover before sending')
 for changes in ({'host':'codex-cli'},{'host':None},{'kind':'desktop'},{'session':'local_scratch','cli_session_id':sid}):
  before_calls=calls();got=wc.state('stage-a',{**rec,**changes},now)
  assert got['transport']=='notify' and got['busy'] is False,(changes,got)
@@ -170,8 +184,10 @@ cr.INDEX.checked=None
 q=codex/'sessions'/'rollout-newer.jsonl'
 q.write_text(json.dumps({'type':'session_meta','payload':{'id':other,'source':'vscode'}})+'\n')
 os.utime(q,(stamp+20,stamp+20))
-result=wc.wake('stage-a',{**rec,'cli_session_id':other},'same CLI id',False)
+alias={**rec,'cli_session_id':other};hc.roles_save('stage-a',{'version':1,'roles':{'hub':alias},'retired':[]})
+result=wc.wake('stage-a',alias,'same CLI id',False)
 assert result['ok'] and calls()[-1][2]==other
+hc.roles_save('stage-a',{'version':1,'roles':{'hub':rec},'retired':[]})
 assert wc.state('stage-a',{**rec,'cli_session_id':'invalid'},now)['busy'] is None
 print('PASS CLI session id takes precedence and invalid CLI id never falls back')
 # A new rollout is not a global lock, and error/aborted-looking records cannot trigger R4.
@@ -209,6 +225,11 @@ def failed_rollout(*events):
  p.write_text(''.join(json.dumps(e)+'\n' for e in (meta_event,*events)))
  os.utime(p,(stamp,stamp));cr.INDEX.checked=None
 failed_rollout(start_event,complete_event)
+for user in ({'type':'event_msg','timestamp':start_event['timestamp'],'payload':{'type':'user_message','message':'fixture'}},
+             {'type':'response_item','timestamp':start_event['timestamp'],'payload':{'role':'user','type':'message'}}):
+ failed_rollout(start_event,user,complete_event)
+ assert wc.state('r4-control',r4rec,tick_now)['dead_turn'],user
+failed_rollout(start_event,complete_event)
 observed=wc.state('r4-control',r4rec,tick_now)['dead_turn']
 assert observed and observed['turn_id']=='turn-fixture' and observed['error']=='server_overloaded',observed
 before_calls=len(calls())
@@ -236,6 +257,10 @@ for events in ((complete_event,), (start_event,{**complete_event,'payload':{**co
                ({**start_event,'timestamp':(tick_now-timedelta(hours=3)).isoformat()},complete_event)):
  failed_rollout(*events)
  assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None,events
+old_start={**start_event,'payload':{**start_event['payload'],'started_at':started_at-7200}}
+old_end={**complete_event,'payload':{**complete_event['payload'],'started_at':started_at-7200,'completed_at':started_at-6600}}
+failed_rollout(old_start,old_end)
+assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None,'rewritten fork timestamps'
 failed_rollout(start_event,complete_event)
 for status in ('active','notLoaded','systemError'):
  mode(status);before_calls=calls()

@@ -1,0 +1,49 @@
+# Codex app-native watchdog heartbeat
+
+Use this prompt for the existing Codex app automation after the reviewed runtime is installed. Update that automation
+with supported `automation_update`; keep its automation id. This is a model-assisted native consumer, separate from
+the shell watchdog tick. Use the installed plugin's absolute `bin/watchdog` path (`$HUB_BIN` if supplied by this session).
+It must run in a confirmed app session with native `read_thread` and `send_message_to_thread`; a detached worker is not
+a substitute. Do not create another user chat, launch a daemon, open a private pipe, or run `exec resume`.
+
+1. Run `watchdog native-plan --json`. It returns a pure JSON list with only `stage`, `session`, `fingerprint`,
+   `reason`, `waiting_since`, `count` and `message`. Empty means finish silently. The planner does **not** establish idle.
+2. For each exact registered UUID, use supported native `read_thread`. Inspect actual turn timestamps, including
+   later user input, turn outcomes and interruptions. Page/array order is not chronological proof; fetch enough
+   history to establish the latest relevant turn, or skip when uncertain. Confirm the current native runtime is idle.
+   Active, unknown, interrupted or ambiguous runtime/actionability means no message.
+3. Check that real work still needs this hub: inspect the candidate stage's journal and its digest/queue/register
+   as needed. An old REVIEWED followed by the final merge and completed latest owner request is not unfinished work.
+   A DONE/MERGED word alone does not close a multi-item stage. For R4 require the same final typed overload, no later
+   user/turn boundary, and genuine unfinished work. Completed stages get no nudge merely to refresh host provenance.
+4. If idle/actionability are established, immediately run:
+
+   ```sh
+   watchdog native-claim --stage <stage> --session <exact UUID> --fingerprint <plan fingerprint>
+   ```
+
+   A refusal means skip: identity, work, policy or another UUID-wide attempt changed. The receipt contains the same
+   candidate and an `attempt` token; unknown delivery is saved **before** any native send. Re-read native state if the
+   previous idle evidence is no longer current. A changed/unknown state gets no send; ack `failed` only when certain
+   no message was submitted. Do not retry a failed preflight with a different UUID or manufacture idle evidence.
+5. If the verified latest request is complete and the local candidate is stale, claim that exact fingerprint but
+   send nothing; ack `completed-skip`. This suppresses only that stale work fingerprint. New pending work re-arms.
+   Otherwise call supported `send_message_to_thread` with exactly the receipt UUID and its literal `message`.
+6. Record the actual outcome:
+
+   ```sh
+   watchdog native-ack --stage <stage> --session <exact UUID> --fingerprint <receipt fingerprint> \
+     --attempt <receipt token> --outcome sent
+   ```
+
+   Use `sent` for explicit acceptance, `failed` for explicit no-delivery rejection, `unknown` for an ambiguous
+   result/timeout, or `completed-skip` for verified stale completed work without any send. A lost or unknown receipt
+   suppresses blind retries of the same fingerprint, across stages sharing the UUID. Never call a second transport.
+   Ack may refuse if the hub was retired/replaced, quieted or entered a pending handoff; report that receipt outcome
+   to the coordinator, without retrying the native send. A duplicate ack of the same outcome is harmless.
+
+Files and the native API are separate systems: the read/check/send interval is bounded, not atomic. Keep the claim
+and final native idle check adjacent to the send. If identity or policy changes during that interval, stop when
+observed; never claim a global writer lock. Missing native tools, unknown history or uncertain delivery do not justify
+a fallback. The heartbeat consumes model limits; a pure shell tick does not. Installation/live validation belongs to
+the current app coordinator, not this prompt's author.

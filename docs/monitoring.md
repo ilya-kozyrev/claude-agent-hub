@@ -93,7 +93,8 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 | `claude --bg` hub that is busy | Nothing: it is not silent. |
 | Desktop, terminal, a Claude session not started in the background, a Claude hub whose busy state cannot be read | A notification only. |
 | Codex app hub with recorded `host: codex-app`, confirmed idle and rollout activity evidence | `codex queue --thread <registered UUID> --message "<text>"`: starts a turn in the same thread, after another idle check. |
-| Codex terminal, unconfirmed/legacy host, unavailable runtime or `notLoaded`/`systemError` state | A notification only. `notLoaded` belongs to one server and does not exclude another writer. An active thread is left alone. |
+| Codex terminal, unconfirmed/legacy host, unavailable CLI runtime or `notLoaded`/`systemError` state | The standalone tick notifies only. `notLoaded` belongs to one server and does not exclude another writer. An active thread is left alone. |
+| Confirmed Codex app hub with a separately installed app-native heartbeat | The native consumer checks idle/actionable work in the actual app, claims the current UUID/fingerprint, sends through the supported native tool and records its receipt. CLI runtime absence is not native idle evidence. |
 
 `hub start` and `hub takeover` record `host: codex-app` only when the registered UUID is the current
 `CODEX_THREAD_ID`, both app markers (`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` and
@@ -119,6 +120,29 @@ that the background commands of the hub's last turn were stopped. It carries no 
 `[agent-hub watchdog]` (the name before the rename, still written for one release because a hub on an older plugin copy
 knows only that form; `[delamain watchdog]` is read the same), which the context-budget hook (both engines) recognises
 as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain the way a prompt typed by the owner does.
+
+### Codex app-native bridge
+
+When Desktop's runtime is separate from the CLI daemon, an existing app-native heartbeat can consume
+`watchdog native-plan --json`. This read-only command returns a pure list of `{stage, session, fingerprint, reason,
+waiting_since, count, message}` for explicit `codex-app` registrations with real aged unconsumed work or narrow R4.
+It honours quiet, pending takeover and live waiter gates, and never asserts idle or returns journal payload text.
+The heartbeat must use native `read_thread`, establish current idle and genuinely unfinished business work, then
+claim before calling native `send_message_to_thread` on exactly that UUID.
+
+`native-claim --stage S --session UUID --fingerprint F` rechecks eligibility and reserves a receipt. `native-ack`
+adds `--attempt TOKEN --outcome sent|failed|unknown|completed-skip` and rechecks identity/quiet/pending before writing
+an outcome. Native backoff is separate from standalone notification cooldown; actual standalone delivery attempts
+still suppress overlapping dispatch. Claims are serialized and protected across stages sharing a UUID. Unacknowledged
+or unknown delivery blocks blind retries of the same fingerprint. `completed-skip` suppresses only stale completed
+work, without closing a whole stage; a new work fingerprint re-arms.
+
+The [heartbeat prompt](../templates/codex-watchdog-heartbeat.md) defines the native read/check/send/ack procedure,
+including timestamp ordering, stale completed work, races and unknown outcomes. The current app coordinator updates
+the **same existing automation** with supported `automation_update` after installation. This consumer may be
+model-assisted and spend model limits; the CLI planner/attempt protocol makes no model or native API call. Its native
+read/check/send interval is bounded, not an atomic transaction across the app API and local files. Live Desktop wake
+requires that consumer to be installed and validated; fixture protocol controls alone do not prove it.
 
 ### Safety
 

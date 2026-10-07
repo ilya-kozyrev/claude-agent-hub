@@ -11,6 +11,7 @@ completion, interruption, quota/auth and untyped errors never authorize retry.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import contextlib
 import json
 import shlex
 import subprocess
@@ -18,6 +19,7 @@ from uuid import UUID
 
 import codex_rollouts
 import codex_sessions
+import autopilot
 import engines
 import hubcore as hc
 
@@ -65,11 +67,13 @@ def retryable_turn(path, sid: str, now: datetime) -> dict | None:
             if not isinstance(payload, dict):
                 return None
             if ev.get("type") == "response_item" and payload.get("role") == "user":
-                started, candidate = None, None
+                candidate = None  # input of an already started turn preserves its start
             if ev.get("type") != "event_msg":
                 continue
             kind, at = payload.get("type"), stamp(ev.get("timestamp"))
-            if kind in ("user_message", "turn_aborted", "error"):
+            if kind == "user_message":
+                candidate = None
+            elif kind in ("turn_aborted", "error"):
                 started, candidate = None, None
             elif kind == "task_started":
                 started = payload if at and birth <= at <= now else None
@@ -81,6 +85,7 @@ def retryable_turn(path, sid: str, now: datetime) -> dict | None:
                 turn = payload.get("turn_id")
                 if (started and isinstance(turn, str) and turn and turn == started.get("turn_id")
                         and type(payload.get("started_at")) is int
+                        and payload["started_at"] >= int(birth.timestamp())
                         and payload["started_at"] == started.get("started_at")
                         and type(payload.get("completed_at")) is int
                         and payload["started_at"] <= payload["completed_at"] <= now.timestamp()
@@ -127,7 +132,37 @@ def state(stage: str, rec: dict, now: datetime) -> dict:
     return result
 
 
+def wake_guard(stage: str, rec: dict, now: datetime) -> str:
+    """Fresh registry/quiet/handoff checks, shared with the native bridge; no runtime inference."""
+    current = hc.roles_load(stage)["roles"].get("hub")
+    if current != rec or _session(current or {}) != _session(rec):
+        return "hub registry changed or was retired; wake cancelled"
+    if current.get("engine") != "codex" or current.get("host") != "codex-app":
+        return "current hub has no confirmed app provenance"
+    marker = hc.root() / stage / "do-not-wake.json"
+    if marker.exists():
+        try:
+            value = json.loads(marker.read_text())
+            until = value.get("until")
+            until = datetime.fromisoformat(until.replace("Z", "+00:00")) if until else None
+            if until is None or (until.replace(tzinfo=hc.TZ) if until.tzinfo is None else until) > now:
+                return "wake-ups are paused"
+        except (OSError, ValueError, TypeError, AttributeError):
+            return "do-not-wake marker is unreadable; wake cancelled"
+    pending = autopilot.load_state(stage).get("pending")
+    if pending and not pending.get("taken_over"):
+        return "a successor takeover is pending"
+    return ""
+
+
 def wake(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None) -> dict:
+    """Fence registration with takeover's lock order through the actual queue call."""
+    with contextlib.nullcontext() if dry_run else autopilot.state_lock(stage):
+        with contextlib.nullcontext() if dry_run else hc.roles_lock(stage):
+            return _wake_locked(stage, rec, text, dry_run, expected_error)
+
+
+def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None) -> dict:
     """Recheck liveness and host immediately before a same-thread queue; no fallback."""
     codex_rollouts.INDEX.checked = None  # a resumed thread may have a newer rollout
     current = state(stage, rec, datetime.now(timezone.utc))
@@ -135,6 +170,9 @@ def wake(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None) -
         return {"ok": False, "how": "notify", "detail": current["why"]}
     if expected_error is not None and current["dead_turn"] != expected_error:
         return {"ok": False, "how": "notify", "detail": "failed turn was superseded; retry cancelled"}
+    why = wake_guard(stage, rec, datetime.now(timezone.utc))
+    if why:
+        return {"ok": False, "how": "notify", "detail": why}
     sid = _session(rec)
     try:
         argv = [engines.codex_bin(rec.get("cwd")), "queue", "--thread", sid, "--message", text]

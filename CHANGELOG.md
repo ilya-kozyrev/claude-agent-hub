@@ -8,6 +8,11 @@
   digest now describes host-specific support. Codex API-error recovery retries only a final own-turn
   `server_overloaded` with matching start and no later user/turn boundary; quota/auth/unknown errors and interruption
   remain excluded, and the failed turn is rechecked before queueing.
+  A fenced `native-plan`/`native-claim`/`native-ack` protocol supports a separately installed app-native heartbeat
+  when Desktop cannot be reached through the CLI daemon. It requires native idle/actionability checks, preserves
+  unknown delivery, deduplicates shared UUIDs across stages, and does not spend model calls itself; the native
+  automation consumer may be model-assisted.
+
 - **Codex native delegation guards recognize CLI 0.160.0 namespace concatenation.** Spawn, followup and
   messaging now reach the configured policies; level 0 blocks task reactivation without blocking pure messages.
   Real CLI controls cover the declared manifest, nested shell/patch calls, native TOML effort and stdin limits.

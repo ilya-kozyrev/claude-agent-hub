@@ -69,6 +69,8 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    hosts get a notification instead ([host conditions](../../docs/monitoring.md#which-host-is-woken-how)). It never
    starts a successor. `AGENT_HUB_WATCHDOG` lives in the hub home's `config.json`. *Recommended:* on if autopilot is on
    or you leave stages running while you are away; off otherwise.
+   Codex app wake requires a reachable CLI runtime or a separately configured app-native heartbeat; the native
+   automation consumer may use model calls. `watchdog install` alone does not install that native consumer.
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
 what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or

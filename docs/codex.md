@@ -205,8 +205,10 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   and no later user/turn boundary, rechecked before wake. Quota/auth/unknown errors and interruption never trigger R4.
   See [host conditions](monitoring.md#which-host-is-woken-how).
   The standalone CLI's shared-daemon proxy must reach the same app runtime; app markers and fake queue controls
-  alone do not prove live Desktop wake. An unavailable/separate runtime remains notify-only. Once a finite stage
+  alone do not prove live Desktop wake. The standalone tick remains notify-only for an unavailable/separate runtime. Once a finite stage
   has no outstanding work or external waits, retire its active hub with `roles retire hub --stage S --note "stage complete"`.
+  An existing app-native heartbeat can bridge a separate runtime with `native-plan`/`native-claim`/`native-ack` and
+  supported native read/send tools; [procedure and limits](monitoring.md#codex-app-native-bridge).
   The Claude Desktop scheduled nudge is
   deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 

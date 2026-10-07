@@ -1317,6 +1317,17 @@ def main(argv: list) -> int:
     r.add_argument("--dry-run", action="store_true", help="print [plan] lines; write nothing")
     r.add_argument("--stage", default=None)
     r.add_argument("--json", action="store_true")
+    n = sub.add_parser("native-plan", help="read-only app-native candidates; never infers idle or sends")
+    n.add_argument("--stage", default=None)
+    n.add_argument("--json", action="store_true")
+    for name in ("native-claim", "native-ack"):
+        n = sub.add_parser(name, help="fenced local attempt protocol for the current app-native consumer")
+        n.add_argument("--stage", required=True)
+        n.add_argument("--session", required=True)
+        n.add_argument("--fingerprint", required=True)
+        if name == "native-ack":
+            n.add_argument("--attempt", required=True)
+            n.add_argument("--outcome", choices=("sent", "failed", "unknown", "completed-skip"), required=True)
     for name in ("install", "uninstall", "status"):
         s = sub.add_parser(name)
         s.add_argument("--scheduler", choices=("launchd", "cron"), default=None, help="default: launchd on macOS, cron elsewhere")
@@ -1328,6 +1339,9 @@ def main(argv: list) -> int:
     q.add_argument("--for", dest="for_", default=None, help="a duration: 8h")
     q.add_argument("--clear", action="store_true")
     a = p.parse_args(argv)
+    if a.cmd.startswith("native-"):
+        import watchdog_native
+        return watchdog_native.command(sys.modules[__name__], a)
     return {"run": cmd_run, "install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status,
             "notify-test": cmd_notify_test, "quiet": cmd_quiet}[a.cmd](a)
 
