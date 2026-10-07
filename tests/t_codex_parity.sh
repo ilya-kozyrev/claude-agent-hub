@@ -146,6 +146,15 @@ if case in ('all', 'runtime'):
         digest=r.stdout[r.stdout.index('DIGEST'):]
         assert len(digest.encode()) <= 3072
         assert ('yielded shell session' in digest) == (engine=='codex')
+    # The rename: a newer cache folder under the plugin's name before it is an installed copy too; another name is not.
+    for name, counts in (('delamain', True), ('agent-hub', True), ('other-plugin', False)):  # rename:keep
+        cfg = tmp/f'rename-{name}'
+        (cfg/'plugins/cache/market'/name/'9.9.9/bin').mkdir(parents=True)
+        os.environ['CLAUDE_CONFIG_DIR'] = str(cfg)
+        line = hc.plugin_runtime_line('claude')
+        assert ('ATTENTION: newer claude plugin 9.9.9' in line) == counts, (name, line)
+    os.environ['CLAUDE_CONFIG_DIR'] = str(tmp/'claude')
+    print('PASS rename: the runtime header sees a newer cache under the current and the former plugin name, not under another')
     # An unreadable runtime version cannot honestly be ordered against the caches.
     (runtime/'.claude-plugin/plugin.json').write_text('{}'); (runtime/'.codex-plugin/plugin.json').write_text('{}')
     r=call(runtime/'bin/agent','status','--stage','stage-a',extra={'AGENT_HUB_ENGINE':'codex'})

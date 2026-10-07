@@ -87,6 +87,7 @@ call --bg argv | grep -q -- "--worktree"; check $? 1 "succeed: outside git no --
 call --bg prompt | grep -qF "/delamain:hub take over stage stage-a from $H: run \`$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
 check "$(call --bg AGENT_HUB_HOME)" "$R" "succeed: the hub home reaches the successor through its environment"
 call --bg prompt | grep -qF "[delamain auto-handoff 1/10]"; check $? 0 "succeed: prompt carries the marker 1/10"
+call --bg prompt | grep -qF "[agent-hub auto-handoff"; check $? 1 "rename: the prompt written now carries the new marker only, not the old one"  # rename:keep
 check "$(call --bg CLAUDECODE):$(call --bg CLAUDE_CODE_ENTRYPOINT):$(call --bg HUB_TAG)" "None:None:None" "succeed: parent session identity and hub tag stripped from the child env"
 check "$(call auth count)" 1 "succeed: login checked first (claude auth status)"
 J | grep -q '\[hub-1\] auto-handoff 1/10: started "Hub stage-a #2" (opus, default) as background session bg-1234abcd — Remote Control https://claude.ai/code/session_01AbC-xyz; terminal: claude attach bg-1234abcd'; check $? 0 "succeed: journal line with bg id, Remote Control link (ANSI stripped) and attach command"
@@ -594,9 +595,18 @@ AGENT_HUB_AUTO_HANDOFF=off cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"de
 echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
 PROMPT='<task-notification>jwait exited</task-notification>' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: a harness notice is not the owner"
 PROMPT='/delamain:hub take over stage stage-a from /x. [delamain auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: the successor's own prompt (marker) keeps the chain"
+PROMPT='/agent-hub:hub take over stage stage-a from /x. [agent-hub auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "rename: a successor started before the rename (old marker) keeps the chain"  # rename:keep
+PROMPT='[delamain auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "rename: the new marker alone keeps the chain"
+PROMPT='/other:hub take over stage stage-a from /x. [other auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "rename, negative: a marker of another product is the owner speaking, the chain resets"
+echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
+PROMPT='[agent-hub auto-handoff x/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "rename, negative: a malformed old marker (no k/N) is the owner speaking"  # rename:keep
+echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
 PROMPT="[delamain watchdog] stage-a: 1 journal lines addressed to you have waited since 10:00 and no jwait of yours is running." cbh UserPromptSubmit > /dev/null
 check "$(chain)" 3 "reset: the watchdog's wake prompt (its marker at the start) keeps the chain"
+PROMPT="[agent-hub watchdog] stage-a: 1 journal lines addressed to you have waited since 10:00 and no jwait of yours is running." cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "rename: the watchdog's wake prompt with the former marker (an older version, or the form still written) keeps the chain"  # rename:keep
 PROMPT='what does [delamain watchdog] mean in the journal?' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "reset: the owner quoting the watchdog marker mid-text still resets the chain"
+echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
+PROMPT='what does [agent-hub watchdog] mean in the journal?' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "rename, negative: the owner quoting the former watchdog marker mid-text still resets the chain"  # rename:keep
 echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
 PROMPT='how is it going?' SID=$HUB2 cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: a prompt in another session keeps the chain"
 PROMPT='how is it going?' AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: autopilot off, nothing changes"

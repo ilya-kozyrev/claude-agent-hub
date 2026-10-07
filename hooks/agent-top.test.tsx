@@ -305,7 +305,7 @@ test("only agent-top and this plugin's own <name>:agent-top are answered; anothe
   expect((await run($, '', 'agent-top-dev:agent-top')).text).toBe(isDev ? 'picture' : 'the engine ran it')
 })
 
-test('isOwnCommand: the dev copy also answers delamain:agent-top, nobody else does', async () => {
+test('isOwnCommand: the dev copy also answers delamain:agent-top and the pre-rename name, nobody else does', async () => {
   expect(isOwnCommand('agent-top', 'delamain')).toBe(true)
   expect(isOwnCommand('delamain:agent-top', 'delamain')).toBe(true)
   expect(isOwnCommand('agent-top-dev:agent-top', 'delamain')).toBe(false) // not an allow-list for the installed plugin
@@ -313,6 +313,9 @@ test('isOwnCommand: the dev copy also answers delamain:agent-top, nobody else do
   expect(isOwnCommand('agent-top', 'agent-top-dev')).toBe(true)
   expect(isOwnCommand('agent-top-dev:agent-top', 'agent-top-dev')).toBe(true)
   expect(isOwnCommand('delamain:agent-top', 'agent-top-dev')).toBe(true)
+  expect(isOwnCommand('agent-hub:agent-top', 'agent-top-dev')).toBe(true) // rename:keep  (installed copy before the rename)
+  expect(isOwnCommand('agent-hub:agent-top', 'delamain')).toBe(false) // rename:keep  (not an alias in the installed plugin)
+  expect(isOwnCommand('other-hub:agent-top', 'agent-top-dev')).toBe(false)
   expect(isOwnCommand('other:agent-top', 'agent-top-dev')).toBe(false)
   expect(isOwnCommand('delamain:agent-topic', 'agent-top-dev')).toBe(false)
 })

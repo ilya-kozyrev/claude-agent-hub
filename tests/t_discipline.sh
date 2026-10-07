@@ -382,6 +382,21 @@ grep -q '"model_from": "inherit"' $R/try1.out; check $? 0 "delegation try: print
 $B/delegation try --cwd $R/other delamain:worker-high opus | grep -q '^allow'; check $? 0 "delegation try TYPE MODEL: allow"
 rm $R/proj/.agent-hub/config.json
 
+# the rename: a rule written with the plugin's former prefix applies to the same agent under the current name
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": "agent-hub:worker-high"}, "decision": "deny", "reason": "legacy rule"}]}' > $R/config.json  # rename:keep
+dg Agent delamain:worker-high opus | grep -q 'legacy rule'; check $? 0 "rename: a rule for the former prefix denies delamain:worker-high"
+dden Agent agent-hub:worker-high opus; check $? 0 "rename: …and an agent still called by the former prefix"  # rename:keep
+dden Agent delamain:worker-low opus; check $? 1 "rename, negative: …not another agent of this plugin"
+dden Agent foo:worker-high opus; check $? 1 "rename, negative: …not another plugin's worker-high"
+dden Agent worker-high opus; check $? 1 "rename, negative: …nor the bare name (an exact rule stays exact)"
+echo '{"AGENT_HUB_EFFORT_RULES": [{"when": {"subagent_type": ["foo:*", "agent-hub:worker-*"]}, "decision": "deny", "reason": "legacy glob"}]}' > $R/config.json  # rename:keep
+dden Agent delamain:worker-medium opus; check $? 0 "rename: a glob and a list with the former prefix match delamain:worker-medium"
+dden Agent foo:anything opus; check $? 0 "rename: …and the other item of the list still matches"
+dden Agent bar:worker-medium opus; check $? 1 "rename, negative: …and an unrelated prefix does not"
+$B/delegation try --cwd $R/other agent-hub:worker-high opus | grep -q '"defined": "true"'; check $? 0 "rename: the definition of an agent called by the former prefix is found"  # rename:keep
+$B/delegation try --cwd $R/other foo:worker-high opus | grep -q '"defined": "false"'; check $? 0 "rename, negative: …and of another plugin's agent is not"
+cp $EXAMPLE $R/config.json
+
 # agent spawn applies AGENT_HUB_EFFORT_RULES (stand-in CLI; a denied spawn never starts)
 export HUB_STAGE=stage-a HUB_TAG=hub-test CLAUDE_BIN=$T/fake_claude.py; W=$R/w; mkdir -p $W; echo "brief" > $W/b.md
 $B/agent spawn --role s1 --cwd $W --model sonnet --effort medium --brief $W/b.md > $R/sp1.out 2>&1; check $? 2 "spawn: Sonnet at medium refused by the example rules"
