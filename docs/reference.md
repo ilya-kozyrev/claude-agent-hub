@@ -17,7 +17,7 @@ removed in the next release, once no session started before 1.0 remains; readers
 
 ## How it works
 
-[Precise workflow sketch](assets/hub-workflow.svg) · [Pixel-art prompts and reference](assets/pixel-art-prompts.md).
+[Precise workflow sketch](assets/hub-workflow.svg) · [Delamain illustration prompts and reference](assets/illustration-prompts.md).
 
 ```mermaid
 flowchart LR
@@ -804,4 +804,3 @@ The Claude-specific facilities below apply when the selected host/engine is Clau
 - Autopilot needs the standalone `claude` CLI logged in and the project directory trusted by it (see
   [Autopilot](#autopilot-the-hub-hands-over-by-itself)); otherwise its successor is a headless hub, which you reach
   through `ask` and `agent send` rather than from your phone.
-
