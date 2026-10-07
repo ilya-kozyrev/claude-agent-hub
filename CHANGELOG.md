@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **agent-top follows Delamain’s visual identity** in the terminal, Claude Code pane and HTML widget, with
+  navy panels, ice-blue navigation and amber accents. Status colors, monochrome and limited-color terminals,
+  narrow layouts and the pane’s focus controls remain supported.
+
 - **Delamain's visual identity now follows the AI dispatcher and autonomous fleet metaphor.** New pixel-art
   illustrations show task dispatch, shared records and coordinator handoff; the workflow sketch uses the same
   navy, ice-blue and taxi-amber palette. The README and repository About describe coordination for both Claude Code

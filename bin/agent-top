@@ -1238,7 +1238,8 @@ def header_row(snap: dict, width: int, view_label: str) -> Row:
     locks = sum(1 for lk in snap["locks"] if lk["active"])
     q_open = sum(q["open"] for q in snap["questions"].values())
     q_over = sum(q["overdue"] for q in snap["questions"].values())
-    bits = [(" agent-top ", "head_b"), (f"● {c['live']} ", "head_live"), (f"✓ {c['done']} ", "head"),
+    title = " Delamain · agent-top " if width >= 60 else " agent-top "
+    bits = [(title, "head_b"), (f"● {c['live']} ", "head_live"), (f"✓ {c['done']} ", "head"),
             (f"✗ {c['error'] + c['dead']} ", "head_err" if c["error"] + c["dead"] else "head")]
     if view_label:
         bits.append((view_label + " ", "head_b"))
@@ -1630,7 +1631,7 @@ WIDGET_STATE = {"live": ("live", "success"), "done": ("done", "secondary"), "err
 
 
 def render_widget(snap: dict) -> str:
-    """An HTML fragment of the snapshot: host CSS variables only, no scripts (the chat widget of the removed skill; kept for scripts)."""
+    """An embeddable snapshot with scoped brand accents, host surfaces and no scripts."""
     e = html.escape
     c = snap["counts"]
     locks = [lk for lk in snap["locks"] if lk["active"]]
@@ -1656,12 +1657,21 @@ def render_widget(snap: dict) -> str:
             cards.append(metric(lab, pct(win[k]), use_tone(win[k])))
     out = [f'<h2 class="sr-only">Agents of stages {e(", ".join(snap["stages"]) or "—")}: {c["live"]} running, '
            f'{c["done"]} done, {bad} failed.</h2>',
-           '<style>.at .m{background:var(--surface-1);border-radius:var(--radius);padding:10px 12px}'
+           '<style>.at{--at-navy:#0b1422;--at-panel:#142a40;--at-ice:#77dce8;--at-amber:#eeb34e;'
+           'color:var(--text-primary,inherit);font-family:inherit;min-width:0}'
+           '.at .at-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;'
+           'background:var(--at-navy);color:var(--at-ice);border:1px solid var(--at-panel);'
+           'border-left:3px solid var(--at-amber);border-radius:var(--radius,8px);padding:10px 12px;margin:0 0 12px}'
+           '.at .at-title{font-size:16px;font-weight:600;margin:0;overflow-wrap:anywhere}'
+           '.at .at-brand{color:var(--at-amber);font-size:11px;letter-spacing:.08em}'
+           '.at .m{background:var(--surface-1,transparent);border:1px solid var(--border,currentColor);'
+           'border-radius:var(--radius,8px);padding:10px 12px;min-width:0}'
            '.at .v{font-size:20px;font-weight:500}.at .s{font-size:12px;color:var(--text-secondary)}'
            '.at .r{display:grid;grid-template-columns:72px minmax(0,1fr);gap:4px 12px;padding:8px 0;border-top:0.5px solid var(--border)}'
            '.at .n{font-size:14px}.at .x{font-size:11px;color:var(--text-muted)}'
            '.at .w{font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
            '</style><div class="at">',
+           '<div class="at-head"><span class="at-brand">DELAMAIN</span><h3 class="at-title">agent-top</h3></div>',
            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:0 0 1rem">',
            *cards, '</div>']
     multi = len(snap["stages"]) > 1
@@ -2084,26 +2094,38 @@ def make_styles() -> dict:
               head=A.A_REVERSE, head_b=A.A_REVERSE | A.A_BOLD, head_live=A.A_REVERSE | A.A_BOLD, head_err=A.A_REVERSE | A.A_BOLD,
               sel=A.A_REVERSE | A.A_BOLD, key=A.A_REVERSE, confirm=A.A_REVERSE | A.A_BOLD, ok=A.A_REVERSE | A.A_BOLD,
               err_bar=A.A_REVERSE | A.A_BOLD, warn=A.A_BOLD, err=A.A_BOLD, live=A.A_BOLD, tool_p=A.A_BOLD)
-    if A.has_colors() and not os.environ.get("NO_COLOR"):
-        A.start_color()
+    if A.has_colors() and "NO_COLOR" not in os.environ:
+        try:
+            A.start_color()
+        except curses.error:
+            return st
         try:
             A.use_default_colors()
             bg = -1
         except curses.error:
             bg = A.COLOR_BLACK
-        spec = {"live": (A.COLOR_GREEN, bg, A.A_BOLD), "done": (A.COLOR_CYAN, bg, 0), "err": (A.COLOR_RED, bg, A.A_BOLD),
-                "warn": (A.COLOR_YELLOW, bg, A.A_BOLD), "tool": (A.COLOR_CYAN, bg, 0), "tool_p": (A.COLOR_GREEN, bg, A.A_BOLD),
-                "head": (A.COLOR_WHITE, A.COLOR_BLUE, 0), "head_b": (A.COLOR_WHITE, A.COLOR_BLUE, A.A_BOLD),
-                "head_live": (A.COLOR_GREEN, A.COLOR_BLUE, A.A_BOLD), "head_err": (A.COLOR_YELLOW, A.COLOR_BLUE, A.A_BOLD),
-                "sel": (A.COLOR_BLACK, A.COLOR_CYAN, 0), "key": (A.COLOR_BLACK, A.COLOR_WHITE, 0),
-                "confirm": (A.COLOR_BLACK, A.COLOR_YELLOW, A.A_BOLD), "ok": (A.COLOR_BLACK, A.COLOR_GREEN, 0),
+        # Nearest indexed colors of the brand palette; never redefine the terminal's color slots.
+        rich = A.COLORS >= 256
+        ice, amber, navy, panel = (116, 215, 233, 235) if rich else (A.COLOR_CYAN, A.COLOR_YELLOW, bg, bg)
+        spec = {"live": (A.COLOR_GREEN, bg, A.A_BOLD), "done": (ice, bg, 0), "err": (A.COLOR_RED, bg, A.A_BOLD),
+                "warn": (amber, bg, A.A_BOLD), "tool": (ice, bg, 0), "tool_p": (A.COLOR_GREEN, bg, A.A_BOLD),
+                "head": (ice, navy, 0), "head_b": (amber, navy, A.A_BOLD),
+                "head_live": (A.COLOR_GREEN, navy, A.A_BOLD), "head_err": (A.COLOR_RED, navy, A.A_BOLD),
+                "sel": (ice, panel, A.A_BOLD) if rich else (A.COLOR_BLACK, ice, A.A_BOLD),
+                "key": (ice, panel, A.A_BOLD) if rich else (A.COLOR_BLACK, ice, 0),
+                "confirm": (A.COLOR_BLACK, amber, A.A_BOLD), "ok": (A.COLOR_BLACK, A.COLOR_GREEN, 0),
                 "err_bar": (A.COLOR_WHITE, A.COLOR_RED, A.A_BOLD)}
+        spec.update({"tag%d" % j: (col, bg, 0) for j, col in
+                     enumerate((A.COLOR_MAGENTA, ice, amber, A.COLOR_GREEN, A.COLOR_BLUE, A.COLOR_RED))})
         for i, (name, (fg, b, extra)) in enumerate(spec.items(), 1):
-            A.init_pair(i, fg, b)
-            st[name] = A.color_pair(i) | extra
-        for j, col in enumerate((A.COLOR_MAGENTA, A.COLOR_CYAN, A.COLOR_YELLOW, A.COLOR_GREEN, A.COLOR_BLUE, A.COLOR_RED)):
-            A.init_pair(40 + j, col, -1 if bg == -1 else A.COLOR_BLACK)
-            st["tag%d" % j] = A.color_pair(40 + j)
+            # Tiny palettes/pair tables and terminals rejecting a pair keep the monochrome attributes.
+            if i >= A.COLOR_PAIRS or fg >= A.COLORS or b >= A.COLORS:
+                continue
+            try:
+                A.init_pair(i, fg, b)
+                st[name] = A.color_pair(i) | extra
+            except curses.error:
+                pass
     return st
 
 

@@ -164,7 +164,7 @@ test('/agent-top opens the pane; rows open the card with the feed, Back returns 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ key: 'header' }))?.text).toMatch(/^◆ agent-top +● 1 +✓ 1 +✗ 0 /)
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/^Delamain · agent-top +● 1 +✓ 1 +✗ 0 /)
     expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
     expect(await ui.find({ key: 'open:stage-a/rev' })).toBeDefined()
     expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/▸ Bash: run the tests/)
@@ -897,7 +897,7 @@ test('layouts: dock has the cyan frame, a card framed in its state colour and fr
   await run($)
   for (const surface of ['terminal', 'desktop'] as const) {
     let ui = await $.ui.mount({ ...paneProps({ placement: 'dock', cols: 76, rows: 40 }), surface })
-    expect((await ui.find({ key: 'frame' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: 'cyan' })
+    expect((await ui.find({ key: 'frame' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#77dce8' })
     expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/sonnet-5-5\/hi · 7t · 52k$/)
     await ui.press({ key: 'view-summary' })
     expect((await ui.find({ key: 'sum-limits' }))?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true })
@@ -929,6 +929,28 @@ test('layouts: dock has the cyan frame, a card framed in its state colour and fr
   }
 })
 
+test('the branded header shrinks before controls; severity badges and engine focus remain distinct', async ($, on) => {
+  mock.clock(on)
+  stubPane(on, () => snapshot([agent(), agent({ role: 'quiet', dir_name: 'quiet', quiet: true })]))
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const cols of [23, 30, 44, 76]) {
+      const ui = await $.ui.mount({ ...paneProps({ cols }), surface })
+      await ui.press({ key: 'view-agents' })
+      const header = await ui.find({ key: 'header' })
+      expect(cells(header)).toBeLessThanOrEqual(cols)
+      expect(header?.text).toMatch(cols >= 44 ? /^Delamain · agent-top/ : /^agent-top/)
+      expect((await ui.find({ type: 'Text', text: cols >= 44 ? 'Delamain · agent-top' : 'agent-top' }))?.props.bold).toBe(true)
+      expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
+      expect((await ui.find({ key: 'open:stage-a/worker' }))?.props.autoFocus).toBe(true)
+      expect((await ui.find({ type: 'Text', text: /QUIET|◐/ }))?.props.backgroundColor).toBe('yellow')
+      await ui.press({ key: 'view-journal' })
+      expect(await ui.find({ key: 'view-journal' })).toBeDefined() // selected tab keeps its address
+      await ui.unmount()
+    }
+  }
+})
+
 test('the journal: a tag pill in a stable colour, the line coloured by its first word, a rule per stage', async ($, on) => {
   mock.clock(on)
   stubPane(on, () =>
@@ -946,7 +968,7 @@ test('the journal: a tag pill in a stable colour, the line coloured by its first
   expect((await ui.find({ type: 'Text', text: 'DONE: tests green' }))?.props.color).toBe('green')
   expect((await ui.find({ type: 'Text', text: 'FAIL lint' }))?.props.color).toBe('red')
   expect(await ui.find({ type: 'Text', text: /^── stage-b ─+$/ })).toBeDefined()
-  expect((await ui.find({ key: 'tab:journal' }))?.props.backgroundColor).toBe('cyan') // the active tab: filled
+  expect((await ui.find({ key: 'tab:journal' }))?.props.backgroundColor).toBe('#77dce8') // the active tab: filled
   expect((await ui.find({ key: 'view-journal' }))?.props.label).toBe(' Journal ') // and still a Button: the ring never loses it
   expect((await ui.find({ key: 'view-summary' }))?.props).toMatchObject({ label: 'Summary', hotkey: 's', dimColor: true })
   await ui.unmount()

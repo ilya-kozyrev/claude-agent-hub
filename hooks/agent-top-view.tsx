@@ -78,6 +78,10 @@ export type PaneActions = {
 
 type Style = { color?: string; bg?: string; dim?: boolean; bold?: boolean; italic?: boolean; strike?: boolean }
 
+// Raw colors and Box/Text background/border props are supported by the installed mod API.
+// Keep semantic badges on the engine's named colors and Buttons on its own focus treatment.
+const BRAND = { ice: '#77dce8', amber: '#eeb34e', navy: '#0b1422' } as const
+
 const len = (s: string): number => Array.from(s).length
 
 /** The feed's kind column: a tool's name, else what the event is. */
@@ -147,12 +151,12 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
   const rule = (label: string, width: number, right = ''): RenderChildren => {
     const head = label ? `── ${clip(label, Math.max(1, width - 8 - len(right)))} ` : ''
     const tail = right ? ` ${right} ──` : ''
-    return t(head + '─'.repeat(Math.max(2, width - len(head) - len(tail))) + tail, { dim: true })
+    return t(head + '─'.repeat(Math.max(2, width - len(head) - len(tail))) + tail, { color: BRAND.ice, dim: true })
   }
   const pill = (s: string, bg: string, fg = 'black', dim = false): RenderChildren => t(` ${s} `, { bg, color: fg, bold: true, dim })
 
   // ---------------------------------------------------------------- header: title, counters, stage and time
-  // narrow: the title is its glyph and the counters lose their inner space
+  // The brand drops first, then the title; counters keep their space at wide widths.
   const sp = w < 40 ? '' : ' '
   const counters: { text: string; node: RenderChildren }[] = []
   const live = m.counts?.live ?? 0
@@ -160,7 +164,8 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
   counters.push({ text: ` ●${sp}${live} `, node: live ? pill(`●${sp}${live}`, 'green') : t(` ●${sp}0 `, { dim: true }) })
   counters.push({ text: ` ✓${sp}${done} `, node: t(` ✓${sp}${done} `, { dim: true }) })
   counters.push({ text: ` ✗${sp}${failed} `, node: failed ? pill(`✗${sp}${failed}`, 'red', 'white') : t(` ✗${sp}0 `, { dim: true }) })
-  const title = w < 40 ? '◆' : '◆ agent-top'
+  const titleRoom = w - 1 - counters.reduce((n, c) => n + len(c.text), 0)
+  const title = ['Delamain · agent-top', 'agent-top', '◆'].find(s => len(s) <= titleRoom) ?? '◆'
   const leftLen = len(title) + 1 + counters.reduce((n, c) => n + len(c.text), 0)
   const where = `${m.stages.length ? m.stages.join('/') : 'all stages'}${m.shown ? ` · ${m.shown.generated_at.slice(11, 16)}` : ''}`
   const room = w - leftLen - 1
@@ -168,7 +173,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     'header',
     [
       <Box flexDirection="row">
-        {t(title, { color: 'cyan', bold: true })}
+        {t(title, { color: BRAND.ice, bg: BRAND.navy, bold: true })}
         {t(' ')}
         {counters.map(c => c.node)}
       </Box>,
@@ -181,7 +186,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
   // the active tab stays a Button (on a filled Box): a focused element that vanished would leave the ring nowhere
   const tab = (key: string, label: string, hotkey: string, view: View, isActive: boolean): RenderChildren =>
     isActive ? (
-      <Box key={`tab:${view}`} backgroundColor="cyan">
+      <Box key={`tab:${view}`} backgroundColor={BRAND.ice}>
         <Button key={key} label={` ${label} `} plain onPress={() => act.go(view)} />
       </Box>
     ) : (
@@ -231,7 +236,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     </Box>
   )
   const tree = isFramed ? (
-    <Box key="frame" flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+    <Box key="frame" flexDirection="column" borderStyle="round" borderColor={BRAND.ice} paddingX={1}>
       {content}
     </Box>
   ) : (
@@ -304,7 +309,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
       n += 1
       out.push(
         row(`row:${key}`, [
-          t(isCursor ? '❯ ' : '  ', { color: 'cyan', bold: true }),
+          t(isCursor ? '❯ ' : '  ', { color: BRAND.amber, bold: true }),
           pill(isTight ? b.glyph : padEnd(b.label, 5), b.bg, b.fg, b.isDim),
           t(' '),
           <Button
@@ -512,7 +517,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
       const style: Style = it.sub
         ? { italic: true, dim: true }
         : { color: f.color, dim: f.dim, bold: f.bold }
-      const colStyle: Style = isTool ? { color: 'cyan' } : it.kind === 'result_err' ? { color: 'red' } : it.kind === 'end' ? { bold: true } : { dim: true }
+      const colStyle: Style = isTool ? { color: BRAND.ice } : it.kind === 'result_err' ? { color: 'red' } : it.kind === 'end' ? { bold: true } : { dim: true }
       wrapLines(text, textW, isResult ? 1 : 2).forEach((l, j) => {
         feedRows.push(
           <Box key={j === 0 ? `feed:${i}` : undefined} flexDirection="row">
@@ -579,8 +584,8 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     const section = (key: string, label: string, kids: RenderChildren[]): RenderChildren[] =>
       isFramed
         ? [
-            <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-              {t(label, { bold: true })}
+            <Box key={key} flexDirection="column" borderStyle="round" borderColor={BRAND.ice} borderDimColor paddingX={1}>
+              {t(label, { color: BRAND.ice, bg: BRAND.navy, bold: true })}
               {kids}
             </Box>,
           ]
