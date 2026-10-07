@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.1 — 2026-10-07
+
 - **An optional machine-load hold makes `agent spawn` warn or refuse while the machine is busy.** Off by default: with
   `AGENT_HUB_SPAWN_HOLD_LOAD` set (1-minute load per core, e.g. `1.5`) the `watchdog` tick writes
   `<state dir>/spawn-hold.json` while the load is above it and deletes it below 80 % of it (R5; unset removes a leftover
