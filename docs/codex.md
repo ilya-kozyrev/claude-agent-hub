@@ -194,7 +194,12 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   Outside Git it keeps the supplied directory.
   The Claude Desktop/Remote Control phone workflow stays Claude-specific.
 - Night queue files and permissions work with both engines. The watchdog (`watchdog install`) counts open night-queue
-  items as waiting work; a Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). The Claude Desktop scheduled nudge is
+  items as waiting work. A confirmed idle app hub registered by `hub start`/`takeover` as `host: codex-app` is woken
+  with `codex queue` in its own UUID; terminal/unknown hosts and unavailable runtime notify only. Registration requires
+  the current thread and both app markers described below, excluding detached workers; old records need an app-side
+  `hub takeover --session self`. Detached hubs use `agent send`. Codex API-error recovery (R4) remains unavailable:
+  persisted completion/interruption events do not establish retry eligibility. See [host conditions](monitoring.md#which-host-is-woken-how).
+  The Claude Desktop scheduled nudge is
   deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 
 Only commands observed by enabled, trusted hooks can be guarded. External terminal commands and commands that

@@ -42,8 +42,8 @@ PY
 chmod +x "$CODEX_BIN"
 printf idle > "$C/mode"; printf ok > "$C/queue-mode"
 python3 - "$B" "$C" <<'PY'
-import hashlib, json, os, subprocess, sys, time
-from datetime import datetime, timezone
+import hashlib, importlib.machinery, importlib.util, json, os, subprocess, sys, time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,sys.argv[1])
@@ -63,6 +63,58 @@ def calls():
  p=root/'mutations.jsonl';return [json.loads(s) for s in p.read_text().splitlines()] if p.exists() else []
 def snapshot():
  return {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for base in (home,codex) for p in base.rglob('*') if p.is_file()}
+# Exercise the real host producer, not a manually forged host record.
+loader=importlib.machinery.SourceFileLoader('hub_cli',str(Path(sys.argv[1])/'hub'))
+spec=importlib.util.spec_from_loader(loader.name,loader);hub=importlib.util.module_from_spec(spec);loader.exec_module(hub)
+app_env={'CODEX_THREAD_ID':sid,'CODEX_INTERNAL_ORIGINATOR_OVERRIDE':'Codex Desktop',
+         'CODEX_APP_TOOLS_PIPE_PATH':'fixture-pipe','AGENT_ROLE':''}
+with patch.dict(os.environ,app_env):
+ assert hub.session_host('stage-a',sid,sid,'cli','codex')=='codex-app'
+ for changes in ({'CODEX_INTERNAL_ORIGINATOR_OVERRIDE':''},{'CODEX_APP_TOOLS_PIPE_PATH':''},
+                 {'AGENT_ROLE':'worker'},{'CODEX_THREAD_ID':other},{'CODEX_THREAD_ID':''}):
+  with patch.dict(os.environ,changes):
+   assert hub.session_host('stage-a',sid,sid,'cli','codex')=='',changes
+ assert hub.session_host('stage-a',other,sid,'cli','codex')==''
+ assert hub.session_host('stage-a',sid,sid,'desktop','codex')=='desktop'
+ with patch.object(hc,'detached',return_value={'engine':'codex'}):
+  assert hub.session_host('stage-a',sid,sid,'cli','codex')=='detached'
+print('PASS host producer requires both app markers, current UUID and non-detached identity')
+env={**os.environ,**app_env,'AGENT_HUB_ENGINE':'codex','AGENT_HUB_WATCHDOG':'on',
+     'CLAUDE_CONFIG_DIR':str(root/'claude'),'CLAUDE_BIN':'/nonexistent/claude'}
+def command(tool,*args,extra=None):
+ r=subprocess.run([str(Path(sys.argv[1])/tool),*args],env={**env,**(extra or {})},cwd=root,capture_output=True,text=True)
+ assert r.returncode==0,(tool,r.stdout,r.stderr)
+ return r.stdout
+out=command('hub','start','--stage','app-control','--session','self','--goal','Process waiting fixture work')
+registered=hc.roles_load('app-control')['roles']['hub']
+assert registered['host']=='codex-app' and registered['session']==registered['cli_session_id']==sid,registered
+assert Path(registered['cwd']).resolve()==root.resolve(),registered
+assert 'confirmed idle Codex app hub queues its own thread' in out,out
+# A real tick uses the produced record and preserves the thread. Backdate takeover and work deterministically.
+tick_now=datetime.now(timezone.utc).replace(second=0,microsecond=0)
+registered['set_at']=(tick_now-timedelta(hours=2)).isoformat()
+hc.roles_save('app-control',{'version':1,'roles':{'hub':registered},'retired':[]})
+journal=hc.journal_path('app-control',tick_now.date());journal.parent.mkdir(parents=True,exist_ok=True)
+journal.write_text(f'- {tick_now-timedelta(minutes=30):%H:%M} [executor] DONE fixture work\n')
+mode('idle');before_calls=len(calls())
+out=command('watchdog','run','--stage','app-control',extra={'AGENT_HUB_WATCHDOG_NOW':tick_now.isoformat(),'AGENT_HUB_NOTIFY_LOCAL':'off'})
+assert len(calls())==before_calls+1 and calls()[-1][1:3]==['--thread',sid],(out,calls())
+assert calls()[-1][4].startswith('[agent-hub watchdog] app-control:'),calls()[-1]
+assert 'woke hub-1' in out,out
+# Retaking that same UUID from terminal markers must clear provenance, not retain a stale app gate.
+out=command('hub','takeover','--stage','app-control','--session','self',extra={'CODEX_APP_TOOLS_PIPE_PATH':''})
+registered=hc.roles_load('app-control')['roles']['hub']
+assert not registered.get('host') and 'this Codex host is notify-only' in out,(registered,out)
+old_tag,old_set_at=registered['tag'],registered['set_at']
+out=command('hub','takeover','--stage','app-control','--session','self')
+registered=hc.roles_load('app-control')['roles']['hub']
+assert registered['host']=='codex-app' and registered['tag']==old_tag and registered['set_at']==old_set_at,registered
+assert '[already done] roles:' in out,out
+out=command('hub','takeover','--stage','app-control','--session',other)
+assert not hc.roles_load('app-control')['roles']['hub'].get('host'),out
+print('PASS real R3 queue; same-shift host refresh; terminal retake and foreign UUID clear provenance')
+# Reset mutation history so the focused transport controls below have their own baseline.
+(root/'mutations.jsonl').unlink()
 expected={'busy','last_activity','dead_turn','transport','why'}
 mode('idle');got=wc.state('stage-a',rec,now)
 assert set(got)==expected and got['busy'] is False and got['transport']=='codex-queue',got

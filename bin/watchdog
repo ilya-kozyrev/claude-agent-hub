@@ -391,8 +391,19 @@ def status_line(stage: str) -> str:
     """One line for the takeover digest: what the watchdog does for this hub, or '' when it is off."""
     if not enabled():
         return ""
-    return (f"watchdog is on (a tick every {minutes(every())} min): a hub that is silent while lines addressed to it "
-            f"wait {minutes(wake_after())} min is woken; keep one `jwait`, and `watchdog quiet --stage {stage} "
+    rec = hc.roles_load(stage)["roles"].get("hub") or {}
+    if hc.detached(stage, rec):
+        action = "a stopped detached hub resumes its own session"
+    elif rec.get("engine") == "codex":
+        action = ("a confirmed idle Codex app hub queues its own thread; other states notify only"
+                  if rec.get("host") == "codex-app" and rec.get("kind") != "desktop"
+                  else "this Codex host is notify-only; app provenance and confirmed idle are required to wake")
+    elif rec.get("host") == "bg":
+        action = "an idle/stopped Claude background hub resumes its own session; unknown state notifies only"
+    else:
+        action = "a confirmed Claude background hub can resume; Desktop/terminal/unknown hosts notify only"
+    return (f"watchdog is on (a tick every {minutes(every())} min): after {minutes(wake_after())} min of silence "
+            f"with waiting work, {action}; keep one `jwait`, and `watchdog quiet --stage {stage} "
             f"--reason \"…\"` pauses it")
 
 

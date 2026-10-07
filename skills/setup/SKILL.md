@@ -65,7 +65,8 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
 9. Watchdog — a job every 5 minutes (`watchdog`, launchd on macOS, cron elsewhere; no daemon, no model) that writes
    `EXIT … killed (no result)` for agents that died, and wakes a hub that sleeps without a waiter while lines addressed
    to it have waited 15 minutes (or a night-queue item waits inside `AGENT_HUB_NIGHT`). It wakes a headless hub and an
-   idle `claude --bg` hub; a Desktop or terminal hub, and a Codex hub in this release, get a notification instead. It never
+   idle `claude --bg` hub, and a confirmed idle Codex app hub registered from its current thread; terminal and unknown
+   hosts get a notification instead ([host conditions](../../docs/monitoring.md#which-host-is-woken-how)). It never
    starts a successor. `AGENT_HUB_WATCHDOG` lives in the hub home's `config.json`. *Recommended:* on if autopilot is on
    or you leave stages running while you are away; off otherwise.
 

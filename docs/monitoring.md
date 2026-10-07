@@ -92,7 +92,19 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 | `claude --bg` hub that is no longer listed | The same resume, when the hub was started in the background (`host: bg` in its `roles.json` record, else the pending record of `hub succeed` that started it) and the daemon still holds the session's saved options. |
 | `claude --bg` hub that is busy | Nothing: it is not silent. |
 | Desktop, terminal, a Claude session not started in the background, a Claude hub whose busy state cannot be read | A notification only. |
-| Codex hub | A notification only in this release (the queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). |
+| Codex app hub with recorded `host: codex-app`, confirmed idle and rollout activity evidence | `codex queue --thread <registered UUID> --message "<text>"`: starts a turn in the same thread, after another idle check. |
+| Codex terminal, unconfirmed/legacy host, unavailable runtime or `notLoaded`/`systemError` state | A notification only. `notLoaded` belongs to one server and does not exclude another writer. An active thread is left alone. |
+
+`hub start` and `hub takeover` record `host: codex-app` only when the registered UUID is the current
+`CODEX_THREAD_ID`, both app markers (`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` and
+`CODEX_APP_TOOLS_PIPE_PATH`) are present, and the session is not a detached `AGENT_ROLE` worker. A rollout's
+`source` never establishes the current host. Retaking the same thread from an unconfirmed host clears that provenance.
+Existing app hubs must run `hub takeover --session self` from the app once to record it. Reading runtime status uses
+the supported `codex app-server proxy` and read-only `thread/read`; it does not start a daemon or load a thread.
+Missing CLI/queue support, failed queue or timeout has no resume fallback. The queue boundary was checked on CLI 0.160.0.
+
+R4 remains Claude-only: Codex's persisted `task_complete` does not identify an API failure, `turn_aborted` also
+describes user interruption, and an error notification can be recoverable. These events alone do not authorize a retry.
 
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds
@@ -103,7 +115,7 @@ as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain t
 
 ### Safety
 
-- **Never a successor.** The watchdog runs `agent send`, `claude stop` and `claude --bg --resume` of the hub's own
+- **Never a successor.** The watchdog runs `agent send`, same-thread `codex queue`, `claude stop` and `claude --bg --resume` of the hub's own
   session id. It never runs `hub succeed`, `agent spawn` or a `claude --bg` without `--resume`. Right before a resume it
   reads `claude agents --json` again; if the hub is listed busy it does not wake it, and if the CLI starts a copy of the
   session anyway, it stops the copy, counts the wake as failed and notifies; it does not resume a second time in the

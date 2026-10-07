@@ -1,12 +1,12 @@
-"""Codex watchdog boundary: read state, notify the owner for Codex hubs.
+"""Codex watchdog boundary: queue only a confirmed, idle app hub's own thread.
 
-The queue path is inert in 0.9.1 until a host producer lands: nothing records
-host: codex-app yet. Keep that gate; Codex hubs are notify-only in this release.
+`hub start`/`takeover` record host: codex-app only from the current app session.
+Terminal and legacy/unknown hosts remain notify-only, regardless of rollout source.
 
 The 0.160.0 scratch control proved that queue starts an idle app-server turn.
 A notLoaded reply is local to one server, not a global writer lock. Never use
 exec resume here. A failed API turn was persisted as task_complete, so R4 is
-Claude-only in 0.9.1; turn_aborted also describes user interruption.
+Claude-only; turn_aborted also describes user interruption.
 """
 from __future__ import annotations
 
