@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0 — 2026-10-07
+
 - **BREAKING: agent-hub is now Delamain.** New plugin id `delamain` (Claude Code `delamain@delamain`, Codex
   `delamain@delamain-codex`) in the repository `ilya-kozyrev/delamain`. The slash commands and skills are
   `/delamain:hub`, `/delamain:setup`, `/delamain:status`, `/delamain:handoff`, `/delamain:delegation` and
