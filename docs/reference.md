@@ -4,6 +4,12 @@ For a first stage, use [Getting started](getting-started.md). Agents: use the
 [task router](agents/README.md) and load the hub skill for operating instructions.
 Read only the section needed for the current task; each CLI’s `--help` owns its complete syntax.
 
+**Names that keep `agent-hub`.** The product is Delamain, but some identifiers keep the name `agent-hub` they had before the rename
+on purpose, so that existing stages, agents and configurations keep working: the `AGENT_HUB_*` environment variables,
+the project directory `.agent-hub/` (`config.json`, `lock-rules.json`, `local/`), the default hub home
+`~/agent-hub` (and the older `~/.claude/agent-hub`), the watchdog's `# agent-hub-watchdog` cron marker and its
+`io.agent-hub.watchdog.*` launchd labels. Other pages mention them as they are.
+
 ## How it works
 
 [Precise workflow sketch](assets/hub-workflow.svg) · [Pixel-art prompts and reference](assets/pixel-art-prompts.md).
@@ -720,6 +726,9 @@ match allows (each set on its own — see `AGENT_HUB_EFFORT_RULES` above). A rul
   {"when": {"effort": ["inherit", "max"]}, "decision": "deny",
    "reason": "Pin the effort: use delamain:worker-medium or worker-high ({subagent_type} at {effort})."}]}
 ```
+
+A rule written before the rename with the plugin's former prefix (`agent-hub:worker-high`, also as a glob such as `agent-hub:*`)
+applies to the same agent under the current plugin name (`delamain:worker-high`).
 
 The shorthand `{"AGENT_HUB_EFFORT_RULES": {"sonnet": "high|xhigh"}}` means "this model only at these efforts". The
 denial names the rule (`[AGENT_HUB_EFFORT_RULES rule 1]`); `delegation try --type <type> --model <model>` shows what

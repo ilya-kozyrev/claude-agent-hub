@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **BREAKING: agent-hub is now Delamain.** New plugin id `delamain` (Claude Code `delamain@delamain`, Codex
+  `delamain@delamain-codex`) in the repository `ilya-kozyrev/delamain`. The slash commands and skills are
+  `/delamain:hub`, `/delamain:setup`, `/delamain:status`, `/delamain:handoff`, `/delamain:delegation` and
+  `/delamain:agent-top`; the worker subagents are `delamain:worker-low`, `delamain:worker-medium`,
+  `delamain:worker-high` and `delamain:worker-xhigh`. The messages the tools print start with `delamain:` (stderr,
+  hook text, watchdog notifications and `watchdog notify-test`), and the markers they write are
+  `[delamain auto-handoff k/N]`, `[delamain watchdog]` and `# delamain: dispatcher`. The name comes from the AI that
+  runs the cab fleet in Cyberpunk 2077. `docs/a-day-with-agent-hub.md` is now `docs/a-day-with-delamain.md`.
+- **What did not change, so stages, agents and configurations keep working:** the `AGENT_HUB_*` environment variables,
+  the project directory `.agent-hub/` (`config.json`, `lock-rules.json`, `local/`), the default hub home `~/agent-hub`
+  (and the older `~/.claude/agent-hub`, `hub home migrate`), the command names in `bin/` (`hub`, `agent`, `agent-top`,
+  `tell`, …) and the watchdog's entries (the `# agent-hub-watchdog` cron marker and the `io.agent-hub.watchdog.*`
+  launchd labels, so an installed job is still found). Data and project configurations need nothing.
+- **The old forms are still read.** A successor started by the previous version keeps its chain
+  (`[agent-hub auto-handoff k/N]` counts as the marker), a personal dispatcher with `# agent-hub: dispatcher` is still
+  the plugin's own, `cache/*/agent-hub/*/bin` of a Claude or Codex install made before the rename is still recognised,
+  a subagent rule written with the prefix `agent-hub:` applies to the same agent under `delamain:`, and the dev copy of
+  the agent-top mod also answers `/agent-hub:agent-top`. Names you wrote by hand are not rewritten: personal settings,
+  CLAUDE.md or AGENTS.md instructions and aliases that name `agent-hub:worker-*` or `/agent-hub:hub` must be changed
+  to the new names, because the old names no longer resolve to an agent or a skill.
+- **Migration, Claude Code.** Existing installs move through the new `renames` map in `.claude-plugin/marketplace.json`
+  (`agent-hub` → `delamain`): the marketplace keeps the name it was registered under (`claude-agent-hub`), so there is
+  nothing to uninstall or add again. Update the marketplace (`/plugin marketplace update claude-agent-hub`, in a shell
+  `claude plugin marketplace update claude-agent-hub`; auto-update does it too), then run
+  `/plugin install delamain@claude-agent-hub` once (`claude plugin install delamain@claude-agent-hub`): a marketplace
+  added from a git repository reports the plugin as not cached until that install. Restart the sessions. The cache
+  folder becomes `~/.claude/plugins/cache/claude-agent-hub/delamain/<version>/`. A new install is
+  `/plugin marketplace add ilya-kozyrev/delamain` and `/plugin install delamain@delamain`.
+- **Migration, Codex.** Codex has no rename map: replace the plugin, between sessions (removing the old plugin deletes
+  its cache, and a Codex session still running on it loses its hooks). Remove the old plugin first, so the hooks do not
+  run twice: `codex plugin remove agent-hub@agent-hub-codex`, `codex plugin marketplace remove agent-hub-codex`; update
+  your checkout (`git -C /absolute/path/to/checkout pull`); then `codex plugin marketplace add /absolute/path/to/checkout`
+  and `codex plugin add delamain@delamain-codex`. Restart the Codex chat and review and trust the new plugin's hooks
+  ([Codex setup](docs/codex.md#install-in-codex)).
+
 ## 0.9.2 — 2026-10-07
 
 - **The watchdog no longer starts a copy of a hub it has just stopped, and its wake prompt no longer resets the

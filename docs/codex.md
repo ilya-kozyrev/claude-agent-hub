@@ -83,7 +83,9 @@ your terminal PATH/symlinks to that directory, then quit and restart the old mon
 
 For a version-resolving personal wrapper, search both `~/.claude/plugins/cache/*/delamain/*/bin` and
 `~/.codex/plugins/cache/*/delamain/*/bin` (honour `CLAUDE_CONFIG_DIR` / `CODEX_HOME` overrides). Compare the numeric
-version component, not the full path, and use the newest shared runtime. The runtime supports both engines;
+version component, not the full path, and use the newest shared runtime.
+A copy installed before the rename sits under the folder `agent-hub` instead of `delamain` until it is reinstalled:
+search that name too. The runtime supports both engines;
 choosing its installation directory does not choose the worker engine. Check the selected monitor with
 `<installed-plugin>/bin/agent-top --json --agent <role> --feed 10`, using the same hub home and stage as the UI.
 

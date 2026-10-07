@@ -50,6 +50,7 @@ are separate controls.
   plugin cache, the marketplace folder) is not reported. To keep a personal shim that dispatches into the plugin (say
   `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# delamain: dispatcher`
   among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
+  A shim written before the rename may keep its `# agent-hub: dispatcher` line: it is still recognised.
 - **Four skills.** `hub` (the workflow), `handoff`, `setup` (`delamain:setup`) and `delegation`; four pinned-effort
   Claude worker subagents. `/agent-top` is not a skill: in Claude Code the mod answers it (see [Monitoring agents](monitoring.md#agent-top-inside-claude-code-a-live-pane)).
   Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.

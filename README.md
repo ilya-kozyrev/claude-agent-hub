@@ -2,6 +2,8 @@
 
 Keep long-running coding work moving across chat sessions with Claude Code or Codex.
 
+The name comes from Delamain, the AI that runs the cab fleet in Cyberpunk 2077: one coordinator, a fleet of autonomous workers, each with its own character.
+
 **Ask your agent first:** [Should we install this? Agent guide →](docs/agents/README.md#assess-fit-before-installing)
 
 ## Is it for you?
