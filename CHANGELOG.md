@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.2 — 2026-10-07
+
 - **The watchdog no longer starts a copy of a hub it has just stopped, and its wake prompt no longer resets the
   autopilot's handoff chain.** A live probe on claude 2.1.289 showed that after `claude stop` a Remote Control session
   leaves `claude agents --json` about 1.7 s before its process has exited, and a resume in that window starts a copy
