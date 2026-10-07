@@ -57,7 +57,8 @@ LEVELS = range(0, 6)
 # `/agent-hub:hub take over stage …` (the command before the rename); the successor is a new session that has only this
 # plugin's `/delamain:hub`, and a model that gets an unknown slash command as plain text may refuse to follow it
 # (Haiku did, CLI 2.1.289).
-FORMER_PLUGIN = sr.LEGACY_PLUGIN_NAME
+FORMER_PLUGIN = sr.LEGACY_PLUGIN_NAME  # rename:transition
+# rename:transition
 FORMER_COMMAND_RE = re.compile(r"\s*/" + re.escape(FORMER_PLUGIN) + r":([A-Za-z0-9][A-Za-z0-9_-]*)(?=\s|\Z)")
 BUILTIN_LEVELS = {
     0: ("OFF", "Do everything yourself. No subagents (the Agent and Workflow tools are blocked by a hook) and no "
@@ -165,7 +166,7 @@ def prune() -> None:
                 pass
 
 
-def plugin_name() -> str:
+def plugin_name() -> str:  # rename:transition (only former_name_context uses it)
     """This plugin's name (the namespace of its skills), from its manifest."""
     for manifest in (".claude-plugin", ".codex-plugin"):
         try:
@@ -177,7 +178,7 @@ def plugin_name() -> str:
     return "delamain"
 
 
-def own_skills() -> set:
+def own_skills() -> set:  # rename:transition (only former_name_context uses it)
     """The names of this plugin's skills: the folders under skills/ that hold a SKILL.md (read, never a list to go stale)."""
     return {p.parent.name for p in (Path(PLUGIN_ROOT) / "skills").glob("*/SKILL.md")}
 
@@ -250,7 +251,8 @@ def main(argv: list) -> int:
                     if marker:
                         write(marker, str(level))
                     parts.append(f"Delegation level changed to {level}. " + policy(level))
-            if cmd == "prompt":  # independent of the dial: it is about the prompt, not about delegation
+            # rename:transition — independent of the dial: it is about the prompt, not about delegation
+            if cmd == "prompt":
                 note = former_name_context(data.get("prompt"))
                 if note:
                     parts.append(note)
