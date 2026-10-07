@@ -99,7 +99,7 @@ BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
 # repository must not set any of it; one job serves one hub home, so every tool sharing the home must agree.
 HUB_WIDE_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
                   "AGENT_HUB_WATCHDOG_BACKOFF_MAX", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
-                  "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD")
+                  "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD", "AGENT_HUB_SPAWN_HOLD_LOAD", "AGENT_HUB_SPAWN_HOLD")
 BOOL_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
               "AGENT_HUB_NOTIFY_LOCAL")
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and

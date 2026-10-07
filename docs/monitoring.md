@@ -74,6 +74,7 @@ can be woken.
 | R2 | An open owner question past its due time that has a default. | One journal line `[watchdog] @hub OVERDUE Q-… (due …) default: …` per question and due date; a new due date re-arms it. |
 | R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs. | Wakes the hub. |
 | R4 | A Claude hub whose last turn ended on an API error 15 min ago or more, and which is not busy. | Wakes the hub, whether or not anything waits. |
+| R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
@@ -121,6 +122,17 @@ that the background commands of the hub's last turn were stopped. It carries no 
 - **Dry run.** `watchdog run --dry-run [--stage S] [--json]` evaluates every rule and prints `[plan] …` lines, with
   ids shortened to 8 characters; it writes no journal line, no state, no marker, no `EXIT` and takes no lock, and sends
   no notification.
+
+### The load hold (R5)
+
+Off by default. With `AGENT_HUB_SPAWN_HOLD_LOAD` set (load per core, e.g. `1.5`), a tick whose 1-minute load average
+divided by the core count is above it writes `<state dir>/spawn-hold.json` (`since`, `load`, `cores`, `until` = now +
+two intervals) and refreshes it while the load stays high; it deletes the file once the load is below 80 % of the
+threshold, and also when the setting is unset. `agent spawn` reads the file (ignored once `until` has passed or when it
+cannot be read): by `AGENT_HUB_SPAWN_HOLD` it warns and goes on (`warn`, the default) or exits 1 (`refuse`), naming the
+load, the cores, the threshold and `--ignore-hold`, which passes. Resumes (`agent send`) are never held: they continue
+work that already exists. The job must be installed for the hold to be written; `watchdog run --dry-run` shows what a
+tick would do.
 
 ### What leaves the machine
 
