@@ -11,7 +11,8 @@ No matching rule = allow. `when` keys (all must match; a value is a glob or a li
 
     tool           Agent | Task | Workflow | agent-spawn
     level          the delegation level "0".."5", or "off" when the dial is off
-    subagent_type  the Agent call's subagent_type ("" when not given; plugin agents as "plugin:name")
+    subagent_type  the Agent call's subagent_type ("" when not given; plugin agents as "plugin:name"); a rule or a call
+                   that uses the plugin's former prefix means the same agent under the current plugin name
     defined        "true" when a definition file for subagent_type was found, else "false"
     model          the model the subagent runs on: the call's `model`, else the definition's `model:`, else
                    "inherit"; for agent spawn both the alias given and the id it maps to are tried
@@ -43,11 +44,27 @@ DECISIONS = ("allow", "deny")
 PLUGIN_ROOT = Path(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 
+LEGACY_PLUGIN_NAME = "agent-hub"  # rename:keep
+
+
 def plugin_name() -> str:
     try:
         return json.loads((PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["name"]
     except (OSError, ValueError, KeyError):
-        return "agent-hub"
+        return "delamain"
+
+
+def current_type(typ) -> str:
+    """A subagent type with the plugin prefix from before the rename (the old plugin name and a colon) turned into this
+    plugin's (`delamain:worker-high`); anything else as it is. A rule written for the old prefix, an agent called by
+    it and the definition lookup all go through here, so they mean the same agent."""
+    typ = str(typ)
+    prefix = LEGACY_PLUGIN_NAME + ":"
+    if typ.lower().startswith(prefix):
+        name = plugin_name()
+        if name != LEGACY_PLUGIN_NAME:
+            return name + ":" + typ[len(prefix):]
+    return typ
 
 
 def _warn(msg: str) -> None:
@@ -108,6 +125,7 @@ def agent_definition(name: str, cwd=None) -> Optional[dict]:
     ~/.claude/agents, then this plugin's agents/ (an unambiguous plugin agent may be called without its prefix)."""
     if not name or "/" in name or name.startswith("."):
         return None
+    name = current_type(name)
     if ":" in name:
         parts = name.split(":")
         return _find_in(plugin_agent_dirs(parts[0]), parts[-1])
@@ -174,6 +192,19 @@ def _match(value, pattern) -> bool:
     return any(fnmatch.fnmatchcase(str(v).lower(), str(p).lower()) for v in values for p in pats)
 
 
+def _rule_matches(rule: dict, call: dict) -> bool:
+    """Whether every `when` key of `rule` matches `call`. subagent_type is compared through current_type on both
+    sides: a rule for the plugin's former prefix applies to the same agent under the current name."""
+    for k, pattern in (rule.get("when") or {}).items():
+        value = call.get(k, "")
+        if k == "subagent_type":
+            value = [current_type(v) for v in value] if isinstance(value, list) else current_type(value)
+            pattern = [current_type(p) for p in pattern] if isinstance(pattern, list) else current_type(pattern)
+        if not _match(value, pattern):
+            return False
+    return True
+
+
 class _Fields(dict):
     def __missing__(self, key):
         return "{" + key + "}"
@@ -189,7 +220,7 @@ def evaluate(rules, call: dict, label: str = "rules"):
         _warn(f"{label} ignored: " + "; ".join(errs))
         return None
     for i, r in enumerate(rules):
-        if all(_match(call.get(k, ""), v) for k, v in (r.get("when") or {}).items()):
+        if _rule_matches(r, call):
             shown = {k: ("/".join(v) if isinstance(v, list) else v) or "-" for k, v in call.items()}
             reason = str(r.get("reason") or f"denied by {label} #{i}")
             try:

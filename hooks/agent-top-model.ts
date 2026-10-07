@@ -247,16 +247,19 @@ export function onceArgs(a: CommandArgs): string[] {
   return out
 }
 
-/** The dev copy of the mod is tested beside the installed Delamain, whose own mod then registers the plain name. */
+/**
+ * The dev copy of the mod is tested beside the installed plugin, whose own mod then registers the plain name. The
+ * installed plugin is `delamain`, or `agent-hub` (its name before the rename) until it is updated.
+ */
 const DEV_PLUGIN = 'agent-top-dev'
-const DEV_ALSO_ANSWERS = 'delamain:agent-top'
+const DEV_ALSO_ANSWERS = ['delamain:agent-top', 'agent-hub:agent-top'] // rename:keep
 
 /**
- * Whether `/command` is this module's: bare `agent-top`, `<this plugin>:agent-top`, and, in the dev copy only,
- * `delamain:agent-top`. Every other `<x>:agent-top` belongs to another plugin.
+ * Whether `/command` is this module's: bare `agent-top`, `<this plugin>:agent-top`, and, in the dev copy only, the
+ * installed plugin's qualified name (DEV_ALSO_ANSWERS). Every other `<x>:agent-top` belongs to another plugin.
  */
 export function isOwnCommand(command: string, pluginName: string): boolean {
-  return command === 'agent-top' || command === `${pluginName}:agent-top` || (pluginName === DEV_PLUGIN && command === DEV_ALSO_ANSWERS)
+  return command === 'agent-top' || command === `${pluginName}:agent-top` || (pluginName === DEV_PLUGIN && DEV_ALSO_ANSWERS.includes(command))
 }
 
 // ---------------------------------------------------------------- polling plan

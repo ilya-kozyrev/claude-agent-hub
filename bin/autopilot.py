@@ -21,7 +21,8 @@ sessions or choose their permission mode):
   AGENT_HUB_SUCCESSOR_TIMEOUT          seconds to wait for the successor's takeover line (default 600)
 Chain state: <hub home>/<stage>/auto-handoff.json — `chain` (automatic handoffs since the owner last spoke) and
 `pending` (the successor started last). `hub succeed` adds one; a takeover that is not the pending successor's, and a
-prompt in the hub's session without the marker "[delamain auto-handoff k/N]" (the owner spoke), reset it.
+prompt in the hub's session without the marker "[delamain auto-handoff k/N]" (the owner spoke; the marker with the
+former product name, written by an older version, counts as well), reset it.
 """
 from __future__ import annotations
 
@@ -49,9 +50,12 @@ import session_effort  # noqa: E402
 # wakes on, so the line stays readable in the journal and wakes nobody.
 SERVICE_TAG = "autopilot"
 # Delamain's own prompts in a hub's session (not the owner speaking): the successor's take-over prompt carries MARKER_RE
-# anywhere in the text, the watchdog's wake text starts with WATCHDOG_MARKER. The one list of them: `owner_spoke`.
-MARKER_RE = re.compile(r"\[delamain auto-handoff (\d+)/(\d+)\]")
-WATCHDOG_MARKER = "[delamain watchdog]"
+# anywhere in the text, the watchdog's wake text starts with one of WATCHDOG_MARKERS. The one list of them: `owner_spoke`.
+# Both the new and the former product name are read, so that a successor or a wake sent by an older version (its prompt
+# carries the marker with the former name) keeps its chain.
+MARKER_RE = re.compile(r"\[(?:delamain|agent-hub) auto-handoff (\d+)/(\d+)\]")  # rename:keep
+WATCHDOG_MARKER = "[delamain watchdog]"  # what `bin/watchdog` writes
+WATCHDOG_MARKERS = (WATCHDOG_MARKER, "[agent-hub watchdog]")  # rename:keep  (what owner_spoke reads)
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
 BG_ID_RE = re.compile(r"backgrounded\s*·\s*(\S+)")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -244,7 +248,7 @@ def owner_spoke(prompt) -> bool:
     notice (they start with an XML-like tag)."""
     text = prompt if isinstance(prompt, str) else ""
     head = text.lstrip()
-    return bool(text.strip()) and not MARKER_RE.search(text) and not head.startswith((WATCHDOG_MARKER, "<"))
+    return bool(text.strip()) and not MARKER_RE.search(text) and not head.startswith(WATCHDOG_MARKERS + ("<",))
 
 
 # ---------------------------------------------------------------- the hub's own model and mode

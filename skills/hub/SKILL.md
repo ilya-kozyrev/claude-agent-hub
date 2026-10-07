@@ -148,6 +148,7 @@ An automatic successor prompt carries `[delamain auto-handoff k/N]`: run its tak
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
 checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
 Questions go to `ask add` with a default; hand over again when the budget requires it.
+A successor started by a version before the rename carries `[agent-hub auto-handoff k/N]` instead: treat it the same.
 
 ## Waiting
 
@@ -185,6 +186,7 @@ HH:MM …`: run the digest `jwait` with `--since HH:MM`, handle what it shows, k
 woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
 you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
 "…" [--for 8h]`, and `watchdog quiet --stage <S> --clear` when you are back.
+A watchdog job installed before the rename sends the same wake starting `[agent-hub watchdog]`: treat it the same.
 
 ## Talking
 

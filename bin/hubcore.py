@@ -1140,6 +1140,13 @@ def plugin_tools() -> list:
 # A personal wrapper that dispatches into the plugin (a shim in ~/.local/bin that picks the newest installed `bin/`)
 # says so with this comment line near the top of its file; the shadow check then treats it as the plugin's own.
 DISPATCHER_MARKER = "# delamain: dispatcher"
+# Wrappers written before the product was renamed carry the old line; they stay recognised.
+LEGACY_DISPATCHER_MARKER = "# agent-hub: dispatcher"  # rename:keep
+DISPATCHER_MARKERS = (DISPATCHER_MARKER, LEGACY_DISPATCHER_MARKER)
+
+# Folder names of the plugin in an installed cache (`<marketplace>/<name>/<version>`): the current name first, then the
+# one a copy installed before the rename still has.
+PLUGIN_CACHE_NAMES = ("delamain", "agent-hub")  # rename:keep
 
 
 def plugin_version(bin_dir, engine=None) -> Optional[tuple]:
@@ -1177,7 +1184,7 @@ def plugin_runtime_line(engine=None) -> str:
     config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") if engine == "codex" else Path(
         os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     newer = []
-    for candidate in (config / "plugins" / "cache").glob("*/delamain/*/bin"):
+    for candidate in cached_plugin_bins(config / "plugins" / "cache"):
         if not candidate.is_dir():
             continue
         version = plugin_version(candidate, engine)
@@ -1201,10 +1208,17 @@ def review_helper_lines() -> int:
         return 300
 
 
+def cached_plugin_bins(cache: Path) -> list:
+    """The `bin/` directories of the plugin in a plugin cache: `<cache>/<marketplace>/<name>/<version>/bin` for each
+    name in PLUGIN_CACHE_NAMES, so a copy installed before the rename is found too."""
+    return [d for name in PLUGIN_CACHE_NAMES for d in cache.glob(f"*/{name}/*/bin")]
+
+
 def installed_plugin_bins() -> list:
     """Real paths of the installed Delamain plugin `bin/` directories that are not older than this plugin: the Claude
-    and Codex plugin caches (`<config>/plugins/cache/*/delamain/*/bin`) and a marketplace folder that is the plugin
-    itself (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
+    and Codex plugin caches (`<config>/plugins/cache/*/<name>/*/bin`, <name> from PLUGIN_CACHE_NAMES: the current plugin
+    name and the one before the rename) and a marketplace folder that is the plugin itself
+    (`<config>/plugins/marketplaces/*/bin` holding hubcore.py), of $CLAUDE_CONFIG_DIR / ~/.claude and
     $CODEX_HOME / ~/.codex. An older copy stays a shadow: it is the old tool on PATH the warning exists for (a version
     nobody can read counts as current)."""
     home = Path.home()
@@ -1213,7 +1227,7 @@ def installed_plugin_bins() -> list:
     for config in (Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"),
                    Path(os.environ.get("CODEX_HOME") or home / ".codex")):
         plugins = config / "plugins"
-        found = list(plugins.glob("cache/*/delamain/*/bin")) + [
+        found = cached_plugin_bins(plugins / "cache") + [
             d for d in plugins.glob("marketplaces/*/bin") if (d / "hubcore.py").is_file()]
         for d in found:
             version = plugin_version(d)
@@ -1223,20 +1237,21 @@ def installed_plugin_bins() -> list:
 
 
 def is_dispatcher(path) -> bool:
-    """Whether the file `path` (symlinks resolved) carries the DISPATCHER_MARKER line among its first lines."""
+    """Whether the file `path` (symlinks resolved) carries a DISPATCHER_MARKERS line (the current one or the one from
+    before the rename) among its first lines."""
     try:
         with open(os.path.realpath(path), "rb") as fh:
             head = fh.read(2048).decode("utf-8", "replace")
     except OSError:
         return False
-    return any(line.strip() == DISPATCHER_MARKER for line in head.splitlines()[:10])
+    return any(line.strip() in DISPATCHER_MARKERS for line in head.splitlines()[:10])
 
 
 def shadowed_tools(path=None) -> list:
     """[(tool, path found)] for each of the plugin's commands (plugin_tools) that PATH resolves to a file that is not
     the plugin's own (`command -v`: the first match on PATH). Ours: a file whose real path is in this bin/ (a symlink
     into it counts) or in an installed Delamain plugin's bin/ that is not older than this one
-    (installed_plugin_bins), or a personal dispatcher that carries the DISPATCHER_MARKER line (is_dispatcher)."""
+    (installed_plugin_bins), or a personal dispatcher that carries a DISPATCHER_MARKERS line (is_dispatcher)."""
     path = os.environ.get("PATH", "") if path is None else path
     out = []
     installed = None
