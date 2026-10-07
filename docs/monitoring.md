@@ -97,8 +97,9 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds
 that the background commands of the hub's last turn were stopped. It carries no line text. It starts with
-`[delamain watchdog]`, which the context-budget hook (both engines) recognises as Delamain's own prompt: it does not
-reset the autopilot's auto-handoff chain the way a prompt typed by the owner does.
+`[agent-hub watchdog]` (the name before the rename, still written for one release because a hub on an older plugin copy
+knows only that form; `[delamain watchdog]` is read the same), which the context-budget hook (both engines) recognises
+as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain the way a prompt typed by the owner does.
 
 ### Safety
 

@@ -86,8 +86,10 @@ check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
 call --bg argv | grep -q -- "--worktree"; check $? 1 "succeed: outside git no --worktree"
 call --bg prompt | grep -qF "/delamain:hub take over stage stage-a from $H: run \`$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
 check "$(call --bg AGENT_HUB_HOME)" "$R" "succeed: the hub home reaches the successor through its environment"
-call --bg prompt | grep -qF "[delamain auto-handoff 1/10]"; check $? 0 "succeed: prompt carries the marker 1/10"
-call --bg prompt | grep -qF "[agent-hub auto-handoff"; check $? 1 "rename: the prompt written now carries the new marker only, not the old one"  # rename:keep
+call --bg prompt | grep -qF "[agent-hub auto-handoff 1/10]"; check $? 0 "succeed: prompt carries the marker 1/10, written under the former name for one release (older hooks read only it)"  # rename:keep
+call --bg prompt | grep -qF "[delamain auto-handoff"; check $? 1 "rename: the prompt written now does not carry the new form of the marker yet"
+call --bg prompt | python3 -c 'import re,sys; sys.exit(0 if re.search(r"\[agent-hub auto-handoff (\d+)/(\d+)\]", sys.stdin.read()) else 1)'; check $? 0 "rename: the written marker matches the pattern an older hub's hook uses (so the chain survives there)"  # rename:keep
+call --bg prompt | grep -qF "/delamain:hub take over stage"; check $? 0 "rename: the successor's slash command is the new name (the successor is a new session)"
 check "$(call --bg CLAUDECODE):$(call --bg CLAUDE_CODE_ENTRYPOINT):$(call --bg HUB_TAG)" "None:None:None" "succeed: parent session identity and hub tag stripped from the child env"
 check "$(call auth count)" 1 "succeed: login checked first (claude auth status)"
 J | grep -q '\[hub-1\] auto-handoff 1/10: started "Hub stage-a #2" (opus, default) as background session bg-1234abcd — Remote Control https://claude.ai/code/session_01AbC-xyz; terminal: claude attach bg-1234abcd'; check $? 0 "succeed: journal line with bg id, Remote Control link (ANSI stripped) and attach command"
@@ -114,7 +116,7 @@ HUB_TAG=hub-1 $B/hub succeed --stage stage-a --fallback > $R/stale.out 2>&1; che
 # hub #2 hands over in turn: the marker counts on
 CLAUDE_CODE_SESSION_ID=$HUB2 succeed --model opus > $R/s2.out 2>&1; check $? 0 "second succeed (by the registered hub's session)"
 call --bg argv | grep -q -- "--remote-control stage-a-hub-3 -n Hub stage-a #3"; check $? 0 "…successor #3"
-call --bg prompt | grep -qF "[delamain auto-handoff 2/10]"; check $? 0 "…marker 2/10"
+call --bg prompt | grep -qF "[agent-hub auto-handoff 2/10]"; check $? 0 "…marker 2/10"  # rename:keep
 check "$(chain)" 2 "…chain 2"
 $B/hub takeover --stage stage-a --session self --dry-run > /dev/null 2>&1; check $? 2 "--session self without \$CLAUDE_CODE_SESSION_ID: usage error"
 # a takeover by hand resets the chain — even with the pending successor's own number (hub-3)
@@ -206,7 +208,7 @@ check "$(call --bg count):$(pending kind):$(pending role)" "1:headless:hub-2" "u
 J | grep -q "background successor not started — $MR is not trusted by the claude CLI — run \`claude\` there once and accept the trust prompt.*falling back to a headless hub"; check $? 0 "untrusted root: journal names the root, the fix and the fallback"
 check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "untrusted root: agent spawn registered hub-2"
 BR=$R/stage-a/coordinator/work/hub-2-takeover-brief.md
-grep -qF "$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[delamain auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"
+grep -qF "$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[agent-hub auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"  # rename:keep
 grep -q "agent send hub-2" $R/hl.out; check $? 0 "headless: tells how the owner reaches it"
 check "$(chain)" 1 "headless: counts in the chain"
 unset FAKE_BG
@@ -475,7 +477,7 @@ check "$rc:$(call stop count):$(grep -c '"argv": \["stop", "bg-1234a"\]' $FAKE_B
 check "$(call rm count)" none "…never removed (no claude rm)"
 check "$(call --bg count)" 2 "…and a new background successor is started"
 call --bg argv | grep -q -- "--remote-control stage-a-hub-2 -n Hub stage-a #2 "; check $? 0 "…with the same number (hub-2)"
-call --bg prompt | grep -qF "[delamain auto-handoff 1/10]" && call --bg prompt | grep -qF -- "--auto-handoff --handoff $H"; check $? 0 "…the same chain position (1/10) and the same --auto-handoff takeover command"
+call --bg prompt | grep -qF "[agent-hub auto-handoff 1/10]" && call --bg prompt | grep -qF -- "--auto-handoff --handoff $H"; check $? 0 "…the same chain position (1/10) and the same --auto-handoff takeover command"  # rename:keep
 check "$(chain):$(pending kind):$(pending taken_over):$(pending author)" "1:bg:None:$HUB1" "…chain still 1; a fresh pending record (not yet taken over), same author"
 J | grep -q '\[hub-1\] auto-handoff: replacing hub-2 (bg bg-1234abcd): stopped background session bg-1234abcd'; check $? 0 "…journaled"
 grep -q 'replaces the earlier hub-2' $R/rp2.out; check $? 0 "…and the journal line of the new successor says so"
@@ -594,7 +596,7 @@ AGENT_HUB_AUTO_HANDOFF=off cbh PreToolUse Agent '{"prompt":"go"}' | grep -q '"de
 # chain reset by an owner prompt
 echo '{"chain": 3, "pending": null}' > $R/stage-a/auto-handoff.json
 PROMPT='<task-notification>jwait exited</task-notification>' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: a harness notice is not the owner"
-PROMPT='/delamain:hub take over stage stage-a from /x. [delamain auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: the successor's own prompt (marker) keeps the chain"
+PROMPT='/delamain:hub take over stage stage-a from /x. [agent-hub auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "reset: the successor's own prompt as written now (new command, marker under the former name) keeps the chain"  # rename:keep
 PROMPT='/agent-hub:hub take over stage stage-a from /x. [agent-hub auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "rename: a successor started before the rename (old marker) keeps the chain"  # rename:keep
 PROMPT='[delamain auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 3 "rename: the new marker alone keeps the chain"
 PROMPT='/other:hub take over stage stage-a from /x. [other auto-handoff 3/10]' cbh UserPromptSubmit > /dev/null; check "$(chain)" 0 "rename, negative: a marker of another product is the owner speaking, the chain resets"

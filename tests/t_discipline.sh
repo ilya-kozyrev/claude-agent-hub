@@ -306,12 +306,40 @@ ss(){ echo "{\"session_id\":\"$1\"}" | python3 $HOOKS/delegation.py ${2:-session
 ss s1 > $R/d0.out; check "$(wc -c < $R/d0.out | tr -d ' ')" 0 "dial off (default): nothing injected"
 dden Agent general-purpose; check $? 1 "dial off, no rules: every Agent call passes"
 CLAUDE_CODE_SESSION_ID=s1 $B/delegation show | grep -q 'dial is off'; check $? 0 "show says the dial is off"
+# The plugin's former name: a successor started by an older hub gets `/agent-hub:<skill> …` as plain text (the harness
+# does not know that command). The hook adds a note, whether or not the dial is on. Names of the skills come from skills/.
+fp(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":sys.argv[2],"prompt":sys.argv[1]}))' "$1" "${2:-$R/proj}" | python3 $HOOKS/delegation.py prompt; }  # rename:keep
+SKILLS=$(cd "$T/../skills" && ls -d */ | tr -d /)
+echo "$SKILLS" | grep -qx hub && echo "$SKILLS" | grep -qx status; check $? 0 "former name: the skills folder lists the real skills the tests below walk through"
+for sk in $SKILLS; do
+  fp "/agent-hub:$sk take over stage x from /y: run it" > $R/fn.out  # rename:keep
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; sk=sys.argv[2]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "former name" in t and "/agent-hub:"+sk in t and "`delamain:"+sk+"`" in t and "rest of the prompt as its arguments" in t, t' $R/fn.out $sk  # rename:keep
+  check $? 0 "former name, dial off: /agent-hub:$sk names the skill delamain:$sk"  # rename:keep
+done
+fp "  /agent-hub:status list the stages" | grep -q 'delamain:status'; check $? 0 "former name: leading whitespace is allowed"  # rename:keep
+fp "/agent-hub:hub" | grep -q 'delamain:hub'; check $? 0 "former name: the bare command, no arguments"  # rename:keep
+for neg in "/foo:hub take over stage x" "/agent-hub:no-such-skill take over" "/delamain:hub take over stage x" "/agent-hub:hubx foo" "/agent-hub: hub" "please run /agent-hub:hub" "how is it going?" ""; do  # rename:keep
+  fp "$neg" > $R/fn2.out; check "$(wc -c < $R/fn2.out | tr -d ' ')" 0 "former name, negative: nothing for [$neg]"
+done
+echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/"}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a hook input with no prompt"
+echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":["/agent-hub:hub"]}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a prompt that is not a string"  # rename:keep
+fp "/agent-hub:hub take over" | python3 -c 'import json,sys; json.load(sys.stdin)'; check $? 0 "former name: the output is one JSON document"  # rename:keep
+# the skill names and the plugin's name are read from the plugin, not listed in the hook
+FAKE=$R/fakeplug; mkdir -p $FAKE/skills/alpha $FAKE/.claude-plugin; ln -s "$T/../bin" $FAKE/bin; : > $FAKE/skills/alpha/SKILL.md
+echo '{"name": "fakeplug"}' > $FAKE/.claude-plugin/plugin.json
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":sys.argv[1]}))' "/agent-hub:alpha go" | PLUGIN_ROOT=$FAKE python3 $HOOKS/delegation.py prompt | grep -q 'skill `fakeplug:alpha`'; check $? 0 "former name: skill and plugin names come from the plugin root (a skill added there is covered)"  # rename:keep
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":sys.argv[1]}))' "/agent-hub:hub go" | PLUGIN_ROOT=$FAKE python3 $HOOKS/delegation.py prompt > $R/fn4.out; check "$(wc -c < $R/fn4.out | tr -d ' ')" 0 "former name, negative: a skill the plugin root does not have gets nothing"  # rename:keep
+echo '{"name": "agent-hub"}' > $FAKE/.claude-plugin/plugin.json  # rename:keep
+python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":sys.argv[1]}))' "/agent-hub:alpha go" | PLUGIN_ROOT=$FAKE python3 $HOOKS/delegation.py prompt > $R/fn5.out; check "$(wc -c < $R/fn5.out | tr -d ' ')" 0 "former name, negative: a copy that still carries the former name has nothing to point to"  # rename:keep
 echo '{"AGENT_HUB_DELEGATION": true}' > $R/config.json
 ss s1 | grep -q 'Delegation level 3/5 (BALANCED)'; check $? 0 "dial on: level 3 by default, injected at session start"
 ss s1 prompt > $R/d1.out; check "$(wc -c < $R/d1.out | tr -d ' ')" 0 "prompt: no re-injection while the level is unchanged"
 ss s3 > /dev/null; $B/delegation set 1 --global > /dev/null; ss s3 prompt > $R/d2.out
 grep -q 'Delegation level changed to 1' $R/d2.out && ! ss s3 prompt | grep -q .; check $? 0 "prompt: re-injected once after the level changed elsewhere"
 rm $R/.state/delegation/level
+fp "/agent-hub:hub take over stage x" > $R/fn6.out; python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert t.startswith("Delegation level changed to 3. ") and t.rstrip().endswith("rest of the prompt as its arguments."), t; assert "`delamain:hub`" in t' $R/fn6.out; check $? 0 "former name, dial on: the note is appended to the level change in one injection"  # rename:keep
+fp "/agent-hub:hub take over stage x" > $R/fn7.out; python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["hookSpecificOutput"]["additionalContext"]; assert not t.startswith("Delegation level"), t; assert "`delamain:hub`" in t' $R/fn7.out; check $? 0 "former name, dial on: with the level unchanged only the note is injected"  # rename:keep
+fp "how is it going?" > $R/fn8.out; check "$(wc -c < $R/fn8.out | tr -d ' ')" 0 "former name, dial on: a plain prompt injects nothing"
 CLAUDE_CODE_SESSION_ID=s1 $B/delegation set 0 | grep -q 'Delegation level 0/5 (OFF)'; check $? 0 "set 0 for the session prints the new policy"
 ss s1 prompt > $R/d2b.out; check "$(wc -c < $R/d2b.out | tr -d ' ')" 0 "prompt: no re-injection of what set already printed"
 dden Agent general-purpose haiku; check $? 0 "level 0: Agent denied"

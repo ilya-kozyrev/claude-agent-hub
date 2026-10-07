@@ -144,11 +144,11 @@ after actual takeover; a clientThreadId is not a real session. Uncertain results
 hidden CLI fallback. On ALARM, tell the owner one line: request unconfirmed and the handoff path; the owner confirms
 the thread or takes over by hand, then stop. Native APIs cannot set Full Access. CLI replacement uses --surface cli.
 
-An automatic successor prompt carries `[delamain auto-handoff k/N]`: run its takeover command, then run the digest's
+An automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
+written for one release; `[delamain auto-handoff k/N]` means the same): run its takeover command, then run the digest's
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
 checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
 Questions go to `ask add` with a default; hand over again when the budget requires it.
-A successor started by a version before the rename carries `[agent-hub auto-handoff k/N]` instead: treat it the same.
 
 ## Waiting
 
@@ -181,12 +181,12 @@ Wake up — handle the block — start the next `jwait`. Journal waits and alarm
 
 **With the watchdog on** (the takeover digest says so; `docs/monitoring.md`): a hub that sleeps without a waiter is fine, the
 watchdog wakes it when lines addressed to it have waited 15 min — but keep one `jwait` anyway, it is the faster path. A
-wake arrives as a message that starts `[delamain watchdog] <stage>: N journal lines addressed to you have waited since
+wake arrives as a message that starts `[agent-hub watchdog]` (the name before the rename, still written for one
+release; `[delamain watchdog]` means the same), then `<stage>: N journal lines addressed to you have waited since
 HH:MM …`: run the digest `jwait` with `--since HH:MM`, handle what it shows, keep one waiter. An idle `claude --bg` hub is
 woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
 you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
 "…" [--for 8h]`, and `watchdog quiet --stage <S> --clear` when you are back.
-A watchdog job installed before the rename sends the same wake starting `[agent-hub watchdog]`: treat it the same.
 
 ## Talking
 

@@ -106,8 +106,9 @@ check "$(runs sd)" 1 "R3 detached: the hub has run once so far"
 check "$(tick)" 0 "R3 detached: tick exits 0"
 check "$(runs sd)" 2 "R3 detached: a line 16 min old, hub silent, no waiter → resumed once (agent send)"
 grep -q "\[watchdog\] woke hub-3 (agent send --stage sd hub-3, attempt 1): 1 lines waiting since" "$(J sd)"; check $? 0 "R3 detached: the record line names the transport"
-grep -q "\[cli\] @hub-3 (session resumed, pid [0-9]*) \[delamain watchdog\] sd: 1 journal lines addressed to you have waited since [0-9:]* and no jwait of yours is running\. Run your digest jwait with --since [0-9:]*, handle what it shows, and keep one waiter\. Stop these wake-ups: watchdog quiet --stage sd --reason" "$(J sd)"
+grep -q "\[cli\] @hub-3 (session resumed, pid [0-9]*) \[agent-hub watchdog\] sd: 1 journal lines addressed to you have waited since [0-9:]* and no jwait of yours is running\. Run your digest jwait with --since [0-9:]*, handle what it shows, and keep one waiter\. Stop these wake-ups: watchdog quiet --stage sd --reason" "$(J sd)"  # rename:keep: the wake prefix stays on the former name for one release
 check $? 0 "R3 detached: the hub got the wake text (digest jwait --since, one waiter, quiet)"
+grep -q "\[delamain watchdog\]" "$(J sd)"; check $? 1 "rename: the wake prefix written now is the former name, not the new form (a hub on an older plugin copy reads only it)"
 tick > /dev/null; check "$(runs sd)" 2 "R3 safety: a second tick in the same episode wakes no second time"
 
 # R3 detached negatives: nothing is resumed
@@ -205,12 +206,15 @@ import json, os, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 resume = [c for c in calls if "--resume" in c["argv"]][0]
 text = resume["argv"][-1]
-assert text.startswith("[delamain watchdog] sb1: 1 journal lines addressed to you have waited since"), text
+assert text.startswith("[agent-hub watchdog] sb1: 1 journal lines addressed to you have waited since"), text  # rename:keep: the former name for one release
 assert "Background commands of your last turn were stopped; re-arm what you need." in text, text
 assert resume["cwd"] == os.path.realpath(sys.argv[2]), resume["cwd"]
 sys.path.insert(0, sys.argv[3])
 import autopilot
 assert not autopilot.owner_spoke(text), "the wake text would reset the autopilot chain"
+assert text.startswith(autopilot.WATCHDOG_MARKER), "the writer and the reader share one definition of the prefix"
+assert not autopilot.owner_spoke(text.replace("[agent-hub watchdog]", "[delamain watchdog]", 1)), "the new form of the prefix is exempt too"  # rename:keep
+assert autopilot.owner_spoke("how is it going?"), "negative control: an ordinary owner prompt still resets the chain"
 assert autopilot.owner_spoke("is the watchdog [delamain watchdog] on?"), "positive control: a person's prompt still counts"
 PY
 check $? 0 "R3 claude-bg: the wake text names the stopped background commands; the resume runs in the hub's cwd; it is not read as the owner speaking (B)"

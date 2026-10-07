@@ -7,16 +7,26 @@
   `/delamain:hub`, `/delamain:setup`, `/delamain:status`, `/delamain:handoff`, `/delamain:delegation` and
   `/delamain:agent-top`; the worker subagents are `delamain:worker-low`, `delamain:worker-medium`,
   `delamain:worker-high` and `delamain:worker-xhigh`. The messages the tools print start with `delamain:` (stderr,
-  hook text, watchdog notifications and `watchdog notify-test`), and the markers they write are
-  `[delamain auto-handoff k/N]`, `[delamain watchdog]` and `# delamain: dispatcher`. The name comes from the AI that
-  runs the cab fleet in Cyberpunk 2077. `docs/a-day-with-agent-hub.md` is now `docs/a-day-with-delamain.md`.
+  hook text, watchdog notifications and `watchdog notify-test`), and the dispatcher marker they write is
+  `# delamain: dispatcher`. The name comes from the AI that runs the cab fleet in Cyberpunk 2077.
+  `docs/a-day-with-agent-hub.md` is now `docs/a-day-with-delamain.md`.
+- **Two markers are still written under the old name in this release.** The auto-handoff marker stays
+  `[agent-hub auto-handoff k/N]` and the watchdog wake prefix stays `[agent-hub watchdog]`: a hub that keeps running on
+  an older plugin copy after the update has the older hooks, which know only these forms (its autopilot hook would take a
+  successor's prompt for the owner speaking and reset the automatic-handoff chain). Both forms are read everywhere
+  (`[delamain auto-handoff k/N]` and `[delamain watchdog]` too); the switch to the new forms comes in a later release.
 - **What did not change, so stages, agents and configurations keep working:** the `AGENT_HUB_*` environment variables,
   the project directory `.agent-hub/` (`config.json`, `lock-rules.json`, `local/`), the default hub home `~/agent-hub`
   (and the older `~/.claude/agent-hub`, `hub home migrate`), the command names in `bin/` (`hub`, `agent`, `agent-top`,
   `tell`, …) and the watchdog's entries (the `# agent-hub-watchdog` cron marker and the `io.agent-hub.watchdog.*`
   launchd labels, so an installed job is still found). Data and project configurations need nothing.
 - **The old forms are still read.** A successor started by the previous version keeps its chain
-  (`[agent-hub auto-handoff k/N]` counts as the marker), a personal dispatcher with `# agent-hub: dispatcher` is still
+  (`[agent-hub auto-handoff k/N]` and `[delamain auto-handoff k/N]` both count as the marker), a successor that an older
+  hub started with the prompt `/agent-hub:hub take over stage …` still takes over (it is a new session that has only
+  `/delamain:hub`, and the model gets the unknown command as plain text: the prompt hook `hooks/delegation.py prompt`
+  adds a note that `/agent-hub:<skill>` is the former name of this plugin's skill `/delamain:<skill>`, to invoke it and
+  carry out the rest of the prompt as its arguments; any other prompt, including a different plugin's command or an
+  unknown skill, gets nothing), a personal dispatcher with `# agent-hub: dispatcher` is still
   the plugin's own, `cache/*/agent-hub/*/bin` of a Claude or Codex install made before the rename is still recognised,
   a subagent rule written with the prefix `agent-hub:` applies to the same agent under `delamain:`, and the dev copy of
   the agent-top mod also answers `/agent-hub:agent-top`. Names you wrote by hand are not rewritten: personal settings,

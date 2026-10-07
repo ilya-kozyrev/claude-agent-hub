@@ -559,7 +559,8 @@ worker subagents.
 
 ```text
  SessionStart ────────── delegation.py session-start   inject the delegation level's policy        (dial on)
- UserPromptSubmit ────┬─ delegation.py prompt          re-inject it after the level changed         (dial on)
+ UserPromptSubmit ────┬─ delegation.py prompt          re-inject it after the level changed         (dial on); point the
+                      │                                command used before the rename at its skill
                       └─ context_budget.py             warn once per step above the warn threshold
  PreToolUse  Bash ────── polling_guard.py              deny foreground wait loops, long sleeps,
                                                        self-matching pgrep -f, one-off CI status reads
@@ -574,7 +575,7 @@ worker subagents.
 |---|---|---|
 | `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`delamain:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and past the block threshold it is forced to. |
 | `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
-| `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. |
+| `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. Independent of the dial, its `prompt` hook helps a successor that an older hub started with the command used before the rename (`/agent-hub:hub take over stage …`): when a prompt starts with `/agent-hub:<skill>` and `<skill>` is one of this plugin's skills (read from `skills/`), it adds a note that this is the former name of `/delamain:<skill>`, to invoke that skill and take the rest of the prompt as its arguments; any other prompt gets nothing. |
 
 Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call.
 
@@ -595,7 +596,8 @@ hub:
    `--effort`, else `AGENT_HUB_SUCCESSOR_EFFORT`, else the effort the hub runs at now (`hub effort` shows it and where
    it was read). There is no default: when the hub's effort cannot be read, `hub succeed` exits 1 and starts nothing.
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
-   `/delamain:hub take over stage … [delamain auto-handoff k/N]`, journals its id, its Remote Control link and
+   `/delamain:hub take over stage … [agent-hub auto-handoff k/N]` (the marker keeps the name used before the rename for
+   one release: a hub on an older plugin copy reads only that form), journals its id, its Remote Control link and
    `claude attach <id>`, and prints a `jwait` for the successor's takeover line (`AGENT_HUB_SUCCESSOR_TIMEOUT`).
    The successor is a background Remote Control session, not a Claude Desktop session (see
    [where the owner finds it](#where-the-owner-finds-the-successor) below). It starts from the repository's main

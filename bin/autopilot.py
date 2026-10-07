@@ -21,8 +21,9 @@ sessions or choose their permission mode):
   AGENT_HUB_SUCCESSOR_TIMEOUT          seconds to wait for the successor's takeover line (default 600)
 Chain state: <hub home>/<stage>/auto-handoff.json — `chain` (automatic handoffs since the owner last spoke) and
 `pending` (the successor started last). `hub succeed` adds one; a takeover that is not the pending successor's, and a
-prompt in the hub's session without the marker "[delamain auto-handoff k/N]" (the owner spoke; the marker with the
-former product name, written by an older version, counts as well), reset it.
+prompt in the hub's session without the autopilot marker (the owner spoke), reset it. The marker is written as
+"[agent-hub auto-handoff k/N]", the form used before the rename, for one release: hubs on an older plugin copy read only
+that form. "[delamain auto-handoff k/N]" counts as well.
 """
 from __future__ import annotations
 
@@ -51,11 +52,24 @@ import session_effort  # noqa: E402
 SERVICE_TAG = "autopilot"
 # Delamain's own prompts in a hub's session (not the owner speaking): the successor's take-over prompt carries MARKER_RE
 # anywhere in the text, the watchdog's wake text starts with one of WATCHDOG_MARKERS. The one list of them: `owner_spoke`.
-# Both the new and the former product name are read, so that a successor or a wake sent by an older version (its prompt
-# carries the marker with the former name) keeps its chain.
+# Both the new and the former product name are read, so that a successor or a wake sent by an older version keeps its chain.
+# What is WRITTEN stays on the former name for one release: marker_text() and WATCHDOG_MARKER, which `bin/watchdog` uses.
 MARKER_RE = re.compile(r"\[(?:delamain|agent-hub) auto-handoff (\d+)/(\d+)\]")  # rename:keep
-WATCHDOG_MARKER = "[delamain watchdog]"  # what `bin/watchdog` writes
-WATCHDOG_MARKERS = (WATCHDOG_MARKER, "[agent-hub watchdog]")  # rename:keep  (what owner_spoke reads)
+# The watchdog's wake prefix, as written. It stays on the former name for one release (rename:keep) because a hub that
+# still runs an older plugin copy has the older UserPromptSubmit hook, which does not know the new form and would take
+# the wake for the owner speaking. WATCHDOG_MARKERS is what owner_spoke reads: both forms.
+WATCHDOG_MARKER = "[agent-hub watchdog]"  # rename:keep: the former name for one release, older hooks read only it
+WATCHDOG_MARKERS = (WATCHDOG_MARKER, "[delamain watchdog]")
+
+
+def marker_text(k, limit) -> str:
+    """The marker a successor's prompt ends with: the only thing that tells a hub's UserPromptSubmit hook that the prompt
+    is not the owner speaking. It stays on the former name for one release (rename:keep) because a hub that still runs
+    an older plugin copy has the older hook, which knows only that form and would reset the chain on the new one.
+    MARKER_RE reads both; the switch to the new form comes in a later release."""
+    return f"[agent-hub auto-handoff {k}/{limit}]"  # rename:keep: the former name for one release, older hooks read only it
+
+
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
 BG_ID_RE = re.compile(r"backgrounded\s*·\s*(\S+)")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -503,7 +517,7 @@ class Successor:
 
     @property
     def marker(self) -> str:
-        return f"[delamain auto-handoff {self.k}/{self.limit}]"
+        return marker_text(self.k, self.limit)
 
     def takeover_cmd(self) -> str:
         # no shell expansion (`--session self`, no AGENT_HUB_HOME= prefix: the session inherits the environment, E14,
@@ -1327,7 +1341,7 @@ Run the digest's first `jwait` once unconditionally to replay handover events; u
 its execution session and exit status. Then work the finite handoff queue to its completion/stop checks.
 Wait only while work or external events remain.
 When nothing remains, journal DONE and finish. Owner questions use `ask`; consult the register, not copied decisions.
-[delamain auto-handoff {k}/{limit}]
+{marker_text(k, limit)}
 '''
         args = {'title': hc.hub_title(stage, succ), 'prompt': prompt}
         if model:

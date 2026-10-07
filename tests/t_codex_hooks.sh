@@ -143,6 +143,16 @@ class CodexHooks(unittest.TestCase):
         self.assertIn('changed to 3', out['hookSpecificOutput']['additionalContext'])
         self.assertFalse(self.denied(self.hook('delegation.py', 'spawn_agent', {}, args=('pre-tool',))))
 
+    def test_former_slash_command_note_is_host_neutral(self):
+        # A prompt that starts with the former plugin's command gets a note naming this plugin's skill; it decides nothing.
+        out = self.hook('delegation.py', event='UserPromptSubmit', args=('prompt',), prompt='/agent-hub:hub take over stage x')  # rename:keep
+        note = out['hookSpecificOutput']['additionalContext']
+        self.assertIn('`delamain:hub`', note)
+        self.assertNotIn('Skill tool', note)
+        self.assertEqual(out['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
+        for prompt in ('how is it going?', '/delamain:hub take over', '/foo:hub take over', '/agent-hub:no-such-skill x'):  # rename:keep
+            self.assertFalse(self.hook('delegation.py', event='UserPromptSubmit', args=('prompt',), prompt=prompt), prompt)
+
     def test_codex_effort_rules_read_codex_roles(self):
         self.config(AGENT_HUB_EFFORT_RULES={'gpt-*': 'high'})
         self.assertTrue(self.denied(self.hook('delegation.py', 'spawn_agent', {'model': 'gpt-6-sol', 'reasoning_effort': 'low'}, args=('pre-tool',))))
