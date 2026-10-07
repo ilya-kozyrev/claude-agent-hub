@@ -103,8 +103,10 @@ Existing app hubs must run `hub takeover --session self` from the app once to re
 the supported `codex app-server proxy` and read-only `thread/read`; it does not start a daemon or load a thread.
 Missing CLI/queue support, failed queue or timeout has no resume fallback. The queue boundary was checked on CLI 0.160.0.
 
-R4 remains Claude-only: Codex's persisted `task_complete` does not identify an API failure, `turn_aborted` also
-describes user interruption, and an error notification can be recoverable. These events alone do not authorize a retry.
+R4 remains Claude-only. Codex can persist `task_complete.error` with `codex_error_info` (observed values include
+`usage_limit_exceeded`, `server_overloaded` and `other`), but it has no retry-eligibility field. CLI 0.160.0's app-server
+`ErrorNotification.willRetry` is a runtime notification, absent from these saved events. A bare `task_complete`
+does not establish failure, and `turn_aborted` also describes user interruption. These events alone do not authorize a retry.
 
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds

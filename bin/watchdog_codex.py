@@ -5,8 +5,9 @@ Terminal and legacy/unknown hosts remain notify-only, regardless of rollout sour
 
 The 0.160.0 scratch control proved that queue starts an idle app-server turn.
 A notLoaded reply is local to one server, not a global writer lock. Never use
-exec resume here. A failed API turn was persisted as task_complete, so R4 is
-Claude-only; turn_aborted also describes user interruption.
+exec resume here. A final task_complete.error can carry codex_error_info, but
+has no retry-eligibility field (ErrorNotification.willRetry is not persisted).
+R4 stays Claude-only; bare task_complete and turn_aborted do not establish an API failure.
 """
 from __future__ import annotations
 

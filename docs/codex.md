@@ -198,7 +198,8 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   with `codex queue` in its own UUID; terminal/unknown hosts and unavailable runtime notify only. Registration requires
   the current thread and both app markers described below, excluding detached workers; old records need an app-side
   `hub takeover --session self`. Detached hubs use `agent send`. Codex API-error recovery (R4) remains unavailable:
-  persisted completion/interruption events do not establish retry eligibility. See [host conditions](monitoring.md#which-host-is-woken-how).
+  persisted `task_complete.error.codex_error_info` distinguishes failure but does not establish retry eligibility;
+  bare completion/interruption events are insufficient. See [host conditions](monitoring.md#which-host-is-woken-how).
   The Claude Desktop scheduled nudge is
   deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 

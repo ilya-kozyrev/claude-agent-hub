@@ -175,11 +175,28 @@ assert result['ok'] and calls()[-1][2]==other
 assert wc.state('stage-a',{**rec,'cli_session_id':'invalid'},now)['busy'] is None
 print('PASS CLI session id takes precedence and invalid CLI id never falls back')
 # A new rollout is not a global lock, and error/aborted-looking records cannot trigger R4.
-for ending in ({'type':'turn_aborted','reason':'interrupted'}, {'type':'error','message':'API failed'}, {'type':'task_complete'}):
+endings=({'type':'turn_aborted','reason':'interrupted'}, {'type':'turn_aborted','reason':'user_interrupted'},
+         {'type':'error','message':'API failed'}, {'type':'task_complete'},
+         *({'type':'task_complete','error':{'message':'fixture','codex_error_info':code}}
+           for code in ('usage_limit_exceeded','server_overloaded','other')))
+for ending in endings:
  with p.open('a') as f:f.write(json.dumps({'type':'event_msg','payload':ending})+'\n')
  cr.INDEX.checked=None
  assert wc.state('stage-a',rec,now)['dead_turn'] is None
-print('PASS interrupted and API-error-looking rollout records never infer a Codex dead turn')
+print('PASS interrupted, user-aborted, completed and explicit errors without retry eligibility do not infer R4')
+# A real tick with no pending work never retries any of those endings, even for a registered idle app hub.
+command('hub','start','--stage','r4-control','--session','self','--goal','Check error recovery boundary')
+r4rec=hc.roles_load('r4-control')['roles']['hub'];r4rec['set_at']=(tick_now-timedelta(hours=2)).isoformat()
+hc.roles_save('r4-control',{'version':1,'roles':{'hub':r4rec},'retired':[]})
+hc.journal_path('r4-control',tick_now.date()).write_text('')
+for ending in endings:
+ p.write_text(json.dumps({'type':'session_meta','payload':{'id':sid,'source':'vscode'}})+'\n'+
+              json.dumps({'type':'event_msg','payload':ending,'timestamp':(tick_now-timedelta(hours=1)).isoformat()})+'\n')
+ os.utime(p,(stamp,stamp));before_calls=calls()
+ out=command('watchdog','run','--stage','r4-control',extra={'AGENT_HUB_WATCHDOG_NOW':tick_now.isoformat(),
+             'AGENT_HUB_WATCHDOG_API_ERROR':'on','AGENT_HUB_NOTIFY_LOCAL':'off'})
+ assert calls()==before_calls and 'R4' not in out,(ending,out,calls())
+print('PASS real R4 ticks never retry user interruption, ordinary completion or failures without eligibility')
 missing={**rec,'session':'cccccccc-3333-4333-8333-333333333333'}
 assert wc.state('stage-a',missing,now)['last_activity'] is None
 assert wc.state('stage-a',missing,now)['transport']=='notify'
