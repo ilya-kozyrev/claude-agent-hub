@@ -33,6 +33,7 @@ def main():
         home.mkdir()
         repo = directory / 'repo'
         repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True, capture_output=True)
         hub = directory / 'hub'
         hub.mkdir()
         roles = repo / '.codex/agents'
@@ -79,15 +80,24 @@ def main():
                                     'decision': 'deny', 'reason': 'fixture send denied'}]}})
         for effort in ('medium', 'high'):
             calls.append({'type': 'function_call', 'name': 'spawn_agent', 'namespace': 'collaboration',
-                          'arguments': json.dumps({'task_name': 'fixture_' + effort, 'message': 'fixture',
-                             'agent_type': 'worker-' + effort, 'model': 'gpt-6.1-sol', 'reasoning_effort': 'high'}),
+                          'arguments': json.dumps({'task_name': 'fixture_' + effort, 'message': 'fixture child',
+                             'fork_turns': 'none', 'agent_type': 'worker-' + effort, 'model': 'gpt-6.1-sol', 'reasoning_effort': 'high'}),
                           'policy': {'AGENT_HUB_DELEGATION': True, 'AGENT_HUB_DELEGATION_DEFAULT': 3,
                                      'AGENT_HUB_EFFORT_RULES': {'gpt-*': 'high'}}})
+        calls.extend([
+            {'type': 'function_call', 'name': 'wait_agent', 'namespace': 'collaboration',
+             'arguments': json.dumps({'timeout_ms': 10000})},
+            {'type': 'function_call', 'name': 'followup_task', 'namespace': 'collaboration',
+             'arguments': json.dumps({'target': 'fixture_high', 'message': 'fixture child followup'})},
+            {'type': 'function_call', 'name': 'wait_agent', 'namespace': 'collaboration',
+             'arguments': json.dumps({'timeout_ms': 10000})},
+        ])
         calls.append({'type': 'custom_tool_call', 'name': 'exec', 'namespace': 'functions',
                       'input': 'text(await tools.exec_command({cmd: "cat", tty: true, yield_time_ms: 1000}));'})
         # The session id for the cat command is extracted from the returned request.
         calls.append({'stdin_control': True})
         requests = []
+        child_requests = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -95,9 +105,13 @@ def main():
 
             def do_POST(self):
                 data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                child = bool(data.get('client_metadata', {}).get('x-openai-subagent'))
+                if child:
+                    child_requests.append(data)
                 index = len(requests)
-                requests.append(data)
-                if index < len(calls):
+                if not child:
+                    requests.append(data)
+                if not child and index < len(calls):
                     item = copy.deepcopy(calls[index])
                     policy = item.pop('policy', None)
                     if policy is not None:
@@ -135,9 +149,9 @@ def main():
         for event in ('PreToolUse', 'PostToolUse'):
             hooks[event].append({'matcher': '*', 'hooks': [{'type': 'command',
                 'command': f'python3 {shlex.quote(str(recorder))}', 'timeout': 5}]})
-        argv = [cli, 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json',
+        argv = [cli, 'exec', '--skip-git-repo-check', '--json',
                 '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
-                '-C', str(repo), '-m', 'gpt-6.1-sol', '--enable', 'hooks',
+                '-C', str(repo), '-c', 'projects.' + json.dumps(str(repo)) + '.trust_level="trusted"', '-m', 'gpt-6.1-sol', '--enable', 'hooks',
                 '-c', 'model_provider="fixture"', '-c', 'model_providers.fixture.name="Fixture"',
                 '-c', f'model_providers.fixture.base_url="http://127.0.0.1:{server.server_port}"',
                 '-c', 'model_providers.fixture.wire_api="responses"',
@@ -157,6 +171,7 @@ def main():
             evidence.mkdir(parents=True, exist_ok=True)
             shutil.copy(capture, evidence / 'hooks.jsonl')
             (evidence / 'requests.json').write_text(json.dumps(requests, indent=2))
+            (evidence / 'child-requests.json').write_text(json.dumps(child_requests, indent=2))
             (evidence / 'cli.jsonl').write_text(result.stdout)
             (evidence / 'cli.stderr').write_text(result.stderr)
         (directory / 'requests.json').write_text(json.dumps(requests))
@@ -176,7 +191,14 @@ def main():
         assert 'PreToolUse' not in final_outputs['control_7'], final_outputs
         assert 'fixture send denied' in final_outputs['control_8'], final_outputs
         assert 'PreToolUse' in final_outputs['control_9'], final_outputs
-        assert 'PreToolUse' not in final_outputs['control_10'], final_outputs
+        assert 'task_name' in final_outputs['control_10'], final_outputs
+        assert 'fixture_high' in final_outputs['control_10'], final_outputs
+        assert 'failed' not in final_outputs['control_10'].lower(), final_outputs
+        assert 'PreToolUse' not in final_outputs['control_12'], final_outputs
+        assert len(child_requests) == 2, len(child_requests)
+        assert all(r['reasoning']['effort'] == 'high' for r in child_requests), child_requests
+        assert len({r['client_metadata']['thread_id'] for r in child_requests}) == 1, child_requests
+        assert child_requests[0]['client_metadata']['thread_id'] != requests[0]['client_metadata']['thread_id']
         assert 'HARMLESS' in combined, combined
         records = [json.loads(line) for line in capture.read_text().splitlines()]
         pre = [r for r in records if r['hook_event_name'] == 'PreToolUse']
@@ -185,7 +207,7 @@ def main():
         assert 'write_stdin' not in names, names
         assert any(r['tool_name'] == 'Bash' and r['tool_input']['command'] == 'cat'
                    for r in records if r['hook_event_name'] == 'PostToolUse'), records
-        print('PASS real CLI declared manifest: nested shell/patch guards, native spawn/followup/send policy, TOML pinned effort, harmless message/stdin, deferred PostToolUse')
+        print('PASS real CLI declared manifest: nested shell/patch guards, native spawn/followup lifecycle and send policy, TOML pinned effort, harmless message/stdin, deferred PostToolUse')
         print('Observed PreToolUse names:', ', '.join(sorted(names)))
 
 

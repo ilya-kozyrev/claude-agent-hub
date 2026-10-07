@@ -166,7 +166,8 @@ Claude's `agents/worker-*.md` files remain Claude definitions. Codex uses standa
 `.codex/agents/` or `~/.codex/agents/`; the plugin manifest does not register them automatically.
 The setup skill offers four matching effort-pinned files under
 `skills/setup/resources/codex-agents/worker-*.toml`. Copy selected files into the project or personal agent directory
-without overwriting an existing definition. Their `model` is deliberately omitted: choose an available model at spawn.
+without overwriting an existing definition. Project definitions require a trusted project; verify that the native
+spawn tool exposes the installed roles before relying on them. Their `model` is deliberately omitted: choose an available model at spawn.
 See [native Codex subagent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 
 For detached executors, use `agent spawn --effort`; native TOML files govern in-session subagents, not that launcher.

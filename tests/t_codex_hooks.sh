@@ -273,7 +273,7 @@ class CodexHooks(unittest.TestCase):
             for tool in ('send_input', 'send_message', 'followup_task'):
                 outputs = self.manifest(prefix + tool, {'message': 'work'})
                 self.assertTrue(any(name == 'delegation.py' and self.denied(out) for name, out in outputs), prefix + tool)
-            for tool in ('update_plan', 'followup_task_extra', 'collaborationXfollowup_task', 'mcp__server__send_message'):
+            for tool in ('update_plan', 'followup_task_extra', 'collaborationXfollowup_task', 'collaborationspawn_agent_extra', 'mcp__server__send_message'):
                 outputs = self.manifest(tool, {})
                 self.assertFalse(any(name == 'delegation.py' for name, _ in outputs), tool)
                 self.assertFalse(any(self.denied(out) for _, out in outputs), tool)
