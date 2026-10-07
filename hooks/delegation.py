@@ -183,8 +183,8 @@ def own_skills() -> set:
 
 
 def former_name_context(prompt) -> str | None:
-    """A note for the model when the prompt starts with `/agent-hub:<skill>` and <skill> is one of this plugin's skills,
-    else None: the harness does not know the former slash command and hands it to the model as text. Any other prompt
+    """A note for the model when the prompt starts with `/agent-hub:<skill>` (the command before the rename) and <skill> is
+    one of this plugin's skills, else None: the harness does not know the former slash command and hands it to the model as text. Any other prompt
     (plain text, `/delamain:…`, another plugin's `/foo:hub`, an unknown skill) gets nothing. The text names no tool and
     decides nothing, so it is harmless where the former command never arrives (Codex)."""
     m = FORMER_COMMAND_RE.match(prompt) if isinstance(prompt, str) else None

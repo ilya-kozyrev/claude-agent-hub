@@ -306,7 +306,7 @@ ss(){ echo "{\"session_id\":\"$1\"}" | python3 $HOOKS/delegation.py ${2:-session
 ss s1 > $R/d0.out; check "$(wc -c < $R/d0.out | tr -d ' ')" 0 "dial off (default): nothing injected"
 dden Agent general-purpose; check $? 1 "dial off, no rules: every Agent call passes"
 CLAUDE_CODE_SESSION_ID=s1 $B/delegation show | grep -q 'dial is off'; check $? 0 "show says the dial is off"
-# The plugin's former name: a successor started by an older hub gets `/agent-hub:<skill> …` as plain text (the harness
+# The plugin's name before the rename: a successor started by an older hub gets `/agent-hub:<skill> …` as plain text (the harness
 # does not know that command). The hook adds a note, whether or not the dial is on. Names of the skills come from skills/.
 fp(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":sys.argv[2],"prompt":sys.argv[1]}))' "$1" "${2:-$R/proj}" | python3 $HOOKS/delegation.py prompt; }  # rename:keep
 SKILLS=$(cd "$T/../skills" && ls -d */ | tr -d /)
