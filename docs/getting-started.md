@@ -98,8 +98,8 @@ folder). An installation made with 0.6 or earlier keeps its files in the legacy 
 You do not need every tool on day one. One hub and a few agents need three: **`agent`** (spawn, status, send, stop),
 **`jlog`** and **`jwait`**. `roles`, `ask`, `lock`, `tell` (a line to another stage's hub), `hub takeover` and `hub handoff` start to matter when you have more
 than one interactive session, more than one shift, or a shared resource. The walkthrough below uses them in the order
-they come up; skip what you do not need yet. The night queue and the night nudge are optional modules for macOS with
-Claude Desktop and do not appear here.
+they come up; skip what you do not need yet. The night queue, the watchdog (`watchdog install`) and the send budget (macOS with
+Claude Desktop) are optional modules and do not appear here.
 
 A small change the hub may make itself; say "through agents" if you want otherwise. The hub does not ask you how to run
 the work (agents or not, worktrees, commits): it decides, says so in one line and records the decision.

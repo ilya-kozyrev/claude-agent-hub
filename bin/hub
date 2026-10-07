@@ -587,6 +587,36 @@ def wait_procedure() -> str:
     return "Claude: Bash `run_in_background: true`"
 
 
+def watchdog_digest(stage: str) -> str:
+    """What the watchdog does for this stage, for the takeover digest: an active do-not-wake marker, and that the job
+    is on. Empty when the watchdog is off and nothing is paused. Never fails the takeover."""
+    try:
+        wd = load_script("watchdog")
+        return "\n".join(x for x in (wd.marker_line(stage), wd.status_line(stage)) if x)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def session_host(stage: str, session: str, cli: str, kind: str, engine: str) -> str:
+    """Where this hub runs, for the watchdog's choice of how to wake it: `desktop`, `detached` (a headless hub started
+    by `agent spawn`), `bg` (a `claude --bg` session) or `term` (a terminal session); "" when it cannot be told, and for
+    Codex hubs (the watchdog tells their threads apart itself). The CLI's own session file says bg or terminal."""
+    if kind == "desktop":
+        return "desktop"
+    if engine == "codex":
+        return ""
+    if hc.detached(stage, {"session": session, "cli_session_id": cli}):
+        return "detached"
+    for path in (session_effort.claude_home() / "sessions").glob("*.json"):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and cli and rec.get("sessionId") == cli:
+            return {"bg": "bg", "background": "bg", "interactive": "term"}.get(str(rec.get("kind")), "")
+    return ""
+
+
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
            goal: str = "") -> str:
     tag = f"hub-{n}"
@@ -600,6 +630,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
+        (watchdog_digest(stage), 400, "watchdog status"),
         (f"First jwait ({wait_procedure()}; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
         (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,
@@ -1108,6 +1139,9 @@ def _cmd_takeover(a) -> int:
             with hc.roles_lock(stage):
                 data = hc.roles_load(stage)
                 data["roles"]["hub"]["engine"] = engines.selected()
+                host = session_host(stage, session, cli, kind, engines.selected())
+                if host:
+                    data["roles"]["hub"]["host"] = host  # the watchdog's way of waking it (bin/watchdog)
                 if request:
                     pend = autopilot.load_state(stage)["pending"]
                     data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],

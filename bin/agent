@@ -808,15 +808,14 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
         return None
 
 
-def observe_dead(stage: str, memo: dict | None = None) -> list:
-    """observe_death for every registered headless agent of the stage (jwait's poll). `memo` ({role: (pid, log
-    size)}) keeps a run that was looked at from being read again until its pid or log changes."""
-    memo = {} if memo is None else memo
+def _gone_agents(stage: str, memo: dict) -> list:
+    """[(role, meta, log stat)] of the stage's registered agents whose process is gone and whose (pid, log size) the memo has
+    not looked at yet: the scan that observe_dead and dead_candidates share."""
     base = hc.root() / stage / "agents"
     if not base.is_dir():
         return []
     registered = hc.roles_load(stage)["roles"]
-    lines = []
+    out = []
     for mp in sorted(base.glob("*/meta.json")):
         role = mp.parent.name
         if role not in registered:
@@ -829,6 +828,16 @@ def observe_dead(stage: str, memo: dict | None = None) -> list:
             continue
         if not isinstance(meta, dict) or not process_gone(meta) or memo.get(role) == (meta.get("pid"), st.st_size):
             continue
+        out.append((role, meta, st))
+    return out
+
+
+def observe_dead(stage: str, memo: dict | None = None) -> list:
+    """observe_death for every registered headless agent of the stage (jwait's poll). `memo` ({role: (pid, log
+    size)}) keeps a run that was looked at from being read again until its pid or log changes."""
+    memo = {} if memo is None else memo
+    lines = []
+    for role, meta, st in _gone_agents(stage, memo):
         line = observe_death(stage, meta, hc.dt.datetime.fromtimestamp(st.st_mtime, hc.TZ))
         if line is BUSY:
             continue  # looked at again on the next poll
@@ -836,6 +845,22 @@ def observe_dead(stage: str, memo: dict | None = None) -> list:
         if line:
             lines.append(line)
     return lines
+
+
+def dead_candidates(stage: str) -> list:
+    """[(meta, log mtime)] of the agents observe_dead would journal as `EXIT … killed (no result)` right now, and
+    nothing else: the same process, recency and result checks, but no lock, no claim and no write (`watchdog run
+    --dry-run` lists them)."""
+    out = []
+    for _, meta, st in _gone_agents(stage, {}):
+        mtime = hc.dt.datetime.fromtimestamp(st.st_mtime, hc.TZ)
+        if hc.now().timestamp() - mtime.timestamp() > OBSERVE_WINDOW_S:
+            continue
+        info = read_log(Path(meta["dir"]) / "log.jsonl")
+        if (info["result"] and not info["running_after_result"]) or exit_marker(stage, meta).exists():
+            continue
+        out.append((meta, mtime))
+    return out
 
 
 def status_line(stage: str, role: str) -> str:

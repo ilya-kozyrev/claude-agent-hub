@@ -65,12 +65,13 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#mi
    ask done Q-A-001 --evidence "flag flipped in PR 43"
    ```
 
-9. **Evening, optional (macOS + Claude Desktop): leave work for the night** in `payments/night-queue.md`
+9. **Evening, optional: leave work for the night** in `payments/night-queue.md`
    (`templates/night-queue-template.md`), each line with a stop condition and a permission class, then check it:
    ```bash
    nightq check --stage payments
    ```
-   Skip this step unless you run the hub overnight on a Mac with Claude Desktop.
+   Skip this step unless you run the hub overnight. With `watchdog install` a silent hub that can be woken is woken for
+   open items inside `AGENT_HUB_NIGHT`; otherwise you get a notification.
 
 10. **Hand over.** The context is getting long; write the handoff and stop.
     ```bash

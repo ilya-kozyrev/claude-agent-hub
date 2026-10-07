@@ -22,6 +22,7 @@ two directories above `skills/hub/SKILL.md`. The same files are readable on GitH
    | Terminal monitor for both engines | macOS or Linux; Python 3.10+ for Claude, 3.11+ for Codex; CLI on PATH | [Monitoring](../monitoring.md), [Codex](../codex.md) |
    | Claude Code pane | Claude Code 2.1.287+ with mods; unavailable in Codex and the other views listed in its guide | [Pane support](../monitoring.md#agent-top-inside-claude-code-a-live-pane) |
    | Automatic hub succession | Opt-in; selected CLI authenticated and trusted; engine-specific successor and access settings | [Autopilot](../reference.md#autopilot-the-hub-hands-over-by-itself), [Codex differences](../codex.md#coordination-and-platform-differences) |
+   | Watchdog: wakes a sleeping hub, notifies the owner, writes `EXIT` for dead agents | Opt-in (`watchdog install`); launchd on macOS or cron elsewhere; headless and idle `claude --bg` hubs are woken, Desktop, terminal and Codex hubs only notified; never starts a successor | [Watchdog](../monitoring.md#watchdog-a-hub-that-sleeps-is-woken), [Settings](../reference.md#configuration) |
 
    Windows is unsupported; WSL is untested. Brief turn limits are instructions, not enforced budgets.
    Done when every capability the user needs has its prerequisites satisfied or a named missing prerequisite.

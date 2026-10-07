@@ -15,16 +15,7 @@ import subagents
 
 def detached(stage: str, rec: dict):
     """Find a current Codex worker by registered identity, including a worker promoted to hub."""
-    ids = {x for x in (rec.get("session"), rec.get("cli_session_id")) if x}
-    for path in (hc.root() / stage / "agents").glob("*/meta.json"):
-        try:
-            meta = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if (isinstance(meta, dict) and meta.get("engine") == "codex" and meta.get("session_id") in ids
-                and meta.get("role") == path.parent.name):
-            return meta
-    return None
+    return hc.detached(stage, rec, engine="codex")
 
 
 def runtime_status(sid: str, cwd=None):

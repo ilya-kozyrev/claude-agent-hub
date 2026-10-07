@@ -6,6 +6,28 @@
 - **Codex handoffs resolve `--session self`, and runtime versions identify the tools actually in use.** Handoff drafts use the wait procedure printed in the takeover digest, which follows the reader's host; status and takeover warn about a newer cache for that engine. Reviewers use no judgement-helper team below the configurable 300 changed-line threshold; bounded extraction stays available. Controls: `tests/t_codex_parity.sh` (both hosts, fake caches, registry identity and threshold layers).
 - **Codex Desktop autopilot prepares a native successor in the same saved project and verifies its actual takeover.** Request, bind and failure commands preserve retries without an invisible CLI fallback; console hubs keep detached CLI successors. Native APIs cannot set sandbox/approval policy. Current effort, goal titles, replacement rules and completed-handoff checks are retained. Replacement checks precede stopping; late CLI results cannot alter another reservation. Desktop transitions journal their state, takeover hooks run outside the autopilot mutex, and successors replay the first digest waiter before conditional waiting. Controls: `tests/t_codex_desktop_autopilot.sh`, `tests/t_codex_autopilot.sh`, `tests/t_autopilot.sh`, `tests/t_pr20_reservations.sh`, `tests/t_pr20_takeover_wait.sh`.
 - **The hub agrees a Business DoD before autonomous work and preserves it across handoffs.** Clear requests supply the agreed result and plan authorization; questions address ambiguity that changes that result. Standing permissions and explicit plan approvals still apply. Briefs, handoffs and night queues inherit the result; technical checks remain the executor's responsibility. Controls: `tests/t_hub.sh`, `tests/t_ask_nightq.sh`, `tests/t_codex_agent.sh`.
+- **A hub that sleeps while lines wait for it is woken by a new `watchdog` job, and night support no longer needs Claude
+  Desktop.** `watchdog install` sets up a job every 5 minutes (launchd on macOS, cron elsewhere; no daemon, no model) that
+  does four things per stage: writes `EXIT <role>: killed (no result)` for an agent whose process is gone (R1), journals
+  one `[watchdog] @hub OVERDUE Q-…` line for an open question past its due time that has a default (R2), wakes a hub that
+  is silent for 15 minutes while lines addressed to it have waited that long, or an open night-queue item has inside
+  `AGENT_HUB_NIGHT`, and no `jwait` of its own runs (R3), and wakes a Claude hub whose last turn ended on an API error (R4); a live `jwait` of the hub holds both back.
+  A headless hub gets `agent send`; an idle `claude --bg` hub gets `claude stop` and `claude --bg --resume <same id>` with
+  no other flag (a live probe on claude 2.1.289: any flag, or a session still listed, makes the CLI start a copy, the watchdog stops only the copy the CLI itself names, checks that it left `claude agents` and otherwise tells the owner; a session that merely appears is never stopped); a Desktop, a terminal or a not-background Claude hub only gets a notification, and a
+  Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). It never starts a successor, honours `watchdog quiet --stage S
+  --reason "…" [--for 8h]` (`<stage>/do-not-wake.json`), wakes once per episode with a backoff of 15, 30, 60, 120, 240
+  minutes, skips a stage with a pending handoff, runs one tick at a time and has `watchdog run --dry-run`. A notification
+  (local, and `AGENT_HUB_NOTIFY_CMD` for a phone push) carries only the stage name, minutes, counts and an event word. New
+  hub-wide settings: `AGENT_HUB_WATCHDOG`, `_EVERY`, `_WAKE_AFTER`, `_BACKOFF_MAX`, `_NIGHT_QUEUE`, `_API_ERROR`,
+  `AGENT_HUB_NOTIFY_LOCAL`, `AGENT_HUB_NOTIFY_CMD`; setup asks about it as question 9. Supporting changes: `jwait
+  --journal` writes `.jwait-state/<stage>/<caller>.armed.json` while it waits, `hub takeover` records `host:` in the hub's
+  `roles.json` record and prints the watchdog line in its digest, and `agent.dead_candidates` lists what `observe_dead`
+  would write without writing it. The Desktop night-nudge task (`templates/night-nudge-task.md`) is deprecated; the docs
+  no longer call night support macOS-and-Desktop only. **Release note:** update both engines (the Claude and the Codex
+  plugin copies) and run `watchdog install` again after every plugin update, because the job points at the plugin version
+  that was installed (`watchdog status` says so); an owner of the Desktop night-nudge task may delete it. Tests:
+  `tests/t_watchdog.sh`, `tests/t_watchdog_install.sh`.
+
 - **One digest for the owner across all stages: `ask inbox`.** In the morning the owner asked four hubs one by one for
   status and read about ten minutes of long replies before the first decision. `ask inbox [--since T] [--stage S …]
   [--json] [--if-quiet]` reads every stage's register, journal and agents and prints, outcome first and under 2 000

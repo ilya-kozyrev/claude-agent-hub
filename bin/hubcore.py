@@ -95,11 +95,19 @@ HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGE
                   "AGENT_HUB_SUCCESSOR_EFFORT", "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
 HUB_WIDE_KEYS += ("AGENT_HUB_SUCCESSOR_ENGINE",)
 BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
+# Watchdog (bin/watchdog): hub home only. It starts commands (a notification channel, a resume of a hub), so a cloned
+# repository must not set any of it; one job serves one hub home, so every tool sharing the home must agree.
+HUB_WIDE_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
+                  "AGENT_HUB_WATCHDOG_BACKOFF_MAX", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
+                  "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD")
+BOOL_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
+              "AGENT_HUB_NOTIFY_LOCAL")
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
              "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
-JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_HUB_REASON_MODELS")
+JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_HUB_REASON_MODELS",
+              "AGENT_HUB_NOTIFY_CMD")
 # Classes of action a standing permission covers only when it names them (bin/ask; {"class": ["stem", …]}). Hub home
 # only: a cloned repository must not loosen what needs the owner's explicit word.
 HUB_WIDE_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
@@ -1509,6 +1517,21 @@ def roles_load(stage: str) -> dict:
 # The hub's number in its roles tag: "hub-26", a legacy "хаб-25" (hubs registered by hand before the plugin), any tag
 # that ends in "-<n>".
 HUB_NUMBER_RE = re.compile(r".+-(\d+)")
+
+
+def detached(stage: str, rec: dict, engine: Optional[str] = None):
+    """The `agent` meta of the headless run that is this registry record's session (a hub started by `agent spawn`,
+    including a worker promoted to hub), else None. `engine` limits it to one engine ("codex"); the default is any."""
+    ids = {x for x in (rec.get("session"), rec.get("cli_session_id")) if x}
+    for path in (root() / stage / "agents").glob("*/meta.json"):
+        try:
+            meta = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if (isinstance(meta, dict) and (engine is None or meta.get("engine") == engine)
+                and meta.get("session_id") in ids and meta.get("role") == path.parent.name):
+            return meta
+    return None
 
 
 def hub_number(tag) -> Optional[int]:

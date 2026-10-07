@@ -59,3 +59,106 @@ Desktop Code tab:
   `claude --bg` views, Claude Code older than 2.1.287. Use the console in a shell: `agent-top` (live), `agent-top --once`
   (text picture), `agent-top --json` (scripts). If `bin/agent-top` is missing the mod goes quiet instead of failing.
 
+
+## Watchdog: a hub that sleeps is woken
+
+`watchdog` is a job that looks at every stage of the hub home every 5 minutes and acts when something waits and nobody
+is looking. One run (a *tick*) reads, acts and exits: no daemon, no model call. It is off until `watchdog install`
+(launchd on macOS, cron elsewhere; [setup](../skills/setup/SKILL.md) question 9 offers it). It also replaces the Claude
+Desktop night nudge: open night-queue items inside `AGENT_HUB_NIGHT` count as waiting work, for every engine and host that
+can be woken.
+
+| Rule | Looks at | Does |
+|---|---|---|
+| R1 | An agent whose process is gone without a result. | The existing line `EXIT <role>: killed (no result)`, written once. |
+| R2 | An open owner question past its due time that has a default. | One journal line `[watchdog] @hub OVERDUE Q-… (due …) default: …` per question and due date; a new due date re-arms it. |
+| R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs. | Wakes the hub. |
+| R4 | A Claude hub whose last turn ended on an API error 15 min ago or more, and which is not busy. | Wakes the hub, whether or not anything waits. |
+
+"Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
+that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
+the hub took over. "No `jwait` of its own" is the file `.jwait-state/<stage>/<caller>.armed.json`, which `jwait --journal` writes
+while it waits; a file whose process is gone is ignored and deleted. When a live waiter exists but lines still wait, the
+watchdog does not wake: it writes one journal line (no status word, no `@`) saying that the waiter does not match them.
+The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no status word and no `@`, so they never count as waiting; the R2 line is addressed to the hub on purpose and does. Times are `AGENT_HUB_WATCHDOG_WAKE_AFTER` (15m).
+
+### Which host is woken how
+
+| Hub host | What the watchdog does |
+|---|---|
+| Headless hub (an agent of `agent spawn`) | `agent send --stage S <role> "<text>"` (resumes the same session). |
+| `claude --bg` hub, idle | `claude stop <id>`, then `claude --bg --resume <full id> "<text>"`: the same session id, with no other flag. |
+| `claude --bg` hub that is no longer listed | The same resume, when the hub was started in the background (`host: bg` in its `roles.json` record, else the pending record of `hub succeed` that started it) and the daemon still holds the session's saved options. |
+| `claude --bg` hub that is busy | Nothing: it is not silent. |
+| Desktop, terminal, a Claude session not started in the background, a Claude hub whose busy state cannot be read | A notification only. |
+| Codex hub | A notification only in this release (the queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). |
+
+The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
+`--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds
+that the background commands of the hub's last turn were stopped. It carries no line text.
+
+### Safety
+
+- **Never a successor.** The watchdog runs `agent send`, `claude stop` and `claude --bg --resume` of the hub's own
+  session id. It never runs `hub succeed`, `agent spawn` or a `claude --bg` without `--resume`. Right before a resume it
+  reads `claude agents --json` again; if the hub is listed busy it does not wake it, and if the CLI starts a copy of the
+  session anyway, it stops the copy, counts the wake as failed and notifies.
+- **Do-not-wake marker.** `watchdog quiet --stage S --reason "…" [--for 8h | --until HH:MM|ISO]` writes
+  `<stage>/do-not-wake.json` (who, when, until, reason); `watchdog quiet --stage S --clear` removes it; `watchdog quiet`
+  alone lists every stage's marker. A marked stage gets no R3/R4 wake and no notification; R1 and R2 still write. An
+  expired marker is removed by the next tick. The `hub takeover` digest shows an active marker.
+- **One wake per episode.** An episode starts when the hub needs waking and ends when it shows activity after the last
+  action, or nothing waits any more. The first wake is at once; later attempts wait 15, 30, 60, 120, 240 minutes
+  (`AGENT_HUB_WATCHDOG_WAKE_AFTER` doubled each time, up to `AGENT_HUB_WATCHDOG_BACKOFF_MAX`, 4h); notifications follow
+  the same schedule. A wake after which the hub shows no activity for 5 minutes counts as failed: a journal line, a
+  notification `wake failed`. A failed wake has no other fallback and no successor.
+- **A pending handoff.** A stage whose `auto-handoff.json` has a pending successor that has not taken over is skipped.
+  When that record is older than `AGENT_HUB_SUCCESSOR_TIMEOUT` plus the wake time, the owner is notified once
+  (`handoff stuck`) and nothing is started.
+- **A replaced hub starts clean:** the state is keyed by the hub's session id.
+- **One tick at a time:** a non-blocking lock on `<state dir>/watchdog/lock`; a second tick prints "another tick is
+  running" and exits 0.
+- **Dry run.** `watchdog run --dry-run [--stage S] [--json]` evaluates every rule and prints `[plan] …` lines, with
+  ids shortened to 8 characters; it writes no journal line, no state, no marker, no `EXIT` and takes no lock, and sends
+  no notification.
+
+### What leaves the machine
+
+A notification carries the stage name, minutes, counts and an event word, for example `agent-hub: payments — hub silent 47
+min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`. Never line text,
+question text, session ids, tags or paths. Channels: the local one (macOS `osascript`, elsewhere `notify-send` when
+present; `AGENT_HUB_NOTIFY_LOCAL`, on by default) and a remote one you configure, `AGENT_HUB_NOTIFY_CMD`, a JSON argv
+in the hub home's `config.json` in which `{message}` is replaced and which runs without a shell:
+
+```json
+{ "AGENT_HUB_NOTIFY_CMD": ["curl", "-fsS", "-d", "{message}", "https://ntfy.sh/<topic>"] }
+```
+
+`watchdog notify-test` sends `agent-hub: test notification` through every channel and exits 1 when none exists or one fails.
+
+### Install, status, uninstall
+
+```bash
+watchdog install [--scheduler launchd|cron]     # the job, and AGENT_HUB_WATCHDOG on in the hub home's config.json
+watchdog status                                 # job, last tick, each stage's episode, markers, channels
+watchdog run --dry-run                          # what a tick would do now
+watchdog uninstall [--scheduler launchd|cron]   # removes the job and sets AGENT_HUB_WATCHDOG off
+```
+
+The job is `<state dir>/watchdog/run.sh`, which execs the plugin's `bin/watchdog run` with the hub home and the PATH
+recorded at install time, and one launchd job `io.agent-hub.watchdog.<8 hex of the hub home's path hash>` (a plist in
+`~/Library/LaunchAgents`) or one crontab line marked `# agent-hub-watchdog <hub home>`; several hub homes have one job each.
+The shim records the plugin version that was installed, so **run `watchdog install` again after every plugin update**
+(`watchdog status` says "install again" when the job points elsewhere). A change of `AGENT_HUB_WATCHDOG_EVERY` needs the
+same. Files, all under `<state dir>/watchdog/` (`<hub home>/.state`, or `$AGENT_HUB_STATE_DIR`): `state.json`, `lock`,
+`log.md` (one line per action, trimmed at 1 MB), `run.sh`, `job.log`. Settings:
+[reference](reference.md#configuration).
+
+### The probe: why the wake argv is what it is
+
+A live probe on claude 2.1.289 (2026-10-07, a scratch `--bg` session) settled how a background session is woken. A
+`--bg` session keeps its own saved options (model, effort, permission mode, remote control). `claude --bg --resume <id>
+"<text>"` with the session not listed continued the same id and took the text as the prompt. The same command with any
+flag (`--model` was tried) started a copy, and so did the same command while the session was listed idle. Hence the
+order, stop the idle session, then resume it with no other flag, and the watchdog's check that nothing listed is
+running and that no copy appeared.
