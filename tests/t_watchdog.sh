@@ -332,7 +332,7 @@ json.dump(d, open(sys.argv[1], "w"))
 PY
 A1T 20; check "$(resumed)" 1 "A1 r1: a live pid with another start time is another process → the resume is tried"
 kill $LP; wait $LP 2>/dev/null; LP=
-# a stopped row without a pid: no resume (no blind pause); the next tick resumes the then unlisted hub
+# a listed idle row without a pid: a stop's release cannot be told, so the hub is not stopped at all
 B29=$(U 29); mk_bhub sbnopid $B29; FX jline sbnopid 20 "[exec-1] DONE a line is waiting"
 FX rows "$FAKE_WD_ROWS" ${B29:0:8} $B29 background idle "$CWD" 0
 python3 - "$FAKE_WD_ROWS" <<'PY'                                          # listed as running only by its status: no pid, state not done
@@ -342,10 +342,26 @@ for r in rows:
     r["state"] = "working"
 json.dump(rows, open(sys.argv[1], "w"))
 PY
-reset_log; A1_T0=$(date +%s); A1T 0
-check "$(stopped):$(resumed)" "1:0" "A1 r1: a row without a pid → stopped, but not resumed in this tick"
-grep -q "the stopped row has no pid" "$(J sbnopid)"; check $? 0 "A1 r1: …the journal says why"
-A1T 20; check "$(resumed)" 1 "A1 r1: …the next tick resumes the unlisted hub"
+reset_log; : > "$R/notify.log"; A1_T0=$(date +%s); A1T 0
+check "$(stopped):$(resumed)" "0:0" "A1 r2: a listed idle row without a pid → no claude stop, no resume"
+grep -q "wake of hub-4 failed (.*the hub's row has no pid, so a stop's release cannot be told: not stopping" "$(J sbnopid)"; check $? 0 "A1 r2: …the journal says why"
+grep -q "agent-hub: sbnopid — wake failed" "$R/notify.log"; check $? 0 "A1 r2: …and the owner is notified"
+A1T 20; check "$(stopped):$(resumed)" "0:0" "A1 r2: …and a later tick does not stop or resume it either"
+# stop succeeded but the re-list fails, or still shows the row: the process identity is saved at once; a later tick, with the hub
+# unlisted and the old process alive, does not resume
+for mode in relist-fails still-listed; do
+  N=$([ "$mode" = relist-fails ] && echo 31 || echo 32); BN=$(U $N); st=sbr$N; mk_bhub $st $BN; FX jline $st 20 "[exec-1] DONE a line is waiting"
+  sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${BN:0:8} $BN background idle "$CWD" $LP
+  reset_log; A1_T0=$(date +%s)
+  if [ "$mode" = relist-fails ]; then A1T 0 FAKE_WD_STOP_LINGER=hold FAKE_WD_AGENTS_FAIL_FROM=3
+  else A1T 0 FAKE_WD_STOP=ghost; fi
+  check "$(stopped):$(resumed)" "1:0" "A1 r2 ($mode): stop ok, no resume in this tick"
+  check "$(state_val stages $st hub stopped pid)" "$LP" "A1 r2 ($mode): …the identity of the stopped process is in the saved state"
+  FX rows "$FAKE_WD_ROWS"                                                  # the row is gone (the daemon dropped it), the process hangs on
+  reset_log; A1T 20
+  check "$(resumed)" 0 "A1 r2 ($mode): a later tick, hub unlisted and its process alive → no resume"
+  kill $LP; wait $LP 2>/dev/null; LP=
+done
 # the owner resumed the hub while the watchdog waited for the old process: the wake is cancelled
 B30=$(U 30); mk_bhub sbrel $B30; FX jline sbrel 20 "[exec-1] DONE a line is waiting"
 sleep 120 & LP=$!; FX rows "$FAKE_WD_ROWS" ${B30:0:8} $B30 background idle "$CWD" $LP

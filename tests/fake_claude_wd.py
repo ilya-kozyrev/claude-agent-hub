@@ -7,6 +7,8 @@ $FAKE_WD_ROWS (a JSON file, default none)  the rows `agents --json` prints; `sto
 FAKE_WD_AGENTS=fail                        `agents --json` exits 1
 FAKE_WD_STOP=fail                          `stop` exits 1
 FAKE_WD_RESUME=fail                        `--bg --resume` exits 1 ("Error: resume failed")
+FAKE_WD_STOP=ghost                         `stop` of a hub exits 0 but its row stays listed (the process is not touched)
+FAKE_WD_AGENTS_FAIL_FROM=<n>               from the n-th `agents --json` call of the log on, it exits 1
 FAKE_WD_STOP=copy-fail                     `stop` of a copy (id cc…) exits 1; any other stop works
 FAKE_WD_STOP=copy-ghost                    `stop` of a copy exits 0 but the copy stays listed
 FAKE_WD_KIND=interactive FAKE_WD_KIND_FROM=2  from the 2nd `agents --json` call on, every row says that kind (the owner
@@ -55,6 +57,12 @@ if cmd == "agents":
     if os.environ.get("FAKE_WD_AGENTS") == "fail":
         sys.stderr.write("fake claude: agents failed\n")
         sys.exit(1)
+    if os.environ.get("FAKE_WD_AGENTS_FAIL_FROM"):
+        with open(os.environ.get("FAKE_WD_LOG", "wd-claude.log"), encoding="utf-8") as fh:
+            nth = sum(1 for line in fh if json.loads(line)["argv"][:1] == ["agents"])
+        if nth >= int(os.environ["FAKE_WD_AGENTS_FAIL_FROM"]):
+            sys.stderr.write("fake claude: agents failed\n")
+            sys.exit(1)
     try:
         relist = json.load(open(rows_file + ".relist"))
         relist["left"] -= 1
@@ -80,6 +88,9 @@ elif cmd == "stop":
         sys.stderr.write("fake claude: stop failed\n")
         sys.exit(1)
     if mode == "copy-ghost" and target.startswith("cc"):
+        print(f"stopped {target}")
+        sys.exit(0)
+    if mode == "ghost":
         print(f"stopped {target}")
         sys.exit(0)
     gone = [r for r in rows() if target in (r.get("id"), r.get("sessionId"))]

@@ -788,17 +788,17 @@ def wake_claude(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
             # a session the owner opened in a terminal meanwhile is interactive: stopping it would end their window
             return {"ok": False, "how": how, "detail": f"the hub is {row.get('kind')}/{row.get('status')} now: not woken"}
         pid = row.get("pid")
-        ident = {"pid": pid, "start": proc_start(pid) if pid else None, "session": o["sid"], "at": iso(tick.now)}  # before the stop
+        if not pid:
+            # a stop's release is told by the process: a row without a pid cannot be told, so it is not stopped at all
+            return {"ok": False, "how": how, "detail": "the hub's row has no pid, so a stop's release cannot be told: not stopping"}
+        ident = {"pid": pid, "start": proc_start(pid), "session": o["sid"], "at": iso(tick.now)}  # before the stop
         stop = run([cli.path, "stop", row.get("id") or sid8], 30, cwd)
         if stop.returncode != 0:
             return {"ok": False, "how": how, "detail": f"claude stop exit {stop.returncode}: {first_line(stop.stderr or stop.stdout)}"}
+        hs["stopped"] = ident  # at once, before any re-list: kept until the process is seen gone, a later tick must not resume over it
         rows = autopilot.list_agents(cli.path, cwd)
         if rows is None or running_row(rows, o["sid"]) is not None:
             return {"ok": False, "how": how, "detail": "the hub is still listed after claude stop: not resuming"}
-        if not pid:
-            return {"ok": False, "how": how, "detail": "the stopped row has no pid, so its release cannot be told: not "
-                                                       "resuming now, the next tick resumes the then unlisted hub"}
-        hs["stopped"] = ident  # kept until the process is seen gone: a later tick must not resume over it
         if not released(ident):
             return {"ok": False, "how": how, "detail": f"the stopped hub (pid {pid}) is still exiting after "
                                                        f"{stop_release_limit():g} s: not resuming now, the next tick checks again"}

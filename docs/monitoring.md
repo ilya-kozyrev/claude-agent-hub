@@ -185,5 +185,7 @@ therefore waits for that process to exit (up to 30 s, polling every 0.2 s) befor
 by its pid and its start time (a reused pid is another process). If it is still there after the wait, the watchdog keeps
 its identity in the hub's state (`state.json`, `hub.stopped`) and does not resume in this tick, nor in any later tick
 (also not when the hub is no longer listed) until that process is seen gone. Once released it reads `claude agents --json`
-once more: a hub listed again (the owner resumed it meanwhile) cancels the wake. A stopped row without a pid cannot be
-checked, so there is no resume in that tick; the next tick resumes the then unlisted hub.
+once more: a hub listed again (the owner resumed it meanwhile) cancels the wake. The identity is saved right after
+`claude stop` succeeds, before the listing is read again, so a failed or still-showing re-list does not lose it. A listed
+idle row without a pid is not stopped at all (a stop's release cannot be told): the wake fails, is journaled, and the owner
+is notified.
