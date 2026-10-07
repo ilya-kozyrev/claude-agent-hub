@@ -855,8 +855,8 @@ def wake_hub(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
     mod = codex_module()
     if t in ("codex-queue", "codex-resume") and mod is not None:
         try:
-            res = (mod.wake(stage, rec, text, tick.dry, expected_error=o["codex_error"])
-                   if o.get("codex_error") else mod.wake(stage, rec, text, tick.dry))
+            res = (mod.wake(stage, rec, text, tick.dry, expected_error=o["codex_error"], wd=sys.modules[__name__], tick=tick)
+                   if o.get("codex_error") else mod.wake(stage, rec, text, tick.dry, wd=sys.modules[__name__], tick=tick))
             return {"ok": bool(res.get("ok")), "how": str(res.get("how") or t), "detail": str(res.get("detail") or "")}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "how": t, "detail": f"watchdog_codex.wake failed: {type(e).__name__}"}

@@ -15,6 +15,7 @@ import codex_rollouts
 import engines
 import hubcore as hc
 import watchdog_codex as wc
+import watchdog_receipts as receipts
 
 
 def fingerprint(value):
@@ -32,34 +33,7 @@ def consumer():
     return sid
 
 
-def recipient_activity(path, sid, since, now):
-    """Only a new own turn proves recipient progress; work/registration/file touches do not."""
-    if path is None or since is None:
-        return False
-    try:
-        with path.open("rb") as f:
-            head = json.loads(f.readline(256_001))
-            birth = codex_rollouts.epoch(head.get("timestamp"))
-            if head.get("payload", {}).get("id") != sid or birth is None:
-                return False
-            f.seek(0, 2); offset = max(0, f.tell() - 512_000); f.seek(offset)
-            if offset:
-                f.readline()
-            data = f.read()
-        if not data.endswith(b"\n"):
-            return False
-        for line in data.splitlines():
-            ev = json.loads(line); payload = ev.get("payload")
-            if ev.get("type") != "event_msg" or not isinstance(payload, dict) or payload.get("type") != "task_started":
-                continue
-            at = codex_rollouts.epoch(ev.get("timestamp")); started = payload.get("started_at")
-            if (type(started) is int and at is not None and isinstance(payload.get("turn_id"), str) and payload["turn_id"]
-                    and started >= max(int(birth), int(since.timestamp()))
-                    and since.timestamp() < at <= now.timestamp() and started <= at):
-                return True
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
-    return False
+recipient_activity = receipts.recipient_activity
 
 
 def candidate(wd, tick, stage):
@@ -86,21 +60,9 @@ def candidate(wd, tick, stage):
     failure = {**error, "at": wd.iso(error["at"])} if dead else None
     work = {"lines": [key for _, key, _ in lines], "night": night[1] if night else None, "failed_turn": failure}
     work_id = fingerprint(work)
-    # One app thread may be registered in more than one stage. Serialize all
-    # native claims by UUID, not merely by stage, including lost API replies.
-    for other_stage, saved_state in tick.state["stages"].items():
-        other = saved_state.get("native_episode")
-        if not isinstance(other, dict) or str(other.get("session", "")).lower() != sid.lower():
-            continue
-        acted = wd.parse_ts(other.get("acted_at"))
-        progressed = recipient_activity(rollout[0] if rollout else None, sid, acted, tick.now)
-        if other.get("result") == "unknown" and not progressed:
-            return None, "the UUID has unknown delivery with no verified recipient turn progress"
-        if other_stage == stage or progressed:
-            continue
-        nxt = wd.parse_ts(other.get("next_try_at"))
-        if other.get("result") != "completed-skip" and nxt and tick.now < nxt:
-            return None, "the same UUID has an unresolved/cooling native attempt in another stage"
+    why = receipts.guard(wd, tick.state, sid, tick.now, stage=stage, native=True)
+    if why:
+        return None, why
     identity = fingerprint(rec)
     stage_state = tick.state["stages"].get(stage, {})
     core = stage_state.get("hub") or {}
@@ -178,6 +140,7 @@ def claim(wd, a):
                        "session": out["session"], "attempts": attempts, "acted_at": wd.iso(tick.now),
                        "next_try_at": wd.iso(tick.now + delay), "result": "unknown",
                        "attempt": token, "consumer": caller}
+            receipts.remember(tick.state, episode)
             tick.state["stages"].setdefault(a.stage, {})["native_episode"] = episode
             wd.save_state(tick.state)  # before the native API: a lost reply cannot immediately send twice
             return {**public(out), "attempt": token, "outcome": "unknown", "next_try_at": episode["next_try_at"],
@@ -204,7 +167,11 @@ def ack(wd, a):
                 if ep.get("result") != a.outcome:
                     raise hc.Failure("native attempt already acknowledged with a different outcome")
                 return {"stage": a.stage, "session": a.session, "outcome": a.outcome, "already_acknowledged": True}
+            shared = state.get("uuid_receipts", {}).get(a.session.lower())
+            if shared is not None and (not isinstance(shared, dict) or shared.get("attempt") != a.attempt):
+                raise hc.Failure("native ack rejected: UUID receipt was superseded")
             ep.update(result=a.outcome, acknowledged_at=wd.iso(wd.clock()))
+            receipts.remember(state, ep)
             wd.save_state(state)
             return {"stage": a.stage, "session": a.session, "outcome": a.outcome,
                     "next_try_at": ep["next_try_at"]}

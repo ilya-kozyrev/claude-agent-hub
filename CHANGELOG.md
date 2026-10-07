@@ -11,7 +11,9 @@
   A fenced `native-plan`/`native-claim`/`native-ack` protocol supports a separately installed app-native heartbeat
   when Desktop cannot be reached through the CLI daemon. It requires native idle/actionability checks, preserves
   unknown delivery, deduplicates shared UUIDs across stages, and does not spend model calls itself; the native
-  automation consumer may be model-assisted.
+  automation consumer may be model-assisted. UUID receipts survive replacement by a different stage actor; both
+  native claims and CLI queues consult the same local fence. Unknown CLI outcomes also prevent native fallback,
+  and only verified recipient own-turn progress releases an uncertain delivery.
 
 - **Codex native delegation guards recognize CLI 0.160.0 namespace concatenation.** Spawn, followup and
   messaging now reach the configured policies; level 0 blocks task reactivation without blocking pure messages.

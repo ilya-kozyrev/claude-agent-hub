@@ -40,8 +40,10 @@ a substitute. Do not create another user chat, launch a daemon, open a private p
 
    Use `sent` for explicit acceptance, `failed` for explicit no-delivery rejection, `unknown` for an ambiguous
    result/timeout, or `completed-skip` for verified stale completed work without any send. A lost or unknown receipt
-   holds the UUID across stages until a new own turn proves recipient activity; new journal work, expired backoff,
-   file touches or re-registration alone do not release it. An unacknowledged original receipt can still record a
+   holds the UUID across stages and actor replacement in a shared native/CLI receipt ledger until a new own turn
+   proves recipient activity; new journal work, expired backoff,
+   file touches or re-registration alone do not release it. The standalone CLI tick checks the same guard before
+   queueing and also persists an unknown receipt before queue; an unresolved CLI outcome blocks native claims. An unacknowledged original receipt can still record a
    verified delivery outcome. Never call a second transport.
    Ack may refuse if the hub was retired/replaced, quieted or entered a pending handoff; report that receipt outcome
    to the coordinator, without retrying the native send. A duplicate ack of the same outcome is harmless.

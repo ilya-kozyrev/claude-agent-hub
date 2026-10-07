@@ -22,6 +22,7 @@ import codex_sessions
 import autopilot
 import engines
 import hubcore as hc
+import watchdog_receipts as receipts
 
 
 def _session(rec: dict) -> str | None:
@@ -155,14 +156,22 @@ def wake_guard(stage: str, rec: dict, now: datetime) -> str:
     return ""
 
 
-def wake(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None) -> dict:
+def wake(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None, *, wd=None, tick=None) -> dict:
     """Fence registration with takeover's lock order through the actual queue call."""
-    with contextlib.nullcontext() if dry_run else autopilot.state_lock(stage):
-        with contextlib.nullcontext() if dry_run else hc.roles_lock(stage):
-            return _wake_locked(stage, rec, text, dry_run, expected_error)
+    wd = wd or receipts.core()
+    # The normal tick already holds TickLock and passes its state object so a
+    # later tick save cannot overwrite a newly persisted receipt.
+    with contextlib.nullcontext() if tick is not None else wd.TickLock(take=not dry_run) as lock:
+        if tick is None:
+            if not lock.held:
+                return {"ok": False, "how": "notify", "detail": "another watchdog tick/attempt is running"}
+            tick = wd.Tick(dry_run, True)
+        with contextlib.nullcontext() if dry_run else autopilot.state_lock(stage):
+            with contextlib.nullcontext() if dry_run else hc.roles_lock(stage):
+                return _wake_locked(stage, rec, text, dry_run, expected_error, wd=wd, tick=tick)
 
 
-def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None) -> dict:
+def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None, *, wd, tick) -> dict:
     """Recheck liveness and host immediately before a same-thread queue; no fallback."""
     codex_rollouts.INDEX.checked = None  # a resumed thread may have a newer rollout
     current = state(stage, rec, datetime.now(timezone.utc))
@@ -174,11 +183,20 @@ def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error
     if why:
         return {"ok": False, "how": "notify", "detail": why}
     sid = _session(rec)
+    fresh = wd.load_state()
+    why = receipts.guard(wd, fresh, sid, tick.now, stage=stage)
+    if why:
+        return {"ok": False, "how": "notify", "detail": why}
+    # Keep the caller's state object current; the enclosing tick saves it again.
+    if "uuid_receipts" in fresh:
+        tick.state["uuid_receipts"] = fresh["uuid_receipts"]
+    claimed = None
     try:
         argv = [engines.codex_bin(rec.get("cwd")), "queue", "--thread", sid, "--message", text]
         how = shlex.join([*argv[:3], sid[:8], *argv[4:]])
         if dry_run:
             return {"ok": True, "how": how, "detail": "dry run; no message queued"}
+        claimed = receipts.cli_claim(wd, tick, sid)
         proc = subprocess.run(argv, cwd=rec.get("cwd") or None, env=hc.child_env(),
                               capture_output=True, text=True, errors="replace", timeout=20)
     except subprocess.TimeoutExpired:
@@ -186,6 +204,7 @@ def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error
     except (hc.Failure, hc.UsageError, OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "how": locals().get("how", "codex queue"),
                 "detail": f"queue failed: {type(exc).__name__}"}
+    receipts.cli_finish(wd, tick, claimed)
     output = (proc.stderr if proc.returncode else proc.stdout).strip().splitlines()
     detail = output[0][:500] if output else f"queue exit {proc.returncode}"
     # Keep the local action summary's IDs abbreviated too.
