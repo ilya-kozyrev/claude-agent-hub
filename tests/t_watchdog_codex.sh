@@ -289,6 +289,10 @@ print('PASS delivered queue remains successful with non-UTF-8 stdout and stderr'
 result=wc.wake('stage-a',rec,'failure',False)
 assert not result['ok'] and result['detail']=='queue failed on fixture',result
 assert len(calls())==before_calls+1
+receipt_core=wc.receipts.core();saved=receipt_core.load_state()
+assert saved['uuid_receipts'][sid]['result']=='unknown','generic nonzero incorrectly cleared receipt'
+# Independent timeout fixture: discard the preceding fake process outcome only in this throwaway home.
+saved['uuid_receipts'].pop(sid);receipt_core.save_state(saved)
 with patch.object(wc.subprocess,'run',side_effect=subprocess.TimeoutExpired('queue',20)):
  # Mock the read-only liveness query separately from the queue's process harness.
  with patch.object(wc.codex_sessions,'runtime_status',return_value='idle'):

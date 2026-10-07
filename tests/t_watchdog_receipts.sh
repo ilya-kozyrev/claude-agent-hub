@@ -142,6 +142,34 @@ assert wr.guard(wd,wd.load_state(),b,future)=='' ,'a guard refusal was treated a
 progress(b,future+timedelta(minutes=1));clock(future+timedelta(hours=1))
 rearmed,why=candidate('other-cli-stage');assert rearmed,why
 print('PASS CLI timeout survives cached tick save, blocks both transports across stages, and own progress re-arms')
+# CompletedProcess is not delivery proof: signal and generic failure stay fenced.
+for exit_code in (-9,7,0):
+ fresh();clock(future+timedelta(hours=1))
+ delivered=[]
+ def process_outcome(argv,**kwargs):
+  assert wd.load_state()['uuid_receipts'][b]['result']=='unknown'
+  delivered.append(argv)
+  return subprocess.CompletedProcess(argv,exit_code,stdout='accepted' if exit_code==0 else '',
+                                     stderr='generic process failure' if exit_code else '')
+ with wd.TickLock() as lock:
+  assert lock.held
+  t=wd.Tick(False,True)
+  with patch.object(wc.codex_sessions,'runtime_status',return_value='idle'), \
+       patch.object(wc.engines,'codex_bin',return_value='fake-codex'), \
+       patch.object(wc.subprocess,'run',side_effect=process_outcome):
+   result=wc.wake('origin',hc.roles_load('origin')['roles']['hub'],'fixture outcome',False,wd=wd,tick=t)
+  wd.save_state(t.state)  # enclosing tick must retain an ambiguous outcome
+ assert len(delivered)==1 and result['ok']==(exit_code==0),result
+ if exit_code:
+  assert wd.load_state()['uuid_receipts'][b]['result']=='unknown'
+  clock(future+timedelta(hours=3))
+  assert not candidate('origin')[0] and not candidate('other-cli-stage')[0]
+  tick('other-cli-stage');assert len(queues)==1
+  assert wd.load_state()['uuid_receipts'][b]['result']=='unknown'
+ else:
+  assert b not in wd.load_state()['uuid_receipts']
+  rearmed,why=candidate('origin');assert rearmed,why
+print('PASS SIGKILL -9 and generic nonzero preserve unknown across cached save/backoff/transports; accepted exit 0 closes it')
 for bad in ([],{a:None},{a:{'session':a,'result':'unexpected'}},{a:{'session':b,'result':'unknown'}}):
  wd.save_state({'stages':{},'uuid_receipts':bad})
  assert not candidate('elsewhere')[0]

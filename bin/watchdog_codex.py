@@ -204,7 +204,10 @@ def _wake_locked(stage: str, rec: dict, text: str, dry_run: bool, expected_error
     except (hc.Failure, hc.UsageError, OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "how": locals().get("how", "codex queue"),
                 "detail": f"queue failed: {type(exc).__name__}"}
-    receipts.cli_finish(wd, tick, claimed)
+    # A signal or generic nonzero exit can follow delivery. Only the CLI's
+    # accepted-success outcome proves this uncertain receipt can be closed.
+    if proc.returncode == 0:
+        receipts.cli_finish(wd, tick, claimed)
     output = (proc.stderr if proc.returncode else proc.stdout).strip().splitlines()
     detail = output[0][:500] if output else f"queue exit {proc.returncode}"
     # Keep the local action summary's IDs abbreviated too.
