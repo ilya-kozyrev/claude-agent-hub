@@ -315,6 +315,8 @@ for updates in ({'session':same_prefix,'cli_session_id':same_prefix}, {'tag':'hu
 env['CODEX_THREAD_ID']=real
 # Missing original journal proof cannot be replaced by same-prefix discovery.
 journal=next((stage/'coordinator/work').glob('journal-*.md')); saved_journal=journal.read_bytes()
+journal.write_text('\n'.join(line for line in saved_journal.decode().splitlines() if 'desktop request '+req+' prepared' not in line)+'\n')
+recover(ok=False)
 journal.write_text('')
 recover(ok=False)
 journal.write_bytes(saved_journal+b'\n- 00:00 [hub-2] start: "Other" (22222222-9999-4999-8999-999999999999, sid 22222222) replaced; locks: none; roles updated\n')

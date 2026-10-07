@@ -1582,6 +1582,18 @@ def desktop_identity_proof(stage, request, session, recovery=False, allow_move=F
             lines = hc.journal_path(stage, boundary.date()).read_text(encoding='utf-8').splitlines()
         except OSError:
             raise hc.Failure('original registration journal unavailable; no state changed') from None
+        try:
+            prepared_at = hc.dt.datetime.fromisoformat(pend['at'])
+            prepared_lines = hc.journal_path(stage, prepared_at.date()).read_text(encoding='utf-8').splitlines()
+        except (OSError, ValueError, TypeError, KeyError):
+            raise hc.Failure('original request preparation proof unavailable; no state changed') from None
+        preparation = re.compile(rf"^auto-handoff {pend.get('k')}/[0-9]+: " + re.escape(
+            hc.one_line(f"desktop request {request} prepared, handoff {pend.get('handoff')}")) + r"$")
+        if prepared_at > boundary or not any(
+                parsed and parsed[0] == prepared_at.strftime('%H:%M')
+                and parsed[1] == f"hub-{pend.get('predecessor_n')}" and preparation.fullmatch(parsed[2])
+                for line in prepared_lines if (parsed := hc.parse_journal_line(line))):
+            raise hc.Failure('legacy request does not match its original reservation; no state changed')
         identities = set()
         original = False
         pattern = re.compile(r'^start: "[^"\n]*" \(([0-9a-fA-F-]{36}), sid [0-9a-fA-F]{8}\) ')

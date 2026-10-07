@@ -284,7 +284,8 @@ Recovery creates no thread, reservation or shift and reads no handoff. It requir
 CODEX_THREAD_ID, matching current role/CLI UUID, native host/engine, original shift, cwd/main project, saved
 project ID, persisted observed settings and writable stage-home policy. New bindings retain the original
 actual UUID and registration evidence separately. Legacy requests additionally require an unambiguous original
-full-UUID `start:` registration in the takeover day's journal and an exact match between current `set_at` and
+full-UUID `start:` registration in the takeover day's journal, the exact original request preparation
+line and an exact match between current `set_at` and
 original `taken_over`. A later timestamp, missing/ambiguous proof, different UUID (including the same eight-character
 prefix), stale token or changed observed policy fails before mutation. Do not edit JSON, infer identity from a
 prefix, widen settings or dispatch again to repair such a failure; report the missing proof to the coordinator.
