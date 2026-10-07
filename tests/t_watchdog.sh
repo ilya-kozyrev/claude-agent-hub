@@ -176,6 +176,16 @@ test -f "$R/.jwait-state/sh2b/hub-3.armed.json"; check $? 0 "H2: the first waite
 TS=sh2a; tick > /dev/null; check "$(runs sh2a)" 2 "H2: …and the first stage's hub, now without a waiter, is woken"
 TS=sh2b; tick > /dev/null; check "$(runs sh2b)" 1 "H2: …while the second stage's hub still is not"
 kill -TERM $WAITER 2>/dev/null; wait $WAITER 2>/dev/null; WAITER=
+# stage names that differ only by a trailing underscore are two stages (the stage name is the directory, unchanged)
+mk_dhub release; FX jline release 20 "[exec-1] DONE a line for release"
+mk_dhub release_; FX jline release_ 20 "[exec-1] DONE a line for release_"
+"$B/jwait" --journal --stage release --caller hub-3 --settle 1 --for 120s > "$R/wr1.out" 2>&1 & WA=$!
+"$B/jwait" --journal --stage release_ --caller hub-3 --settle 1 --for 120s > "$R/wr2.out" 2>&1 & WAITER=$!
+armed "$R/wr1.out"; armed "$R/wr2.out"
+test -f "$R/.jwait-state/release/hub-3.armed.json" -a -f "$R/.jwait-state/release_/hub-3.armed.json"; check $? 0 "H2: stages 'release' and 'release_' (same caller) have separate armed files"
+TS=release; tick > /dev/null; check "$(runs release)" 1 "H2: …the hub of 'release' is not woken (its waiter is visible)"
+TS=release_; tick > /dev/null; check "$(runs release_)" 1 "H2: …nor the hub of 'release_'"
+kill -TERM $WA $WAITER 2>/dev/null; wait $WA $WAITER 2>/dev/null; WAITER=
 
 # ---------------------------------------------------------------- R3 claude --bg
 U(){ printf '%08d-0000-4000-8000-%012d' "$1" "$1"; }                    # a distinct session id per scenario
@@ -557,6 +567,28 @@ check "$(resumed)" 1 "M4: …the hub is woken"
 grep -q "entry of stage sm4 is not an object" "$R/tick.out"; check $? 0 "M4: …with a warning"
 echo '[1, 2]' > "$R/.state/watchdog/state.json"
 check "$(tick)" 0 "M4: a state that is not even an object — the tick exits 0"
+
+# M4 (nested): a corrupt value inside a stage's state resets that stage, with one stderr line; the next tick is normal
+B83=$(U 83); mk_bhub sm5 $B83; FX jline sm5 16 "[exec-1] DONE a line is waiting"
+reset_log; tick > /dev/null; check "$(resumed)" 1 "M4 nested: first wake"
+python3 - "$R/.state/watchdog/state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["stages"]["sm5"]["hub"]["episode"] = 5
+json.dump(d, open(sys.argv[1], "w"))
+PY
+reset_log; check "$(tick)" 0 "M4 nested: hub.episode = 5 — the tick exits 0"
+grep -q "watchdog: stage sm5: state reset after" "$R/tick.out"; check $? 0 "M4 nested: …one stderr line names the stage and the error"
+check "$(state_val stages sm5)" "{}" "M4 nested: …the stage's state was reset, the corrupt value not saved back"
+reset_log; check "$(tick)" 0 "M4 nested: the next tick exits 0"
+grep -q "state reset after" "$R/tick.out"; check $? 1 "M4 nested negative: …with no error this time"
+check "$(resumed)" 1 "M4 nested: …and handles the stage normally (the hub is woken)"
+python3 - "$R/.state/watchdog/state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["stages"]["sm5"]["r2_sent"] = 7; d["stages"]["sm5"]["hub"]["episode"]["attempts"] = "x"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+check "$(tick)" 0 "M4 nested: r2_sent not a dict, attempts not an int — the tick exits 0"
+check "$(state_val stages sm5)" "{}" "M4 nested: …the stage's state is reset again"
 
 # ---------------------------------------------------------------- never a successor, and one broken stage does not stop the rest
 mkdir -p "$R/sbad"; echo '{' > "$R/sbad/roles.json"

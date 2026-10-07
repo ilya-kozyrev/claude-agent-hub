@@ -920,6 +920,10 @@ def cmd_run(a) -> int:
                 run_stage(tick, stage)
             except Exception as e:  # noqa: BLE001 — one broken stage must not stop the others
                 tick.say(stage, "error", f"{type(e).__name__}: {first_line(str(e))}")
+                # what the stage's state held may be what broke it (a hand-edited or damaged value): start it clean,
+                # and never save the corrupt value back, or every later tick fails on it again
+                tick.state["stages"][stage] = {}
+                print(f"watchdog: stage {stage}: state reset after {type(e).__name__}: {first_line(str(e))}", file=sys.stderr)
         if not a.dry_run:
             tick.state["last_tick"] = iso(tick.now)
             save_state(tick.state)
