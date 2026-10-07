@@ -48,7 +48,10 @@ import session_effort  # noqa: E402
 # The tag of the plugin's own informational journal lines (a chain reset): not `hub`, which every hub's `jwait --tag hub`
 # wakes on, so the line stays readable in the journal and wakes nobody.
 SERVICE_TAG = "autopilot"
+# agent-hub's own prompts in a hub's session (not the owner speaking): the successor's take-over prompt carries MARKER_RE
+# anywhere in the text, the watchdog's wake text starts with WATCHDOG_MARKER. The one list of them: `owner_spoke`.
 MARKER_RE = re.compile(r"\[agent-hub auto-handoff (\d+)/(\d+)\]")
+WATCHDOG_MARKER = "[agent-hub watchdog]"
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")
 BG_ID_RE = re.compile(r"backgrounded\s*·\s*(\S+)")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -237,9 +240,11 @@ def hub_stage_of(sid: str) -> Optional[str]:
 
 
 def owner_spoke(prompt) -> bool:
-    """A prompt typed by a person: no autopilot marker and not a harness notice (they start with an XML-like tag)."""
+    """A prompt typed by a person: none of agent-hub's own markers (the successor's, the watchdog's) and not a harness
+    notice (they start with an XML-like tag)."""
     text = prompt if isinstance(prompt, str) else ""
-    return bool(text.strip()) and not MARKER_RE.search(text) and not text.lstrip().startswith("<")
+    head = text.lstrip()
+    return bool(text.strip()) and not MARKER_RE.search(text) and not head.startswith((WATCHDOG_MARKER, "<"))
 
 
 # ---------------------------------------------------------------- the hub's own model and mode

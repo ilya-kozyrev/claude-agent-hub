@@ -8,7 +8,8 @@ counted from it, so a test that injects the watchdog's clock (AGENT_HUB_WATCHDOG
   transcript SID MINUTES ok|error|error-user   a Claude transcript whose last turn record is a normal answer, an API
                                           error, or an API error followed by a user record; file mtime MINUTES ago
   job SID CWD                             ~/.claude/jobs/<sid8>/state.json (the daemon's saved options of a bg session)
-  rows FILE [ID SID KIND STATUS CWD]      the rows `claude agents --json` prints (none when only FILE is given)
+  rows FILE [ID SID KIND STATUS CWD [PID]] the rows `claude agents --json` prints (none when only FILE is given); the pid
+                                          is a process that has exited unless PID is given (the watchdog waits for it to exit)
   age PATH MINUTES                        set the mtime of PATH MINUTES ago
   backdate STAGE MINUTES                  roles.json: the hub record's set_at MINUTES ago
   hubfield STAGE KEY VALUE                roles.json: a field of the hub record
@@ -18,6 +19,7 @@ counted from it, so a test that injects the watchdog's clock (AGENT_HUB_WATCHDOG
 import datetime as dt
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +33,13 @@ def ref() -> dt.datetime:
         t = dt.datetime.fromisoformat(raw)
         return t.replace(tzinfo=hc.TZ) if t.tzinfo is None else t
     return hc.now()
+
+
+def exited_pid() -> int:
+    """The pid of a process that has just been started and reaped: nothing runs under it."""
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
 
 
 def ago(minutes: float) -> dt.datetime:
@@ -82,9 +91,10 @@ def main(argv: list) -> int:
     elif cmd == "rows":
         rows = []
         if len(args) > 1:
-            rid, sid, kind, status, cwd = args[1:]
+            rid, sid, kind, status, cwd, *pid = args[1:]
             rows.append({"id": rid, "sessionId": sid, "kind": kind, "status": status,
-                         "state": "working" if status == "busy" else "done", "pid": 4242, "cwd": cwd, "name": "hub"})
+                         "state": "working" if status == "busy" else "done",
+                         "pid": int(pid[0]) if pid else exited_pid(), "cwd": cwd, "name": "hub"})
         Path(args[0]).write_text(json.dumps(rows))
     elif cmd == "age":
         touch_ago(args[0], args[1])
