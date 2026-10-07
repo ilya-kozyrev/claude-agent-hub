@@ -61,9 +61,18 @@ DEFAULT_ESCAPE = r"HANDOFF-[^\s/\\'\"`]*\.md|handoff-ok"
 AUTOPILOT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit", "apply_patch")
 AUTOPILOT_FILE = re.compile(r"(?:^|/)HANDOFF-[^/\s]*\.md$")
 SEPARATORS = (";", "&&", "||", "|", "&")
-DEFAULT_TODO = ("What to do: write a handoff with the delamain:handoff skill (the plugin's "
-                "templates/HANDOFF-template.md, at most 12 KB; the chronology goes to the journal) and continue in a "
-                "new session from it.")
+
+
+def default_todo() -> str:
+    """The "what to do" sentence. The skill is named in both forms for one release (rename:keep): a session started
+    before the rename runs this hook from the updated plugin folder but knows the skill only as `agent-hub:handoff`."""
+    try:
+        import subagent_rules as sr  # noqa: E402  (bin/ is on sys.path once hubcore() ran)
+        skill = sr.named("handoff")
+    except Exception:  # noqa: BLE001 — fail-open: the current name alone
+        skill = "`delamain:handoff`"
+    return (f"What to do: write a handoff with the skill {skill} using the plugin's templates/HANDOFF-template.md "
+            "(at most 12 KB; the chronology goes to the journal) and continue in a new session from it.")
 
 
 def autopilot():
@@ -317,7 +326,7 @@ def main() -> None:
     warn = hc.int_setting("AGENT_HUB_CONTEXT_WARN", defaults["warn"])
     block = hc.int_setting("AGENT_HUB_CONTEXT_BLOCK", defaults["block"])
     step = hc.int_setting("AGENT_HUB_CONTEXT_WARN_STEP", defaults["step"])
-    todo = hc.setting("AGENT_HUB_CONTEXT_TODO") or DEFAULT_TODO
+    todo = hc.setting("AGENT_HUB_CONTEXT_TODO") or default_todo()
     escape_src = hc.setting("AGENT_HUB_CONTEXT_ESCAPE") or DEFAULT_ESCAPE
     try:
         escape = re.compile(escape_src)

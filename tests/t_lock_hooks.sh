@@ -7,6 +7,7 @@ ME=aaaaaaaa-0000-4000-8000-000000000001; OTHER=bbbbbbbb-0000-4000-8000-000000000
 # ---- lock CLI
 CLAUDE_CODE_SESSION_ID=$ME $B/lock take stage --until +1h --why x > $R/unknown.out 2>&1; check $? 2 "negative: a resource no lock-rules.json names is refused"
 grep -q "unknown resource 'stage'.*Known: main-merge" $R/unknown.out; check $? 0 "…with the list of known resources"
+grep -q 'delamain:setup' $R/unknown.out && grep -qF '`agent-hub:setup` in a session started before the rename' $R/unknown.out; check $? 0 "…and the setup skill named in both forms (a session started before the rename knows it as the former one)"  # rename:keep
 printf '{"resources": {"stage": "the shared staging environment", "deploy-window": "a production rollout"}}\n' > $R/lock-rules.json
 CLAUDE_CODE_SESSION_ID=$OTHER $B/lock take main-merge --repo '*' --until +2h --why "merging #700" --owner-name "merge steward" >/dev/null; check $? 0 "take main-merge"
 CLAUDE_CODE_SESSION_ID=$ME $B/lock take main-merge --repo '*' --until +1h --why "mine" >/dev/null 2>&1; check $? 1 "negative: another session's active lock refused"

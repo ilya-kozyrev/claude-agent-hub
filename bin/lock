@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import board  # noqa: E402
 import hubcore as hc  # noqa: E402
 import lockrules  # noqa: E402
+import subagent_rules  # noqa: E402
 
 DEFAULT_REPO = hc.default_repo() or board.DEFAULT_REPO
 
@@ -90,8 +91,8 @@ def cmd_take(args) -> int:
     # A resource already on the board stays takeable (a handover of a lock taken where it was configured).
     if args.kind not in known["resources"] and args.kind not in on_board:
         print(f"unknown resource {args.kind!r} here ({os.getcwd()}). Known: {', '.join(known['resources'])}.\n"
-              "Add it to the repository's .agent-hub/lock-rules.json (`lock rules add`, or the delamain:setup "
-              "skill), or to the hub home's lock-rules.json.", file=sys.stderr)
+              "Add it to the repository's .agent-hub/lock-rules.json (`lock rules add`, or the skill "
+              f"{subagent_rules.named('setup')}), or to the hub home's lock-rules.json.", file=sys.stderr)
         for w in known["warnings"]:
             print(w, file=sys.stderr)
         return 2

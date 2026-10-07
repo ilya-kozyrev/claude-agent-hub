@@ -149,6 +149,7 @@ class CodexHooks(unittest.TestCase):
         note = out['hookSpecificOutput']['additionalContext']
         self.assertIn('`delamain:hub`', note)
         self.assertNotIn('Skill tool', note)
+        self.assertIn('in a session started before the rename', note)
         self.assertEqual(out['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
         for prompt in ('how is it going?', '/delamain:hub take over', '/foo:hub take over', '/agent-hub:no-such-skill x'):  # rename:keep
             self.assertFalse(self.hook('delegation.py', event='UserPromptSubmit', args=('prompt',), prompt=prompt), prompt)

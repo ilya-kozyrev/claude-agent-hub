@@ -57,7 +57,7 @@ LEVELS = range(0, 6)
 # `/agent-hub:hub take over stage …` (the command before the rename); the successor is a new session that has only this
 # plugin's `/delamain:hub`, and a model that gets an unknown slash command as plain text may refuse to follow it
 # (Haiku did, CLI 2.1.289).
-FORMER_PLUGIN = "agent-hub"  # rename:keep
+FORMER_PLUGIN = sr.LEGACY_PLUGIN_NAME
 FORMER_COMMAND_RE = re.compile(r"\s*/" + re.escape(FORMER_PLUGIN) + r":([A-Za-z0-9][A-Za-z0-9_-]*)(?=\s|\Z)")
 BUILTIN_LEVELS = {
     0: ("OFF", "Do everything yourself. No subagents (the Agent and Workflow tools are blocked by a hook) and no "
@@ -194,8 +194,8 @@ def former_name_context(prompt) -> str | None:
     if plugin == FORMER_PLUGIN or name not in own_skills():
         return None
     return (f"`/{FORMER_PLUGIN}:{name}` is the former name of this plugin's skill `/{plugin}:{name}` (the plugin "
-            f"{FORMER_PLUGIN} was renamed to {plugin}). Invoke the skill `{plugin}:{name}` and carry out the rest of "
-            f"the prompt as its arguments.")
+            f"{FORMER_PLUGIN} was renamed to {plugin}). Invoke the skill {sr.named(name, plugin)} and carry out the "
+            f"rest of the prompt as its arguments.")
 
 
 def emit(event: str, **fields) -> None:

@@ -55,6 +55,18 @@ def plugin_name() -> str:
         return "delamain"
 
 
+def named(local: str, plugin: Optional[str] = None) -> str:
+    """A skill or agent of this plugin as the texts that hooks and tools inject must name it for one release: the
+    current name and, because a session started before the rename knows the plugin only under the old name,
+    `agent-hub:<same name>` with a short note (rename:keep). Built from plugin_name() and LEGACY_PLUGIN_NAME, like
+    current_type(), so the two forms cannot drift apart."""
+    plugin = plugin or plugin_name()
+    current = f"`{plugin}:{local}`"
+    if plugin == LEGACY_PLUGIN_NAME:
+        return current
+    return f"{current} (`{LEGACY_PLUGIN_NAME}:{local}` in a session started before the rename)"
+
+
 def current_type(typ) -> str:
     """A subagent type with the plugin prefix from before the rename (the old plugin name and a colon) turned into this
     plugin's (`delamain:worker-high`); anything else as it is. A rule written for the old prefix, an agent called by

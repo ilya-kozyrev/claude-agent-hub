@@ -264,10 +264,12 @@ usage 320000
 cb UserPromptSubmit | grep -q 'Context budget: 320k'; check $? 0 "budget: warns on crossing 300k (default)"
 cb PostToolUse Bash > $R/cb1.out; check "$(wc -c < $R/cb1.out | tr -d ' ')" 0 "budget: no second warning in the same step"
 usage 352000
-cb PostToolUse Bash | grep -q 'delamain:handoff'; check $? 0 "budget: warns again a step later and points at delamain:handoff"
+cb PostToolUse Bash > $R/cb1b.out; grep -q 'delamain:handoff' $R/cb1b.out; check $? 0 "budget: warns again a step later and points at delamain:handoff"
+grep -qF '`agent-hub:handoff` in a session started before the rename' $R/cb1b.out; check $? 0 "budget: …and names the skill in its former form for a session started before the rename"  # rename:keep
 cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 1 "budget: below the block threshold, Agent passes"
 usage 510000
-cb PreToolUse Agent '{"prompt":"go"}' | grep -q '"deny"'; check $? 0 "budget: at 500k Agent is denied"
+cb PreToolUse Agent '{"prompt":"go"}' > $R/cb1c.out; grep -q '"deny"' $R/cb1c.out; check $? 0 "budget: at 500k Agent is denied"
+grep -qF 'delamain:handoff' $R/cb1c.out && grep -qF '`agent-hub:handoff` in a session started before the rename' $R/cb1c.out; check $? 0 "budget: the deny reason names the skill in both forms too"  # rename:keep
 cb PreToolUse SendMessage '{"message":"go"}' | grep -q '"deny"'; check $? 0 "budget: SendMessage is denied"
 cb PreToolUse Bash '{"command":"ls"}' | grep -q '"deny"'; check $? 1 "budget: Bash is not gated"
 cb PreToolUse Agent '{"prompt":"take over from /x/HANDOFF-hub-a-2026.md"}' | grep -q '"deny"'; check $? 1 "budget: a handoff path passes"
@@ -313,7 +315,7 @@ SKILLS=$(cd "$T/../skills" && ls -d */ | tr -d /)
 echo "$SKILLS" | grep -qx hub && echo "$SKILLS" | grep -qx status; check $? 0 "former name: the skills folder lists the real skills the tests below walk through"
 for sk in $SKILLS; do
   fp "/agent-hub:$sk take over stage x from /y: run it" > $R/fn.out  # rename:keep
-  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; sk=sys.argv[2]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "former name" in t and "/agent-hub:"+sk in t and "`delamain:"+sk+"`" in t and "rest of the prompt as its arguments" in t, t' $R/fn.out $sk  # rename:keep
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; sk=sys.argv[2]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "former name" in t and "/agent-hub:"+sk in t and "`delamain:"+sk+"`" in t and "rest of the prompt as its arguments" in t and "`agent-hub:"+sk+"` in a session started before the rename" in t, t' $R/fn.out $sk  # rename:keep
   check $? 0 "former name, dial off: /agent-hub:$sk names the skill delamain:$sk"  # rename:keep
 done
 fp "  /agent-hub:status list the stages" | grep -q 'delamain:status'; check $? 0 "former name: leading whitespace is allowed"  # rename:keep

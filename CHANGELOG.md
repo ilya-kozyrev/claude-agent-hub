@@ -16,6 +16,12 @@
   successor's prompt for the owner speaking and reset the automatic-handoff chain). Both forms are read everywhere
   (`[delamain auto-handoff k/N]` and `[delamain watchdog]` too; the exemption of the watchdog's wake prompt from "the
   owner spoke", added in 0.9.2, holds for both forms); the switch to the new forms comes in a later release.
+- **For one release the hook texts name this plugin's skills in both forms.** A session started before the update (its
+  plugin still registered as `agent-hub`, for example one that runs the plugin straight from the folder that has just
+  been updated) knows `agent-hub:handoff`, not `delamain:handoff`. So the texts that the hooks and tools inject, the
+  context budget's "what to do" sentence and its deny reason, the `lock` message about an unknown resource and the note
+  for a prompt that starts with `/agent-hub:<skill>`, give the name as `delamain:<name>` and, in a short parenthesis,
+  `agent-hub:<name>` in a session started before the rename. The single new form comes in a later release.
 - **What did not change, so stages, agents and configurations keep working:** the `AGENT_HUB_*` environment variables,
   the project directory `.agent-hub/` (`config.json`, `lock-rules.json`, `local/`), the default hub home `~/agent-hub`
   (and the older `~/.claude/agent-hub`, `hub home migrate`), the command names in `bin/` (`hub`, `agent`, `agent-top`,
