@@ -137,7 +137,9 @@ terminal may; nothing is stopped when the sessions cannot be listed. The success
 which keeps the chain; so does a takeover of the shift the pending successor already took over (its replacement, by hand
 or by --replace); a hand-started session is recorded as kind `manual`, which `--replace` refuses to act on; any other
 takeover resets it.
-With --engine codex, succeed starts a detached Codex hub in its own worktree from the main checkout, preserving
+With --engine codex, --surface auto prepares a native desktop request in an actual app hub; the current app agent
+executes native list_projects/create_thread and desktop-request/bind/fail/status. Actual takeover verifies its own
+identity/cwd and observed policy; APIs cannot set Full Access. --surface cli or --headless starts a detached Codex hub in its own worktree from the main checkout, preserving
 model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
 Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
 effort prints the effort a Claude Code session runs at now and where it was read (bin/session_effort.py): the hook input,
@@ -163,6 +165,7 @@ still running; succeed: 3 chain limit reached; start, takeover: 4 the session mu
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import importlib.machinery
 import importlib.util
@@ -904,6 +907,36 @@ def cmd_start(a) -> int:
 
 
 def cmd_takeover(a) -> int:
+    try:
+        return locked_takeover(a)
+    except OSError as e:
+        if getattr(a, "desktop_request", None):
+            raise hc.Failure(f"desktop stage-home access/takeover failed: {e}; takeover is not verified") from None
+        raise
+
+
+def locked_takeover(a) -> int:
+    stage = hc.check_stage(a.stage)
+    if not (hc.root() / stage).is_dir() and not (getattr(a, "start", False) and a.dry_run):
+        raise hc.UsageError(f"no stage directory {hc.root() / stage} — the first hub of a stage runs "
+                            f'`hub start --stage {stage} --goal "<what the stage delivers>" --session <your session id>`')
+    # Serialize role migration with launch/bind and other takeovers. Desktop validation precedes locks/roles/journal.
+    with contextlib.nullcontext() if a.dry_run else autopilot.state_lock(hc.check_stage(a.stage)):
+        request = getattr(a, "desktop_request", None)
+        pending = autopilot.load_state(a.stage).get("pending") or {}
+        if a.auto_handoff and pending.get("surface") == "desktop" and not request:
+            raise hc.UsageError("desktop automatic takeover requires --desktop-request from its brief")
+        if request:
+            if a.n is not None and a.n != pending.get("n"):
+                raise hc.UsageError("desktop takeover number must match the reserved successor")
+            if not a.auto_handoff:
+                raise hc.UsageError("--desktop-request requires --auto-handoff")
+            if not a.dry_run:
+                autopilot.desktop_preflight(a.stage, request, resolve_self(a.session), a.handoff)
+    return _cmd_takeover(a)
+
+
+def _cmd_takeover(a) -> int:
     stage = hc.check_stage(a.stage)
     starting = getattr(a, "start", False)
     if not (hc.root() / stage).is_dir() and not (starting and a.dry_run):
@@ -1091,12 +1124,33 @@ def cmd_takeover(a) -> int:
 
     prev_rec = dict(hc.roles_load(stage)["roles"].get("hub") or {})
     roles_cli = load_script("roles")
-    plan.step(f"roles: hub → {session} [{tag}]",
-              lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
-                                         note=f"hub takeover from {prev_label}"),
-              lambda: None if hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
-              else "role was not recorded",
-              short="roles")
+    # External config steps run outside this mutex; role and chain publication stay serialized.
+    with contextlib.nullcontext() if a.dry_run else autopilot.state_lock(stage):
+        request = getattr(a, "desktop_request", None)
+        if request and not a.dry_run:
+            autopilot.desktop_preflight(stage, request, cli, handoff)
+        plan.step(f"roles: hub → {session} [{tag}]",
+                  lambda: roles_cli.set_role(stage, "hub", session, kind, tag=tag, title=name,
+                                             note=f"hub takeover from {prev_label}"),
+                  lambda: None if hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
+                  else "role was not recorded",
+                  short="roles")
+        if not a.dry_run:
+            with hc.roles_lock(stage):
+                data = hc.roles_load(stage)
+                data["roles"]["hub"]["engine"] = engines.selected()
+                host = session_host(stage, session, cli, kind, engines.selected())
+                if host:
+                    data["roles"]["hub"]["host"] = host  # the watchdog's way of waking it (bin/watchdog)
+                if request:
+                    pend = autopilot.load_state(stage)["pending"]
+                    data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
+                                               cwd=pend["cwd"], observed=pend["observed"])
+                hc.roles_save(stage, data)
+            if request:
+                autopilot.desktop_complete(stage, request)
+            else:
+                autopilot.on_takeover(stage, n, a.auto_handoff, cli, locked=True)
 
     stopped, live = replaced_hub(prev_rec, session, cli, stage, a.dry_run)
     if stopped:
@@ -1118,15 +1172,6 @@ def cmd_takeover(a) -> int:
               short="journal")
 
     if not a.dry_run:
-        with hc.roles_lock(stage):
-            data = hc.roles_load(stage)
-            data["roles"]["hub"]["engine"] = engines.selected()
-            host = session_host(stage, session, cli, kind, engines.selected())
-            if host:
-                data["roles"]["hub"]["host"] = host  # the watchdog's way of waking it (bin/watchdog)
-            hc.roles_save(stage, data)
-        # the automatic successor, and a retaking of its shift, keep the chain; anyone else resets it
-        autopilot.on_takeover(stage, n, a.auto_handoff, cli)
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
@@ -1399,7 +1444,7 @@ def cmd_succeed(a) -> int:
         if not cwd.is_dir():
             raise hc.UsageError(f"--cwd {cwd}: no such directory")
         return autopilot.succeed(stage, n, Path(handoff), a.model, a.permission_mode, cwd, False, a.dry_run, False,
-                                 engine=a.engine, succ=succ, effort_arg=a.effort, replace=True, force=a.force)
+                                 engine=a.engine, succ=succ, effort_arg=a.effort, replace=True, force=a.force, surface="cli")
     # this hub's number (the handoff's outgoing one wins over a guess) and its successor's, from the function the
     # successor's takeover numbers by
     # `hub succeed` has no --n: the numbers are chosen in the handoff's title (`hub handoff --n N` writes it)
@@ -1415,7 +1460,7 @@ def cmd_succeed(a) -> int:
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
-                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort)
+                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree)
 
 
 # ---------------------------------------------------------------- reviewer
@@ -1631,6 +1676,7 @@ def main(argv: list) -> int:
     t.add_argument("--auto-handoff", action="store_true",
                    help="this is the successor `hub succeed` started (its prompt gives the command): keeps the chain of "
                         "automatic handoffs, which any other takeover resets")
+    t.add_argument("--desktop-request", help="reservation token in the desktop successor brief")
     t.add_argument("--dry-run", action="store_true")
     t.add_argument("--repo", metavar="PATH", help="the project's repository (any path inside it) when the working "
                                                   "directory is not in one; default: the stage's recorded project")
@@ -1656,6 +1702,10 @@ def main(argv: list) -> int:
                                               "else default)")
     sc.add_argument("--cwd", help="the successor's working directory (default: here)")
     sc.add_argument("--engine", choices=engines.ENGINES, help="successor engine (default: current host)")
+    sc.add_argument("--surface", choices=("auto", "desktop", "cli"), default="auto",
+                    help="Codex launch surface: actual app hub -> desktop request; console/worker -> CLI")
+    sc.add_argument("--desktop-worktree", action="store_true", help="native worktree only when explicitly requested by the owner")
+    sc.add_argument("--branch", help="desktop worktree starting branch, only when explicitly requested and existing")
     sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn) right away")
     sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
                                                             "and start a headless one")
@@ -1669,6 +1719,21 @@ def main(argv: list) -> int:
     sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand); "
                                                           "with --replace: also stop a successor that is busy")
     sc.add_argument("--dry-run", action="store_true")
+    dr = sub.add_parser("desktop-request", help="reserve native dispatch and print create_thread args for a saved project")
+    db = sub.add_parser("desktop-bind", help="confirm native client/actual identity without claiming takeover")
+    df = sub.add_parser("desktop-fail", help="record native failure without an invisible CLI fallback")
+    ds = sub.add_parser("desktop-status", help="show requested/observed identity and verified takeover")
+    ds.add_argument("--verified", action="store_true", help="exit 1 until the actual takeover verifies")
+    for dp in (dr, db, df, ds):
+        dp.add_argument("--stage", required=True)
+        dp.add_argument("--request", required=True)
+    dr.add_argument("--project-id", required=True)
+    dr.add_argument("--project-path", required=True)
+    db.add_argument("--project-id")
+    db.add_argument("--thread-id")
+    db.add_argument("--client-thread-id")
+    df.add_argument("--why", required=True)
+    df.add_argument("--no-thread-created", action="store_true", help="confirmed failure before any thread creation")
     rn = sub.add_parser("rename", parents=[stage_opt], help="rename a stage that has no live agent")
     rn.add_argument("--to", metavar="NEW", help="the new stage name (it must name the work, like `hub start`'s)")
     rn.add_argument("--dry-run", action="store_true")
@@ -1701,7 +1766,11 @@ def main(argv: list) -> int:
             p.error(f"bad stage name {a.stage!r} (lowercase letters, digits, '-' and '_')")
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
-            "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename}[a.cmd](a)
+            "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
+            "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
+            "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),
+            "desktop-bind": lambda a: autopilot.desktop_bind(hc.check_stage(a.stage), a.request, a.thread_id, a.client_thread_id, a.project_id),
+            "desktop-fail": lambda a: autopilot.desktop_fail(hc.check_stage(a.stage), a.request, a.why, a.no_thread_created)}[a.cmd](a)
 
 
 if __name__ == "__main__":
