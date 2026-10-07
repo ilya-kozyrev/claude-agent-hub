@@ -434,6 +434,8 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_WATCHDOG_API_ERROR` | `on` | R4: wake a Claude hub whose last turn ended on an API error. Hub-wide. |
 | `AGENT_HUB_NOTIFY_LOCAL` | `on` | Local notification of the watchdog (`osascript` on macOS, `notify-send` elsewhere when present). Hub-wide. |
 | `AGENT_HUB_NOTIFY_CMD` | none | Remote notification: a JSON list of strings, run without a shell, `{message}` replaced by the text (stage name, minutes, counts, event word only), e.g. `["curl","-fsS","-d","{message}","https://ntfy.sh/<topic>"]`. Empty = no remote channel. Hub-wide. |
+| `AGENT_HUB_SPAWN_HOLD_LOAD` | none (off) | R5: the 1-minute load average per core above which the watchdog holds spawns (`1.5`, `0.75`); the hold ends below 80 % of it. Empty or invalid (warned) = off. Hub-wide. |
+| `AGENT_HUB_SPAWN_HOLD` | `warn` | What `agent spawn` does while a load hold is on: `warn` (a warning, the spawn goes on) or `refuse` (exit 1); `--ignore-hold` passes either. Invalid (warned) = `warn`. Resumes (`agent send`) are never held. Hub-wide. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
@@ -746,7 +748,8 @@ The rules, the hosts it can wake, the safety rules and what leaves the machine a
 [Configuration](#configuration), all hub-wide (hub home `config.json` or the environment, never a repository's).
 Files: `<stage>/do-not-wake.json`; `<state dir>/watchdog/{state.json,lock,log.md,run.sh,job.log}` (`<hub home>/.state`
 or `$AGENT_HUB_STATE_DIR`); `<hub home>/.jwait-state/<stage>/<caller>.armed.json`; `host:` in a `hub` record of `roles.json`.
-`AGENT_HUB_WATCHDOG_NOW=<ISO time>` replaces the clock of one tick and is for tests only.
+`<state dir>/spawn-hold.json` is the load hold (R5; absent while there is none). `AGENT_HUB_WATCHDOG_NOW=<ISO time>`
+replaces the clock of one tick and `AGENT_HUB_WATCHDOG_LOAD=<load>[:<cores>]` its measured load; both are for tests only.
 
 ## Limitations
 

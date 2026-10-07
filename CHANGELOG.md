@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **An optional machine-load hold makes `agent spawn` warn or refuse while the machine is busy.** Off by default: with
+  `AGENT_HUB_SPAWN_HOLD_LOAD` set (1-minute load per core, e.g. `1.5`) the `watchdog` tick writes
+  `<state dir>/spawn-hold.json` while the load is above it and deletes it below 80 % of it (R5; unset removes a leftover
+  file; `--dry-run` writes nothing). `agent spawn`, for both engines, then warns (`AGENT_HUB_SPAWN_HOLD=warn`, the
+  default) or exits 1 (`refuse`), naming the load, the cores, the threshold and the new `--ignore-hold`; an expired or
+  unreadable file is ignored and resumes (`agent send`) are never held. Both settings are hub-wide; an invalid value
+  warns and counts as unset (threshold) or `warn` (action). Tests: `tests/t_load_hold.sh` (fake load through
+  `AGENT_HUB_WATCHDOG_LOAD`, test-only).
 - **Codex hubs are notify-only in 0.9.1: the watchdog notifies the owner.** The queue path is inert until a host producer lands (nothing records `host: codex-app` yet); `watchdog_codex.py` reads runtime state and rollout activity, keeps Desktop, terminal, unknown and notLoaded threads notify-only, and never runs native `exec resume`; Codex API-error detection remains disabled (R4 is Claude-only in 0.9.1), with positive and negative controls for queue decoding, unknown timeout outcomes, hanging proxies and missing CLIs in `t_watchdog_codex.sh`.
 - **Codex handoffs resolve `--session self`, and runtime versions identify the tools actually in use.** Handoff drafts use the wait procedure printed in the takeover digest, which follows the reader's host; status and takeover warn about a newer cache for that engine. Reviewers use no judgement-helper team below the configurable 300 changed-line threshold; bounded extraction stays available. Controls: `tests/t_codex_parity.sh` (both hosts, fake caches, registry identity and threshold layers).
 - **Codex Desktop autopilot prepares a native successor in the same saved project and verifies its actual takeover.** Request, bind and failure commands preserve retries without an invisible CLI fallback; console hubs keep detached CLI successors. Native APIs cannot set sandbox/approval policy. Current effort, goal titles, replacement rules and completed-handoff checks are retained. Replacement checks precede stopping; late CLI results cannot alter another reservation. Desktop transitions journal their state, takeover hooks run outside the autopilot mutex, and successors replay the first digest waiter before conditional waiting. Controls: `tests/t_codex_desktop_autopilot.sh`, `tests/t_codex_autopilot.sh`, `tests/t_autopilot.sh`, `tests/t_pr20_reservations.sh`, `tests/t_pr20_takeover_wait.sh`.
