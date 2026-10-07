@@ -18,6 +18,9 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R4  a Claude hub whose last turn ended on an API error >= 15 min ago → wake it
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
+  R6  the `claude --bg` session of a hub that is retired in its stage and live nowhere (no live role of any stage, not a
+      pending successor), quiet for the wake-after time → `claude stop` (never `claude rm`: the history stays resumable
+      with `claude attach <id>` or `claude --bg --resume <id>`); AGENT_HUB_WATCHDOG_REAP off turns it off
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
 `claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
 terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
@@ -59,7 +62,7 @@ import spawn_hold  # noqa: E402
 TAG = "watchdog"  # the journal tag of the watchdog's own lines
 KEYS = ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
         "AGENT_HUB_WATCHDOG_BACKOFF_MAX", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
-        "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD", "AGENT_HUB_SPAWN_HOLD_LOAD", "AGENT_HUB_SPAWN_HOLD")
+        "AGENT_HUB_WATCHDOG_REAP", "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD", "AGENT_HUB_SPAWN_HOLD_LOAD", "AGENT_HUB_SPAWN_HOLD")
 VERIFY_AFTER_S = 300  # a wake that shows no activity of the hub this long afterwards has failed
 LOG_MAX = 1 << 20
 TAIL_BYTES = 4 << 20
@@ -1019,6 +1022,106 @@ def rule_r5(tick: Tick) -> None:
             path.unlink(missing_ok=True)
 
 
+def id_forms(*ids) -> set:
+    """Every spelling of the given session ids that `claude agents --json` rows use: the full uuid and its first 8 characters."""
+    out = set()
+    for x in ids:
+        if isinstance(x, str) and x.strip():
+            out.update((x.strip(), x.strip()[:8]))
+    return out
+
+
+def retired_hub_sessions(stages: list) -> dict:
+    """{id form: (stage, tag)} of the sessions that a stage's registry lists as retired hubs, minus every session that is
+    a live role of ANY stage or the pending auto-handoff successor of ANY stage (a session retired in one stage may be
+    live in another, and a successor that has not registered yet is not a retired hub's)."""
+    retired, protected = {}, set()
+    for stage in stages:
+        data = hc.roles_load(stage)
+        for rec in data["roles"].values():
+            if isinstance(rec, dict):
+                protected |= id_forms(rec.get("session"), rec.get("cli_session_id"))
+        for rec in data["retired"]:
+            if isinstance(rec, dict) and rec.get("role") == "hub":
+                for x in id_forms(rec.get("session"), rec.get("cli_session_id")):
+                    retired.setdefault(x, (stage, rec.get("tag") or "hub"))
+        try:
+            pend = autopilot.load_state(stage).get("pending")
+        except (OSError, ValueError):
+            pend = None
+        if isinstance(pend, dict):
+            protected |= id_forms(pend.get("id"))
+    guarded = {x[:8] for x in protected}  # an id of either length protects both spellings of the session
+    return {x: v for x, v in retired.items() if x[:8] not in guarded}
+
+
+def last_activity(row: dict):
+    """When the background session of a row last did anything: its transcript's mtime, else its start; None when unknown."""
+    sid = row.get("sessionId") or ""
+    try:
+        path = session_effort.find_transcript(sid) if sid else None
+    except OSError:
+        path = None
+    t = mtime_of(path) if path else None
+    if t is not None:
+        return t
+    started = row.get("startedAt")
+    if isinstance(started, (int, float)) and not isinstance(started, bool):
+        try:
+            return dt.datetime.fromtimestamp(started / 1000, hc.TZ)
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
+
+
+def rule_r6(tick: Tick, stages: list) -> None:
+    """Stop (never remove) the background session of a retired hub that is live nowhere, once it has been quiet for the
+    wake-after time. A busy status does not protect it: a left-over background command keeps a finished hub busy."""
+    if not flag("AGENT_HUB_WATCHDOG_REAP"):
+        return
+    retired = retired_hub_sessions(stages)
+    if not retired:
+        return
+    rows = claude_rows(tick)
+    if not rows:
+        return
+    try:
+        cli = hc.find_claude(persist=False)
+    except hc.Failure:
+        return
+    done = set()
+    for row in rows:
+        sid, rid = row.get("sessionId") or "", row.get("id") or ""
+        if row.get("kind") != "background" or not row.get("pid") or not (sid or rid):
+            continue
+        hit = retired.get(sid) or retired.get(rid)
+        if hit is None or (sid or rid) in done:
+            continue
+        stage, tag = hit
+        last = last_activity(row)
+        if last is None:
+            continue
+        quiet = tick.now - last
+        if quiet < tick.wake_after:
+            continue
+        target = rid or sid[:8]
+        who = f"{tag} ({(sid or rid)[:8]})"
+        mins = int(quiet.total_seconds() // 60)
+        done.add(sid or rid)
+        if tick.dry:
+            tick.say(stage, "R6", f"would stop the background session of retired {who}, quiet {mins} min")
+            continue
+        cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
+        res = run([cli.path, "stop", target], 30, cwd)
+        if res.returncode != 0:
+            tick.say(stage, "R6", f"stopping the background session of retired {who} failed: claude stop exit "
+                                  f"{res.returncode}: {first_line(res.stderr or res.stdout)}")
+            continue
+        text = f"stopped the background session of retired {who}, quiet {mins} min"
+        tick.say(stage, "R6", text)
+        tick.journal(stage, text)
+
+
 def cmd_run(a) -> int:
     if not a.dry_run and not enabled():
         print("watchdog is off (AGENT_HUB_WATCHDOG): nothing done — `watchdog install` turns it on")
@@ -1044,6 +1147,10 @@ def cmd_run(a) -> int:
                 # and never save the corrupt value back, or every later tick fails on it again
                 tick.state["stages"][stage] = {}
                 print(f"watchdog: stage {stage}: state reset after {type(e).__name__}: {first_line(str(e))}", file=sys.stderr)
+        try:
+            rule_r6(tick, stage_names())
+        except Exception as e:  # noqa: BLE001 — reaping must not stop the tick
+            tick.say("machine", "error", f"{type(e).__name__}: {first_line(str(e))}")
         if not a.dry_run:
             tick.state["last_tick"] = iso(tick.now)
             save_state(tick.state)
