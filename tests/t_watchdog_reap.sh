@@ -4,7 +4,8 @@
 # by startedAt when it has no transcript, `busy` or not, matched by session or cli_session_id). Negatives, each left alone:
 # a hub that is live in its stage, a session retired in one stage and live in another, a pending successor (either
 # taken_over value), quiet only 5 min, not background, no pid, an unknown age, AGENT_HUB_WATCHDOG_REAP=off, a dry run.
-# Also: `claude agents --json` failing, a failing `claude stop`, a stage whose registry is broken. Stand-in CLI only.
+# Also: `claude agents --json` failing, a failing `claude stop`, a stage whose registry or auto-handoff.json is broken,
+# a session that becomes a live role while the watchdog is stopping others (the registries are read again before each stop). Stand-in CLI only.
 . "$(dirname "$0")/lib.sh"
 new_home; R=$AGENT_HUB_HOME
 export HOME=$R/home; mkdir -p "$HOME"
@@ -41,12 +42,17 @@ NN=$(sid b0000007)   # no pid
 NU=$(sid b0000008)   # age unknown
 NS=$(sid b0000009)   # started 5 min ago, no transcript
 HUBB=$(sid c0000002)
+NA=deadbeef-1111-4000-8000-000000000000; NB=deadbeef-2222-4000-8000-000000000000   # retired hub A; a different session B with A's first 8 characters
+NR=$(sid b0000010)   # retired only as a worker role
+NX=$(sid b0000011)   # in no registry at all
 
 # registries: stage a (live hub NL), stage b (live hub HUBB, live worker NW)
 "$B/roles" set --stage b hub "$HUBB" --kind cli --tag hub-2 > /dev/null
 retire_hub a "$P1" hub-1; retire_hub a "$P2" hub-2; retire_hub a "$P3" hub-3
 retire_hub a "$NW" hub-4; retire_hub a "$NP" hub-5; retire_hub a "$NT" hub-6; retire_hub a "$N5" hub-7
 retire_hub a "$NK" hub-8; retire_hub a "$NN" hub-10; retire_hub a "$NU" hub-11; retire_hub a "$NS" hub-12
+retire_hub a "$NA" hub-16
+"$B/roles" set --stage a worker "$NR" --kind headless --tag worker > /dev/null; "$B/roles" retire --stage a worker --note "test" > /dev/null
 retire_hub a "$NL" hub-13; "$B/roles" set --stage a hub "$NL" --kind cli --tag hub-14 > /dev/null    # NL is live: the stage's hub now
 # P4: retired with its own id in `session` and the row's id in cli_session_id only
 python3 - "$R/a/roles.json" "$P4" <<'PY'
@@ -65,13 +71,14 @@ import json, sys
 json.dump({"chain": 1, "pending": {"n": 6, "kind": "bg", "id": sys.argv[2], "at": "2026-10-07T11:55:00", "taken_over": True}}, open(sys.argv[1], "w"))
 PY
 quiet_for "$P1" 30; quiet_for "$P3" 30; quiet_for "$P4" 30; quiet_for "$NW" 30; quiet_for "$NP" 30; quiet_for "$NT" 30
+quiet_for "$NB" 30; quiet_for "$NR" 30; quiet_for "$NX" 30
 quiet_for "$N5" 5; quiet_for "$NK" 30; quiet_for "$NN" 30; quiet_for "$NL" 30
 # P2, NS: no transcript, only startedAt; NU: neither
 ms_ago(){ python3 -c 'import datetime as d,sys; t=d.datetime.fromisoformat(sys.argv[1]).replace(tzinfo=d.timezone.utc)-d.timedelta(minutes=int(sys.argv[2])); print(int(t.timestamp()*1000))' "$NOW" "$1"; }
 mkrows(){  # all rows: id sessionId kind status pid startedAt
-  python3 - "$FAKE_WD_ROWS" "$LIVE" "$(ms_ago 30)" "$(ms_ago 5)" "$P1" "$P2" "$P3" "$P4" "$NW" "$NP" "$NT" "$N5" "$NK" "$NN" "$NU" "$NS" "$NL" <<'PY'
+  python3 - "$FAKE_WD_ROWS" "$LIVE" "$(ms_ago 30)" "$(ms_ago 5)" "$P1" "$P2" "$P3" "$P4" "$NW" "$NP" "$NT" "$N5" "$NK" "$NN" "$NU" "$NS" "$NL" "$NB" "$NR" "$NX" <<'PY'
 import json, sys
-out, live, old, new, p1, p2, p3, p4, nw, np_, nt, n5, nk, nn, nu, ns, nl = sys.argv[1:]
+out, live, old, new, p1, p2, p3, p4, nw, np_, nt, n5, nk, nn, nu, ns, nl, nb, nr, nx = sys.argv[1:]
 def row(sid, kind="background", status="idle", pid=int(live), started=None):
     r = {"id": sid[:8], "sessionId": sid, "kind": kind, "status": status, "state": "done", "pid": pid, "cwd": "/tmp", "name": "hub"}
     if pid is None:
@@ -80,7 +87,7 @@ def row(sid, kind="background", status="idle", pid=int(live), started=None):
         r["startedAt"] = int(started)
     return r
 rows = [row(p1), row(p2, started=old), row(p3, status="busy"), row(p4), row(nw), row(np_), row(nt), row(n5),
-        row(nk, kind="interactive"), row(nn, pid=None), row(nu), row(ns, started=new), row(nl)]
+        row(nk, kind="interactive"), row(nn, pid=None), row(nu), row(ns, started=new), row(nl), row(nb), row(nr), row(nx)]
 json.dump(rows, open(out, "w"))
 PY
 }
@@ -136,6 +143,18 @@ WD run > "$R/bad.out" 2>&1; check $? 0 "a broken registry: the tick exits 0"
 check "$(stops)" "" "a broken registry: nothing is stopped"
 rm -r "$R/sbad"
 
+# ---- an auto-handoff.json that cannot be read: a pending successor may be hidden in it, so nothing is stopped
+mkrows; reset_log; mkdir -p "$R/sc"; "$B/roles" set --stage sc hub "$(sid d0000001)" --kind cli --tag hub-1 > /dev/null
+for bad in '{' '[]' '{"pending": 7}'; do
+  printf '%s' "$bad" > "$R/sc/auto-handoff.json"; reset_log
+  WD run > "$R/corrupt.out" 2>&1; check $? 0 "auto-handoff.json $bad: the tick exits 0"
+  check "$(stops)" "" "auto-handoff.json $bad: nothing is stopped"
+  grep -q "^\[[0-9 :-]*\] machine: not stopping any retired hub's session this tick: .*auto-handoff.json" "$R/corrupt.out"; check $? 0 "auto-handoff.json $bad: one line says why"
+done
+rm "$R/sc/auto-handoff.json"; reset_log; mkrows
+WD run > "$R/corrupt.out" 2>&1; check "$(stops)" "$EXPECT" "control: the same stage without the corrupt file does not hold R6 back"
+rm -r "$R/sc"
+
 # ---- a quiet time set by the owner
 mkrows; reset_log
 AGENT_HUB_WATCHDOG_WAKE_AFTER=45m WD run > "$R/long.out" 2>&1; check $? 0 "WAKE_AFTER=45m: the tick exits 0"
@@ -143,4 +162,10 @@ check "$(stops)" "" "WAKE_AFTER=45m: sessions quiet 30 min are left alone"
 mkrows; reset_log
 AGENT_HUB_WATCHDOG_WAKE_AFTER=3m WD run > "$R/short.out" 2>&1; check $? 0 "WAKE_AFTER=3m: the tick exits 0"
 check "$(stops)" "${EXPECT}stop b0000005 stop b0000009 " "WAKE_AFTER=3m: the two sessions quiet 5 min follow; every other negative stays"
+
+# ---- a session that becomes a live role while the watchdog is stopping others: the registries are read again before each stop
+mkrows; reset_log
+printf '#!/bin/sh\n[ "$1" = a0000001 ] && "%s/roles" set --stage b worker2 "%s" --kind headless --tag w2 > /dev/null\nexit 0\n' "$B" "$P2" > "$R/onstop.sh"
+FAKE_WD_ON_STOP="sh $R/onstop.sh \"\$1\"" WD run > "$R/race.out" 2>&1; check $? 0 "race: the tick exits 0"
+check "$(stops)" "stop a0000001 stop a0000003 stop a0000004 " "race: a0000002 became a live role of stage b during the first stop and is not stopped; the others are"
 exit $fail

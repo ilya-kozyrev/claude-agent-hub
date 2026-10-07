@@ -1022,37 +1022,74 @@ def rule_r5(tick: Tick) -> None:
             path.unlink(missing_ok=True)
 
 
-def id_forms(*ids) -> set:
-    """Every spelling of the given session ids that `claude agents --json` rows use: the full uuid and its first 8 characters."""
-    out = set()
-    for x in ids:
-        if isinstance(x, str) and x.strip():
-            out.update((x.strip(), x.strip()[:8]))
-    return out
+class ReapAbort(Exception):
+    """R6 cannot tell what is live or pending: it stops nothing in this tick."""
 
 
-def retired_hub_sessions(stages: list) -> dict:
-    """{id form: (stage, tag)} of the sessions that a stage's registry lists as retired hubs, minus every session that is
-    a live role of ANY stage or the pending auto-handoff successor of ANY stage (a session retired in one stage may be
-    live in another, and a successor that has not registered yet is not a retired hub's)."""
-    retired, protected = {}, set()
+def same_session(a: str, b: str) -> bool:
+    """Whether two session ids name one session. Two full uuids must be equal (two sessions may share their first 8
+    characters); when one side is only the 8-character form of `claude agents`, the prefix decides."""
+    if len(a) > 8 and len(b) > 8:
+        return a == b
+    return a[:8] == b[:8]
+
+
+def session_ids(*ids) -> list:
+    return [x.strip() for x in ids if isinstance(x, str) and x.strip()]
+
+
+def strict_pending(stage: str):
+    """The pending record of auto-handoff.json: None when the file is absent or holds no pending. Any other failure
+    to read it raises ReapAbort (autopilot.load_state would hide it and drop the protection of a pending successor)."""
+    path = autopilot.state_path(stage)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise ReapAbort(f"{path} cannot be read ({type(e).__name__}: {first_line(str(e))})") from None
+    if not isinstance(data, dict) or not isinstance(data.get("pending"), (dict, type(None))):
+        raise ReapAbort(f"{path} has an unexpected shape")
+    return data.get("pending")
+
+
+def reap_registry(stages: list):
+    """([(stage, tag, [ids])] of the retired hub records, [ids] that must not be stopped): every live role of ANY stage
+    (a session retired in one stage may be live in another) and the pending auto-handoff successor of ANY stage (one that
+    has not registered yet). Raises ReapAbort when a registry or a pending record cannot be read."""
+    retired, protected = [], []
     for stage in stages:
-        data = hc.roles_load(stage)
+        try:
+            data = hc.roles_load(stage)
+        except hc.Failure as e:
+            raise ReapAbort(first_line(str(e))) from None
         for rec in data["roles"].values():
             if isinstance(rec, dict):
-                protected |= id_forms(rec.get("session"), rec.get("cli_session_id"))
+                protected += session_ids(rec.get("session"), rec.get("cli_session_id"))
         for rec in data["retired"]:
             if isinstance(rec, dict) and rec.get("role") == "hub":
-                for x in id_forms(rec.get("session"), rec.get("cli_session_id")):
-                    retired.setdefault(x, (stage, rec.get("tag") or "hub"))
-        try:
-            pend = autopilot.load_state(stage).get("pending")
-        except (OSError, ValueError):
-            pend = None
-        if isinstance(pend, dict):
-            protected |= id_forms(pend.get("id"))
-    guarded = {x[:8] for x in protected}  # an id of either length protects both spellings of the session
-    return {x: v for x, v in retired.items() if x[:8] not in guarded}
+                ids = session_ids(rec.get("session"), rec.get("cli_session_id"))
+                if ids:
+                    retired.append((stage, rec.get("tag") or "hub", ids))
+        pend = strict_pending(stage)
+        if pend:
+            protected += session_ids(pend.get("id"))
+    return retired, protected
+
+
+def retired_hub_of(row: dict, stages: list):
+    """(stage, tag) when the row is the session of a retired hub that is protected nowhere, else None. A full-uuid
+    protection covers only that uuid, an 8-character one every session with that prefix: over-protecting is fine."""
+    ident = (row.get("sessionId") or row.get("id") or "").strip()
+    if not ident:
+        return None
+    retired, protected = reap_registry(stages)
+    if any(same_session(p, ident) for p in protected):
+        return None
+    for stage, tag, ids in retired:
+        if any(same_session(x, ident) for x in ids):
+            return stage, tag
+    return None
 
 
 def last_activity(row: dict):
@@ -1076,50 +1113,54 @@ def last_activity(row: dict):
 
 def rule_r6(tick: Tick, stages: list) -> None:
     """Stop (never remove) the background session of a retired hub that is live nowhere, once it has been quiet for the
-    wake-after time. A busy status does not protect it: a left-over background command keeps a finished hub busy."""
+    wake-after time. A busy status does not protect it: a left-over background command keeps a finished hub busy. The
+    registries are read again right before each stop (a stop takes up to 30 s; the session may have become live meanwhile)."""
     if not flag("AGENT_HUB_WATCHDOG_REAP"):
         return
-    retired = retired_hub_sessions(stages)
-    if not retired:
-        return
-    rows = claude_rows(tick)
-    if not rows:
-        return
     try:
-        cli = hc.find_claude(persist=False)
-    except hc.Failure:
-        return
-    done = set()
-    for row in rows:
-        sid, rid = row.get("sessionId") or "", row.get("id") or ""
-        if row.get("kind") != "background" or not row.get("pid") or not (sid or rid):
-            continue
-        hit = retired.get(sid) or retired.get(rid)
-        if hit is None or (sid or rid) in done:
-            continue
-        stage, tag = hit
-        last = last_activity(row)
-        if last is None:
-            continue
-        quiet = tick.now - last
-        if quiet < tick.wake_after:
-            continue
-        target = rid or sid[:8]
-        who = f"{tag} ({(sid or rid)[:8]})"
-        mins = int(quiet.total_seconds() // 60)
-        done.add(sid or rid)
-        if tick.dry:
-            tick.say(stage, "R6", f"would stop the background session of retired {who}, quiet {mins} min")
-            continue
-        cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
-        res = run([cli.path, "stop", target], 30, cwd)
-        if res.returncode != 0:
-            tick.say(stage, "R6", f"stopping the background session of retired {who} failed: claude stop exit "
-                                  f"{res.returncode}: {first_line(res.stderr or res.stdout)}")
-            continue
-        text = f"stopped the background session of retired {who}, quiet {mins} min"
-        tick.say(stage, "R6", text)
-        tick.journal(stage, text)
+        if not reap_registry(stages)[0]:
+            return
+        rows = claude_rows(tick)
+        if not rows:
+            return
+        try:
+            cli = hc.find_claude(persist=False)
+        except hc.Failure:
+            return
+        done = set()
+        for row in rows:
+            ident = row.get("sessionId") or row.get("id") or ""
+            if row.get("kind") != "background" or not row.get("pid") or not ident or ident in done:
+                continue
+            hit = retired_hub_of(row, stages)
+            if hit is None:
+                continue
+            stage, tag = hit
+            last = last_activity(row)
+            if last is None:
+                continue
+            quiet = tick.now - last
+            if quiet < tick.wake_after:
+                continue
+            who = f"{tag} ({ident[:8]})"
+            mins = int(quiet.total_seconds() // 60)
+            done.add(ident)
+            if tick.dry:
+                tick.say(stage, "R6", f"would stop the background session of retired {who}, quiet {mins} min")
+                continue
+            cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
+            if retired_hub_of(row, stages) is None:  # re-read right before the stop: registered or pending since?
+                continue
+            res = run([cli.path, "stop", row.get("id") or ident[:8]], 30, cwd)
+            if res.returncode != 0:
+                tick.say(stage, "R6", f"stopping the background session of retired {who} failed: claude stop exit "
+                                      f"{res.returncode}: {first_line(res.stderr or res.stdout)}")
+                continue
+            text = f"stopped the background session of retired {who}, quiet {mins} min"
+            tick.say(stage, "R6", text)
+            tick.journal(stage, text)
+    except ReapAbort as e:
+        tick.say("machine", "R6", f"not stopping any retired hub's session this tick: {e}")
 
 
 def cmd_run(a) -> int:

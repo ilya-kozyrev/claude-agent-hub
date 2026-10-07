@@ -6,6 +6,8 @@ Never starts anything: every call is appended as one JSON line to $FAKE_WD_LOG (
 $FAKE_WD_ROWS (a JSON file, default none)  the rows `agents --json` prints; `stop` removes a row, a resume adds one
 FAKE_WD_AGENTS=fail                        `agents --json` exits 1
 FAKE_WD_STOP=fail                          `stop` exits 1
+FAKE_WD_ON_STOP=<shell command>            run by every `stop`, before it acts, with the target as its argument (a test that
+                                           changes the world while the watchdog is stopping sessions)
 FAKE_WD_RESUME=fail                        `--bg --resume` exits 1 ("Error: resume failed")
 FAKE_WD_STOP=ghost                         `stop` of a hub exits 0 but its row stays listed (the process is not touched)
 FAKE_WD_AGENTS_FAIL_FROM=<n>               from the n-th `agents --json` call of the log on, it exits 1
@@ -83,6 +85,8 @@ if cmd == "agents":
     print(json.dumps(out))
 elif cmd == "stop":
     target = argv[1] if len(argv) > 1 else ""
+    if os.environ.get("FAKE_WD_ON_STOP"):
+        subprocess.run(["sh", "-c", os.environ["FAKE_WD_ON_STOP"], "sh", target], check=False)
     mode = os.environ.get("FAKE_WD_STOP", "")
     if mode == "fail" or (mode == "copy-fail" and target.startswith("cc")):
         sys.stderr.write("fake claude: stop failed\n")
