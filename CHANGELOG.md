@@ -28,14 +28,17 @@
   `claude plugin marketplace update claude-agent-hub`; auto-update does it too), then run
   `/plugin install delamain@claude-agent-hub` once (`claude plugin install delamain@claude-agent-hub`): a marketplace
   added from a git repository reports the plugin as not cached until that install. Restart the sessions. The cache
-  folder becomes `~/.claude/plugins/cache/claude-agent-hub/delamain/<version>/`. A new install is
-  `/plugin marketplace add ilya-kozyrev/delamain` and `/plugin install delamain@delamain`.
+  folder becomes `~/.claude/plugins/cache/claude-agent-hub/delamain/<version>/`. If the watchdog is installed, run
+  `watchdog install` again from the new plugin: its job still points at the old `bin/`, which is removed later
+  (`watchdog status` reports it). A new install is `/plugin marketplace add ilya-kozyrev/delamain` and
+  `/plugin install delamain@delamain`.
 - **Migration, Codex.** Codex has no rename map: replace the plugin, between sessions (removing the old plugin deletes
   its cache, and a Codex session still running on it loses its hooks). Remove the old plugin first, so the hooks do not
   run twice: `codex plugin remove agent-hub@agent-hub-codex`, `codex plugin marketplace remove agent-hub-codex`; update
   your checkout (`git -C /absolute/path/to/checkout pull`); then `codex plugin marketplace add /absolute/path/to/checkout`
   and `codex plugin add delamain@delamain-codex`. Restart the Codex chat and review and trust the new plugin's hooks
-  ([Codex setup](docs/codex.md#install-in-codex)).
+  ([Codex setup](docs/codex.md#install-in-codex)). If the watchdog is installed, run `watchdog install` again from the new
+  plugin: the job still points at the `bin/` that `codex plugin remove` deleted.
 
 ## 0.9.2 — 2026-10-07
 
