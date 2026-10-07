@@ -221,11 +221,21 @@ match no configured rule remain outside the lock board's enforcement. The files 
 `hub succeed --engine codex --surface auto` detects an actual app hub through both
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` and `CODEX_APP_TOOLS_PIPE_PATH`, excluding detached
 `AGENT_ROLE` workers. `CODEX_THREAD_ID` alone identifies a Codex session, not a desktop surface. Detached children
-strip app attribution/transport markers. `--surface cli` and `--headless` keep the ordinary detached launch,
-model/effort/sandbox inheritance and fresh CLI worktree rules. `--surface desktop` prepares a request without
+strip app attribution/transport markers. Terminal and detached hubs retain the ordinary auto/CLI launch,
+model/effort/sandbox inheritance and fresh CLI worktree rules. In a confirmed app hub, `--surface cli` and
+`--headless` require the owner's explicit CLI-from-Desktop opt-in: `"AGENT_HUB_DESKTOP_CLI_HANDOFF": true`
+in the resolved hub home's `config.json` (off by default). This grants a surface choice, not native API authorization.
+The guard reads that home file directly; repository settings and environment overrides cannot grant this permission.
+An agent-supplied CLI flag, `--force`, or inability to use native creation is not evidence the owner chose CLI.
+Agents must not enable the opt-in to work around native policy. Even with opt-in, auto selects Desktop and an
+unfinished native reservation cannot change surface. `--surface desktop` prepares a request without
 calling a CLI or accessing any app socket. It never silently falls back to CLI.
 
-The current **app agent** executes this procedure automatically after preparing the handoff:
+Desktop auto handoff prepares the native successor request and keeps the predecessor active until verified.
+Native `create_thread` is restricted to explicit human requests. If creation is unavailable or lacks that
+authorization, retain the native reservation and predecessor, ask the owner for the native creation request,
+and wait. Preparation is pending work, not a completed handoff. Once the owner explicitly authorizes native
+creation, the current **app agent** executes the full procedure below through bind, takeover and verified status:
 
 1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file>`. Keep its request token.
    The command reserves one successor/chain count and writes its takeover brief. Preparation is not launch success.
@@ -234,7 +244,7 @@ The current **app agent** executes this procedure automatically after preparing 
    if there is no unique match, report the failure and keep the predecessor. Never hardcode a project ID.
 3. Run `hub desktop-request --stage <S> --request <token> --project-id <returned ID> --project-path <returned path>`.
    Its JSON has `create_thread` arguments and `already_dispatched`. Only when false, pass `create_thread` to
-   the supported native `create_thread` tool. Dispatch is reserved before this call; a repeated command returns
+   the supported native `create_thread` tool under that explicit human authorization. Dispatch is reserved before this call; a repeated command returns
    true and must not create another thread. The request uses the saved project's local environment by default, actual
    `model`/`thinking` fields when known. Only an explicit owner worktree request uses `--desktop-worktree` on succeed;
    it requires a Git project and omits startingState to use the project's default branch. An explicit existing

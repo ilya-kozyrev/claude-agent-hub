@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Desktop-передача Codex сохраняет нативную поверхность.** Агентские `--surface cli` и `--headless`
+  требуют явного выбора владельца через `AGENT_HUB_DESKTOP_CLI_HANDOFF` в конфигурации hub home;
+  репозиторий и окружение не могут дать это разрешение. Без разрешения на native create_thread запрос остаётся
+  pending, предыдущий хаб работает до проверенного takeover. Terminal/detached-передача сохраняет CLI-путь.
+
 - **The watchdog can wake a confirmed idle Codex app hub in its own thread.** `hub start`/`takeover` record app
   provenance only for the current UUID with both app markers and no detached worker identity. Runtime status is
   rechecked before `codex queue`; terminal/unknown hosts notify only, with no native resume fallback. The takeover
