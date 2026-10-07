@@ -942,8 +942,12 @@ def native_refresh_candidate(pending, current, session, n) -> bool:
 
 def native_self_refresh(a, stage, session, request) -> int:
     """Called under the state mutex; proof and completion never enter the generic takeover Plan."""
-    incompatible = {"--take-main-merge", "--skip-lock", "--main-merge-until", "--goal", "--name", "--repo", "--no-project"}
-    if any(arg.split("=", 1)[0] in incompatible for arg in a.argv):
+    # Use parsed actions so argparse abbreviations cannot silently discard a requested operation.
+    # main-merge-until has a default, so retain the explicit option check even for that same value.
+    explicit_until = any(arg.split("=", 1)[0].startswith("--") and arg.split("=", 1)[0] != "--"
+                         and "--main-merge-until".startswith(arg.split("=", 1)[0]) for arg in a.argv)
+    if (a.take_main_merge or a.skip_lock or explicit_until or a.goal is not None
+            or a.name is not None or a.repo is not None or a.no_project):
         raise hc.UsageError("native self-refresh cannot transfer resources or change metadata/location; "
                             "run an independently authorized resource operation separately")
     with hc.roles_lock(stage):

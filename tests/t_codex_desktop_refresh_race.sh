@@ -92,7 +92,8 @@ for args in (argv,argv+['--dry-run'],['start','--stage','stage-a','--session','s
     assert snapshot()==native,'exact refresh touched resources/coordinator/project/registration/state'
 print('PASS exact native takeover/start/dry-run/explicit repeats bypass generic Plan and preserve every fixture byte')
 for flag in (['--take-main-merge'],['--skip-lock','businessqueue'],['--main-merge-until','+30d'],
-             ['--goal','changed'],['--name','changed'],['--repo',str(repo)],['--no-project']):
+             ['--goal','changed'],['--name','changed'],['--repo',str(repo)],['--no-project'],
+             ['--take-main-m'],['--main=+30d'],['--skip-lo=businessqueue'],['--go=changed']):
     with contextlib.redirect_stdout(io.StringIO()):
         try:h.main(argv+flag)
         except ap.hc.UsageError:pass
