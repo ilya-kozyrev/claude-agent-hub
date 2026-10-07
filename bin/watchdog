@@ -16,15 +16,19 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it
   R4  a Claude hub whose last turn ended on an API error >= 15 min ago → wake it
+  R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
+      spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
 `claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
 terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
 
 Settings (hub home config.json or the environment; all hub-wide): AGENT_HUB_WATCHDOG (on/off, `install` sets it),
 AGENT_HUB_WATCHDOG_EVERY (5m), _WAKE_AFTER (15m), _BACKOFF_MAX (4h), _NIGHT_QUEUE (on), _API_ERROR (on),
-AGENT_HUB_NOTIFY_LOCAL (on), AGENT_HUB_NOTIFY_CMD (a JSON argv with {message}; empty = no remote channel).
+AGENT_HUB_NOTIFY_LOCAL (on), AGENT_HUB_NOTIFY_CMD (a JSON argv with {message}; empty = no remote channel),
+AGENT_HUB_SPAWN_HOLD_LOAD (empty = off), AGENT_HUB_SPAWN_HOLD (warn|refuse).
 What leaves the machine: the stage name, minutes, counts and the event word. Never line text, session ids, tags, paths.
-Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick.
+Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick; AGENT_HUB_WATCHDOG_LOAD=<load>[:<cores>]
+replaces the measured load.
 Exit: 0 ok (also: another tick is running, the watchdog is off), 1 failure, 2 usage.
 """
 from __future__ import annotations
@@ -49,11 +53,12 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import autopilot  # noqa: E402
 import session_effort  # noqa: E402
+import spawn_hold  # noqa: E402
 
 TAG = "watchdog"  # the journal tag of the watchdog's own lines
 KEYS = ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
         "AGENT_HUB_WATCHDOG_BACKOFF_MAX", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
-        "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD")
+        "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD", "AGENT_HUB_SPAWN_HOLD_LOAD", "AGENT_HUB_SPAWN_HOLD")
 VERIFY_AFTER_S = 300  # a wake that shows no activity of the hub this long afterwards has failed
 LOG_MAX = 1 << 20
 TAIL_BYTES = 4 << 20
@@ -903,6 +908,38 @@ def stage_names(only=None) -> list:
     return names
 
 
+def rule_r5(tick: Tick) -> None:
+    """The machine-load spawn hold: write, refresh or delete <state>/spawn-hold.json (off unless the threshold is set)."""
+    path, limit = spawn_hold.hold_file(), spawn_hold.threshold()
+    existing = path.exists()
+    if limit is None:
+        if existing:
+            tick.say("machine", "R5", f"{'would remove' if tick.dry else 'removed'} spawn-hold.json: AGENT_HUB_SPAWN_HOLD_LOAD is not set")
+            if not tick.dry:
+                path.unlink(missing_ok=True)
+        return
+    load, cores = spawn_hold.measure()
+    per_core = load / max(cores, 1)
+    current = spawn_hold.read(tick.now)
+    rec = None
+    if per_core > limit or (current is not None and per_core >= limit * spawn_hold.HYSTERESIS):
+        # over the threshold, or a hold already in force and the load not yet below 80 % of it: (re)write, keep `since`
+        since = current.get("since") if current else None
+        rec = {"since": since or iso(tick.now), "load": round(load, 2), "cores": cores, "threshold": limit,
+               "until": iso(tick.now + 2 * every())}
+    if rec is not None:
+        if current is None:
+            tick.say("machine", "R5", f"{'would hold' if tick.dry else 'holding'} spawns: load {load:.2f} on {cores} cores "
+                     f"({per_core:.2f} per core) above {limit:g}")
+        if not tick.dry:
+            hc.atomic_write(path, json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+    elif existing:
+        tick.say("machine", "R5", f"{'would release' if tick.dry else 'released'} the spawn hold: load {load:.2f} on {cores} cores "
+                 f"({per_core:.2f} per core) is below {limit * spawn_hold.HYSTERESIS:g}")
+        if not tick.dry:
+            path.unlink(missing_ok=True)
+
+
 def cmd_run(a) -> int:
     if not a.dry_run and not enabled():
         print("watchdog is off (AGENT_HUB_WATCHDOG): nothing done — `watchdog install` turns it on")
@@ -915,6 +952,10 @@ def cmd_run(a) -> int:
         tick = Tick(a.dry_run, a.json)
         if not a.dry_run:
             trim(wd_dir() / "job.log")
+        try:
+            rule_r5(tick)
+        except Exception as e:  # noqa: BLE001 — the load hold must not stop the stages
+            tick.say("machine", "error", f"{type(e).__name__}: {first_line(str(e))}")
         for stage in stage_names(a.stage):
             try:
                 run_stage(tick, stage)
