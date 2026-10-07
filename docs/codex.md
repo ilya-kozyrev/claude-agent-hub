@@ -158,6 +158,8 @@ on disk: use its captured result/status or explicitly permit the output location
 configuration. `workspace-write` is another supported sandbox. A sandboxed interactive coordinator may need
 `--add-dir <hub-home>` to write to the shared home. Full access needs no directory grant.
 
+See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
+
 ## Native Codex subagents
 
 Claude's `agents/worker-*.md` files remain Claude definitions. Codex uses standalone TOML files in

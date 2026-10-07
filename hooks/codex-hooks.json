@@ -49,7 +49,7 @@
         ]
       },
       {
-        "matcher": "^(Agent|Task|Workflow|spawn_agent|resume_agent|collaboration[._]+spawn_agent|collaboration[._]+resume_agent)$",
+        "matcher": "^(Agent|Task|Workflow|SendMessage|spawn_agent|resume_agent|send_input|send_message|followup_task|collaboration(?:\\.|__)?(?:spawn_agent|resume_agent|send_input|send_message|followup_task))$",
         "hooks": [
           {
             "type": "command",

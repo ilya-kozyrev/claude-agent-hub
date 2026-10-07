@@ -208,12 +208,18 @@ def decide(tool: str, tool_input: dict, cwd, session_id) -> str | None:
     level, source = resolve(session_id) if enabled() else (None, "dial off")
     native = native_tool(tool)
     call = (codex_agent_call(tool, tool_input, cwd, level) if native in ("spawn_agent", "resume_agent")
-            else sr.agent_call(tool, tool_input, cwd, level))
+            else sr.agent_call(policy_tool(tool), tool_input, cwd, level))
     call["source"] = source
     if level is not None:
         rules = hc.setting_json("AGENT_HUB_DELEGATION_RULES", None)
         label = "AGENT_HUB_DELEGATION_RULES"
-        res = sr.evaluate(DEFAULT_DELEGATION_RULES if rules is None else rules, call, label)
+        defaults = DEFAULT_DELEGATION_RULES
+        # These native calls start another turn on an existing agent. A pure message
+        # (send_message) does not reactivate an idle agent and keeps its own policy.
+        if native in ("send_input", "followup_task"):
+            defaults = [*defaults, {"when": {"level": "0", "tool": "SendMessage"}, "decision": "deny",
+                                    "reason": "Delegation level is 0 ({source}): do this yourself."}]
+        res = sr.evaluate(defaults if rules is None else rules, call, label)
         if res and res[0] == "deny":
             return sr.deny_reason(res, label)
     if tool in ("Agent", "Task") or native == "spawn_agent":
@@ -267,7 +273,7 @@ def main(argv: list) -> int:
             data = hook_input()
             hc.use_cwd(data.get("cwd"))
             tool = data.get("tool_name")
-            if policy_tool(tool) in ("Agent", "Task", "Workflow"):
+            if policy_tool(tool) in ("Agent", "Task", "Workflow", "SendMessage"):
                 reason = decide(tool, data.get("tool_input") or {}, data.get("cwd"), data.get("session_id"))
                 if reason:
                     emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=reason)

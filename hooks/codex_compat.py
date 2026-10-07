@@ -12,6 +12,12 @@ def native_tool(name):
     for prefix in ("collaboration.", "collaboration__"):
         if name.startswith(prefix):
             return name[len(prefix):]
+    # CLI 0.160.0 concatenates namespace and name in local hook payloads.
+    # Limit this spelling to known collaboration tools, never arbitrary prefixes.
+    if name in {"collaboration" + tool for tool in (
+            "spawn_agent", "resume_agent", "send_input", "send_message", "followup_task",
+            "wait_agent", "interrupt_agent", "list_agents")}:
+        return name[len("collaboration"):]
     return name
 
 

@@ -8,6 +8,9 @@
   digest now describes host-specific support. Codex API-error recovery retries only a final own-turn
   `server_overloaded` with matching start and no later user/turn boundary; quota/auth/unknown errors and interruption
   remain excluded, and the failed turn is rechecked before queueing.
+- **Codex native delegation guards recognize CLI 0.160.0 namespace concatenation.** Spawn, followup and
+  messaging now reach the configured policies; level 0 blocks task reactivation without blocking pure messages.
+  Real CLI controls cover the declared manifest, nested shell/patch calls, native TOML effort and stdin limits.
 
 - **agent-top follows Delamain’s visual identity** in the terminal, Claude Code pane and HTML widget, with
   navy panels, ice-blue navigation and amber accents. Status colors, monochrome and limited-color terminals,
