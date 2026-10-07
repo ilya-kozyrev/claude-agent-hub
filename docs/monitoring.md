@@ -73,7 +73,7 @@ can be woken.
 | R1 | An agent whose process is gone without a result. | The existing line `EXIT <role>: killed (no result)`, written once. |
 | R2 | An open owner question past its due time that has a default. | One journal line `[watchdog] @hub OVERDUE Q-… (due …) default: …` per question and due date; a new due date re-arms it. |
 | R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs. | Wakes the hub. |
-| R4 | A Claude hub whose last turn ended on an API error 15 min ago or more, and which is not busy. | Wakes the hub, whether or not anything waits. |
+| R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. | Wakes the same session/thread, whether or not anything waits. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
@@ -103,10 +103,12 @@ Existing app hubs must run `hub takeover --session self` from the app once to re
 the supported `codex app-server proxy` and read-only `thread/read`; it does not start a daemon or load a thread.
 Missing CLI/queue support, failed queue or timeout has no resume fallback. The queue boundary was checked on CLI 0.160.0.
 
-R4 remains Claude-only. Codex can persist `task_complete.error` with `codex_error_info` (observed values include
-`usage_limit_exceeded`, `server_overloaded` and `other`), but it has no retry-eligibility field. CLI 0.160.0's app-server
-`ErrorNotification.willRetry` is a runtime notification, absent from these saved events. A bare `task_complete`
-does not establish failure, and `turn_aborted` also describes user interruption. These events alone do not authorize a retry.
+Codex R4 accepts only persisted `task_complete.error.codex_error_info = server_overloaded`: an explicit final
+transient API failure, with a matching `task_started.turn_id` and `started_at`, from after this thread's creation.
+The bounded tail must be complete. A later user message, started/completed turn or interruption cancels the candidate.
+Before queueing, the watchdog rechecks idle and that the same failed turn remains last. It excludes quota, rate-limit,
+authentication, `other`/unknown errors, bare completion and user-aborted turns. CLI 0.160.0's runtime
+`ErrorNotification.willRetry` is not persisted; runtime error notifications alone are not terminal evidence.
 
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds

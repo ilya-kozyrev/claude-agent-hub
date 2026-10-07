@@ -5,13 +5,13 @@ Terminal and legacy/unknown hosts remain notify-only, regardless of rollout sour
 
 The 0.160.0 scratch control proved that queue starts an idle app-server turn.
 A notLoaded reply is local to one server, not a global writer lock. Never use
-exec resume here. A final task_complete.error can carry codex_error_info, but
-has no retry-eligibility field (ErrorNotification.willRetry is not persisted).
-R4 stays Claude-only; bare task_complete and turn_aborted do not establish an API failure.
+exec resume here. R4 accepts only a final, own-turn server_overloaded error;
+completion, interruption, quota/auth and untyped errors never authorize retry.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import shlex
 import subprocess
 from uuid import UUID
@@ -28,6 +28,68 @@ def _session(rec: dict) -> str | None:
     try:
         return sid if isinstance(sid, str) and str(UUID(sid)) == sid.lower() else None
     except ValueError:
+        return None
+
+
+def retryable_turn(path, sid: str, now: datetime) -> dict | None:
+    """Bounded persisted evidence: only terminal overload of the last own turn is retryable.
+
+    A runtime ErrorNotification may be recoverable; task_complete.error instead
+    records the final outcome. Require matching start/id and exclude inherited
+    history, partial writes and any subsequent user/turn boundary.
+    """
+    def stamp(raw):
+        try:
+            t = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return t.astimezone(timezone.utc) if t.tzinfo else None
+        except (ValueError, AttributeError, TypeError):
+            return None
+    try:
+        with path.open("rb") as f:
+            head = json.loads(f.readline(256_001))
+            if head.get("type") != "session_meta" or head.get("payload", {}).get("id") != sid:
+                return None
+            birth = stamp(head.get("timestamp"))
+            f.seek(0, 2)
+            offset = max(0, f.tell() - 512_000)
+            f.seek(offset)
+            if offset:
+                f.readline()  # discard the first potentially partial line
+            data = f.read()
+        if birth is None or not data.endswith(b"\n"):
+            return None
+        started, started_time, candidate = None, None, None
+        for line in data.splitlines():
+            ev = json.loads(line)
+            payload = ev.get("payload")
+            if not isinstance(payload, dict):
+                return None
+            if ev.get("type") == "response_item" and payload.get("role") == "user":
+                started, candidate = None, None
+            if ev.get("type") != "event_msg":
+                continue
+            kind, at = payload.get("type"), stamp(ev.get("timestamp"))
+            if kind in ("user_message", "turn_aborted", "error"):
+                started, candidate = None, None
+            elif kind == "task_started":
+                started = payload if at and birth <= at <= now else None
+                started_time = at
+                candidate = None
+            elif kind == "task_complete":
+                candidate = None
+                error = payload.get("error")
+                turn = payload.get("turn_id")
+                if (started and isinstance(turn, str) and turn and turn == started.get("turn_id")
+                        and type(payload.get("started_at")) is int
+                        and payload["started_at"] == started.get("started_at")
+                        and type(payload.get("completed_at")) is int
+                        and payload["started_at"] <= payload["completed_at"] <= now.timestamp()
+                        and isinstance(error, dict) and error.get("codex_error_info") == "server_overloaded"
+                        and at and started_time <= at <= now):
+                    candidate = {"at": at, "turn_id": turn, "error": "server_overloaded"}
+                started = None
+        return candidate
+    except (OSError, ValueError, AttributeError, TypeError):
         return None
 
 
@@ -61,14 +123,18 @@ def state(stage: str, rec: dict, now: datetime) -> dict:
     else:
         result["transport"] = "codex-queue"
         result["why"] = "confirmed app hub is idle; queue starts a turn on Codex 0.160.0"
+        result["dead_turn"] = retryable_turn(rollout[0], sid, now)
     return result
 
 
-def wake(stage: str, rec: dict, text: str, dry_run: bool) -> dict:
+def wake(stage: str, rec: dict, text: str, dry_run: bool, expected_error=None) -> dict:
     """Recheck liveness and host immediately before a same-thread queue; no fallback."""
+    codex_rollouts.INDEX.checked = None  # a resumed thread may have a newer rollout
     current = state(stage, rec, datetime.now(timezone.utc))
     if current["busy"] is not False or current["transport"] != "codex-queue":
         return {"ok": False, "how": "notify", "detail": current["why"]}
+    if expected_error is not None and current["dead_turn"] != expected_error:
+        return {"ok": False, "how": "notify", "detail": "failed turn was superseded; retry cancelled"}
     sid = _session(rec)
     try:
         argv = [engines.codex_bin(rec.get("cwd")), "queue", "--thread", sid, "--message", text]

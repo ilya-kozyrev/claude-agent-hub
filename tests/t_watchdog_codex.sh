@@ -195,8 +195,57 @@ for ending in endings:
  os.utime(p,(stamp,stamp));before_calls=calls()
  out=command('watchdog','run','--stage','r4-control',extra={'AGENT_HUB_WATCHDOG_NOW':tick_now.isoformat(),
              'AGENT_HUB_WATCHDOG_API_ERROR':'on','AGENT_HUB_NOTIFY_LOCAL':'off'})
- assert calls()==before_calls and 'R4' not in out,(ending,out,calls())
+ assert calls()==before_calls and 'woke ' not in out,(ending,out,calls())
 print('PASS real R4 ticks never retry user interruption, ordinary completion or failures without eligibility')
+# Exact persisted shape observed on CLI 0.160.0: terminal overload, with the same turn's start.
+started_at=int((tick_now-timedelta(minutes=70)).timestamp())
+meta_event={'type':'session_meta','timestamp':(tick_now-timedelta(hours=2)).isoformat(),'payload':{'id':sid}}
+start_event={'type':'event_msg','timestamp':(tick_now-timedelta(minutes=70)).isoformat(),
+             'payload':{'type':'task_started','turn_id':'turn-fixture','started_at':started_at}}
+complete_event={'type':'event_msg','timestamp':(tick_now-timedelta(hours=1)).isoformat(),
+                'payload':{'type':'task_complete','turn_id':'turn-fixture','started_at':started_at,
+                           'completed_at':started_at+600,'error':{'codex_error_info':'server_overloaded','message':'fixture'}}}
+def failed_rollout(*events):
+ p.write_text(''.join(json.dumps(e)+'\n' for e in (meta_event,*events)))
+ os.utime(p,(stamp,stamp));cr.INDEX.checked=None
+failed_rollout(start_event,complete_event)
+observed=wc.state('r4-control',r4rec,tick_now)['dead_turn']
+assert observed and observed['turn_id']=='turn-fixture' and observed['error']=='server_overloaded',observed
+before_calls=len(calls())
+out=command('watchdog','run','--stage','r4-control',extra={'AGENT_HUB_WATCHDOG_NOW':tick_now.isoformat(),
+             'AGENT_HUB_WATCHDOG_API_ERROR':'off','AGENT_HUB_NOTIFY_LOCAL':'off'})
+assert len(calls())==before_calls and 'woke ' not in out,out
+out=command('watchdog','run','--stage','r4-control',extra={'AGENT_HUB_WATCHDOG_NOW':tick_now.isoformat(),
+             'AGENT_HUB_WATCHDOG_API_ERROR':'on','AGENT_HUB_NOTIFY_LOCAL':'off'})
+assert len(calls())==before_calls+1 and calls()[-1][1:3]==['--thread',sid] and 'dead turn' in out,(out,calls())
+assert 'last turn ended on an API error' in calls()[-1][4],calls()[-1]
+print('PASS R4 retries a final matching own-turn server_overloaded error on the same confirmed idle app UUID')
+for code in ('usage_limit_exceeded','rate_limit_exceeded','unauthorized','other','future_error',None):
+ bad={**complete_event,'payload':{**complete_event['payload'],'error':{'codex_error_info':code}}}
+ failed_rollout(start_event,bad)
+ assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None,code
+for subsequent in ({'type':'turn_aborted','reason':'user_interrupted'}, {'type':'user_message','message':'fixture'},
+                   {'type':'task_started','turn_id':'new-turn','started_at':started_at+700},
+                   {'type':'task_complete','turn_id':'new-turn'}):
+ failed_rollout(start_event,complete_event,{'type':'event_msg','timestamp':tick_now.isoformat(),'payload':subsequent})
+ before_calls=calls()
+ assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None,subsequent
+ result=wc.wake('r4-control',r4rec,'retry',False,expected_error=observed)
+ assert not result['ok'] and calls()==before_calls,(subsequent,result)
+for events in ((complete_event,), (start_event,{**complete_event,'payload':{**complete_event['payload'],'turn_id':'wrong-turn'}}),
+               ({**start_event,'timestamp':(tick_now-timedelta(hours=3)).isoformat()},complete_event)):
+ failed_rollout(*events)
+ assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None,events
+failed_rollout(start_event,complete_event)
+for status in ('active','notLoaded','systemError'):
+ mode(status);before_calls=calls()
+ assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None
+ assert not wc.wake('r4-control',r4rec,'retry',False,expected_error=observed)['ok'] and calls()==before_calls
+mode('idle')
+assert wc.state('r4-control',{**r4rec,'host':None},tick_now)['dead_turn'] is None
+with p.open('ab') as f:f.write(b'{"type":')
+assert wc.state('r4-control',r4rec,tick_now)['dead_turn'] is None
+print('PASS R4 rejects quota/auth/unknown errors, superseded/user-aborted turns, inherited/unmatched/partial evidence and non-idle hosts')
 missing={**rec,'session':'cccccccc-3333-4333-8333-333333333333'}
 assert wc.state('stage-a',missing,now)['last_activity'] is None
 assert wc.state('stage-a',missing,now)['transport']=='notify'

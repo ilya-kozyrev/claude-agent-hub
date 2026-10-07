@@ -197,9 +197,10 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   items as waiting work. A confirmed idle app hub registered by `hub start`/`takeover` as `host: codex-app` is woken
   with `codex queue` in its own UUID; terminal/unknown hosts and unavailable runtime notify only. Registration requires
   the current thread and both app markers described below, excluding detached workers; old records need an app-side
-  `hub takeover --session self`. Detached hubs use `agent send`. Codex API-error recovery (R4) remains unavailable:
-  persisted `task_complete.error.codex_error_info` distinguishes failure but does not establish retry eligibility;
-  bare completion/interruption events are insufficient. See [host conditions](monitoring.md#which-host-is-woken-how).
+  `hub takeover --session self` (same UUID/tag/shift). Detached hubs use `agent send`. Codex API-error recovery (R4)
+  covers only a final own-turn `task_complete.error.codex_error_info = server_overloaded`, with matching turn start
+  and no later user/turn boundary, rechecked before wake. Quota/auth/unknown errors and interruption never trigger R4.
+  See [host conditions](monitoring.md#which-host-is-woken-how).
   The Claude Desktop scheduled nudge is
   deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 

@@ -5,8 +5,9 @@
 - **The watchdog can wake a confirmed idle Codex app hub in its own thread.** `hub start`/`takeover` record app
   provenance only for the current UUID with both app markers and no detached worker identity. Runtime status is
   rechecked before `codex queue`; terminal/unknown hosts notify only, with no native resume fallback. The takeover
-  digest now describes host-specific support. Codex API-error recovery remains unavailable without reliable persisted
-  failure/retry evidence.
+  digest now describes host-specific support. Codex API-error recovery retries only a final own-turn
+  `server_overloaded` with matching start and no later user/turn boundary; quota/auth/unknown errors and interruption
+  remain excluded, and the failed turn is rechecked before queueing.
 
 - **agent-top follows Delamain’s visual identity** in the terminal, Claude Code pane and HTML widget, with
   navy panels, ice-blue navigation and amber accents. Status colors, monochrome and limited-color terminals,

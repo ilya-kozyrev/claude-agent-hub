@@ -15,7 +15,7 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R2  an open question past its due time that has a default → one `[watchdog] @hub OVERDUE Q-…` line
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it
-  R4  a Claude hub whose last turn ended on an API error >= 15 min ago → wake it
+  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
@@ -395,7 +395,7 @@ def status_line(stage: str) -> str:
     if hc.detached(stage, rec):
         action = "a stopped detached hub resumes its own session"
     elif rec.get("engine") == "codex":
-        action = ("a confirmed idle Codex app hub queues its own thread; other states notify only"
+        action = ("a confirmed idle Codex app hub queues its own thread; unknown states notify only; active is left alone"
                   if rec.get("host") == "codex-app" and rec.get("kind") != "desktop"
                   else "this Codex host is notify-only; app provenance and confirmed idle are required to wake")
     elif rec.get("host") == "bg":
@@ -403,7 +403,7 @@ def status_line(stage: str) -> str:
     else:
         action = "a confirmed Claude background hub can resume; Desktop/terminal/unknown hosts notify only"
     return (f"watchdog is on (a tick every {minutes(every())} min): after {minutes(wake_after())} min of silence "
-            f"with waiting work, {action}; keep one `jwait`, and `watchdog quiet --stage {stage} "
+            f"with waiting work or an eligible final API error, {action}; keep one `jwait`, and `watchdog quiet --stage {stage} "
             f"--reason \"…\"` pauses it")
 
 
@@ -503,7 +503,10 @@ def observe(tick: Tick, stage: str, rec: dict) -> dict:
             return o
         o.update(busy=st.get("busy"), last=st.get("last_activity"), transport=st.get("transport") or "notify",
                  why=str(st.get("why") or ""))
-        if st.get("dead_turn"):
+        if isinstance(st.get("dead_turn"), dict):
+            o["codex_error"] = st["dead_turn"]
+            o["dead"] = (st["dead_turn"]["at"], st["dead_turn"]["error"])
+        elif st.get("dead_turn"):
             o["dead"] = (st.get("last_activity") or tick.now, str(st["dead_turn"]))
         return o
     # a Claude session: terminal, background or gone
@@ -852,7 +855,8 @@ def wake_hub(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
     mod = codex_module()
     if t in ("codex-queue", "codex-resume") and mod is not None:
         try:
-            res = mod.wake(stage, rec, text, tick.dry)
+            res = (mod.wake(stage, rec, text, tick.dry, expected_error=o["codex_error"])
+                   if o.get("codex_error") else mod.wake(stage, rec, text, tick.dry))
             return {"ok": bool(res.get("ok")), "how": str(res.get("how") or t), "detail": str(res.get("detail") or "")}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "how": t, "detail": f"watchdog_codex.wake failed: {type(e).__name__}"}
