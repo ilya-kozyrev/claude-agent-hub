@@ -127,8 +127,7 @@ are under *Choosing how to launch work*.
 the `hub succeed` command with your model, effort, mode and directory filled in. At a quiet point — no agent waiting for your
 reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,
 start the `jwait` it prints using the host wait procedure below. Its start line → tell the owner one line (the successor's
-name and any link returned by the launcher) and stop: no more tool calls, no lock released. A prepared Codex Desktop
-request instead follows the native procedure below through verified takeover. CLI ALARM → `hub succeed --stage <S> --fallback` (a
+name and any link returned by the launcher) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a
 headless successor's ALARM: `--again`, if `agent status` says it is not running). A refusal that prints a `jwait` →
 run that `jwait`, then retry. Exit 3 (chain limit), exit 2, or any other exit 1 → tell the owner the handoff path and
 why, and wait for them ("cannot determine the effort" means your own effort is unreadable here: never pass a guessed
@@ -137,7 +136,8 @@ why, and wait for them ("cannot determine the effort" means your own effort is u
 with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
 yourself, never from a sub-agent.
 
-For **Codex Desktop**, --surface auto selects a native request in an actual app hub (both app markers,
+For **Codex Desktop**, the following procedure governs prepared requests, start lines and ALARM.
+--surface auto selects a native request in an actual app hub (both app markers,
 no detached worker role). Native create_thread requires an explicit human request. When creation is unavailable
 or unauthorized, retain the request and keep the predecessor active while asking the owner for that request.
 Once explicitly authorized, execute [the native launch procedure](../../docs/codex.md#desktop-autopilot) completely:
