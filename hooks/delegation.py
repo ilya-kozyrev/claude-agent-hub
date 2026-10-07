@@ -53,7 +53,7 @@ except Exception:  # noqa: BLE001 — fail-open: as a hook, never block a sessio
 
 PRUNE_AFTER_DAYS = 30
 LEVELS = range(0, 6)
-# The plugin's name before the rename. A hub on an older plugin copy starts its successor with the prompt
+# rename:transition — the plugin's name before the rename. A hub on an older plugin copy starts its successor with the prompt
 # `/agent-hub:hub take over stage …` (the command before the rename); the successor is a new session that has only this
 # plugin's `/delamain:hub`, and a model that gets an unknown slash command as plain text may refuse to follow it
 # (Haiku did, CLI 2.1.289).
@@ -182,7 +182,7 @@ def own_skills() -> set:
     return {p.parent.name for p in (Path(PLUGIN_ROOT) / "skills").glob("*/SKILL.md")}
 
 
-def former_name_context(prompt) -> str | None:
+def former_name_context(prompt) -> str | None:  # rename:transition
     """A note for the model when the prompt starts with `/agent-hub:<skill>` (the command before the rename) and <skill> is
     one of this plugin's skills, else None: the harness does not know the former slash command and hands it to the model as text. Any other prompt
     (plain text, `/delamain:…`, another plugin's `/foo:hub`, an unknown skill) gets nothing. The text names no tool and

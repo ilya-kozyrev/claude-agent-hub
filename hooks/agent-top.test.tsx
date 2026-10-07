@@ -299,7 +299,7 @@ test("only agent-top and this plugin's own <name>:agent-top are answered; anothe
   expect((await run($, '', 'agent-top')).text).toBe('picture')
   expect((await run($, '', own)).text).toBe('picture')
   expect((await run($, '', 'delamain:agent-top')).text).toBe(isDev || PLUGIN === 'delamain' ? 'picture' : 'the engine ran it')
-  expect((await run($, '', 'agent-hub:agent-top')).text).toBe(isDev || PLUGIN === 'delamain' ? 'picture' : 'the engine ran it') // rename:keep
+  expect((await run($, '', 'agent-hub:agent-top')).text).toBe(isDev || PLUGIN === 'delamain' ? 'picture' : 'the engine ran it') // rename:keep rename:transition
   expect((await run($, '', 'foo:agent-top')).text).toBe('the engine ran it')
   for (const other of ['compact', 'other-plugin:agent-top', 'other-plugin:agent-topic', 'agent-top-dev-x:agent-top']) {
     expect((await run($, '', other)).text).toBe('the engine ran it')
@@ -310,21 +310,21 @@ test("only agent-top and this plugin's own <name>:agent-top are answered; anothe
 test('isOwnCommand: the installed plugin and the dev copy also answer the command from before the rename, nobody else does', async () => {
   expect(isOwnCommand('agent-top', 'delamain')).toBe(true)
   expect(isOwnCommand('delamain:agent-top', 'delamain')).toBe(true)
-  expect(isOwnCommand('agent-hub:agent-top', 'delamain')).toBe(true) // rename:keep  (the installed plugin answers it too)
+  expect(isOwnCommand('agent-hub:agent-top', 'delamain')).toBe(true) // rename:keep rename:transition  (the installed plugin answers it too)
   expect(isOwnCommand('agent-top-dev:agent-top', 'delamain')).toBe(false) // not an allow-list for the installed plugin
   expect(isOwnCommand('other:agent-top', 'delamain')).toBe(false)
   expect(isOwnCommand('foo:agent-top', 'delamain')).toBe(false)
-  expect(isOwnCommand('agent-hub:agent-topic', 'delamain')).toBe(false) // rename:keep
+  expect(isOwnCommand('agent-hub:agent-topic', 'delamain')).toBe(false) // rename:keep rename:transition
   expect(isOwnCommand('other-hub:agent-top', 'delamain')).toBe(false)
   expect(isOwnCommand('agent-top', 'agent-top-dev')).toBe(true)
   expect(isOwnCommand('agent-top-dev:agent-top', 'agent-top-dev')).toBe(true)
   expect(isOwnCommand('delamain:agent-top', 'agent-top-dev')).toBe(true)
-  expect(isOwnCommand('agent-hub:agent-top', 'agent-top-dev')).toBe(true) // rename:keep
+  expect(isOwnCommand('agent-hub:agent-top', 'agent-top-dev')).toBe(true) // rename:keep rename:transition
   expect(isOwnCommand('other-hub:agent-top', 'agent-top-dev')).toBe(false)
   expect(isOwnCommand('other:agent-top', 'agent-top-dev')).toBe(false)
   expect(isOwnCommand('foo:agent-top', 'agent-top-dev')).toBe(false)
   expect(isOwnCommand('delamain:agent-topic', 'agent-top-dev')).toBe(false)
-  expect(isOwnCommand('agent-hub:agent-top', 'other-plugin')).toBe(false) // rename:keep  (a third plugin's mod does not take it)
+  expect(isOwnCommand('agent-hub:agent-top', 'other-plugin')).toBe(false) // rename:keep rename:transition  (a third plugin's mod does not take it)
   expect(isOwnCommand('delamain:agent-top', 'other-plugin')).toBe(false)
 })
 

@@ -68,7 +68,7 @@ def default_todo() -> str:
     before the rename runs this hook from the updated plugin folder but knows the skill only as `agent-hub:handoff`."""
     try:
         import subagent_rules as sr  # noqa: E402  (bin/ is on sys.path once hubcore() ran)
-        skill = sr.named("handoff")
+        skill = sr.named("handoff")  # rename:transition
     except Exception:  # noqa: BLE001 — fail-open: the current name alone
         skill = "`delamain:handoff`"
     return (f"What to do: write a handoff with the skill {skill} using the plugin's templates/HANDOFF-template.md "

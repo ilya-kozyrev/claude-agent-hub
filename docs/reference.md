@@ -9,6 +9,11 @@ on purpose, so that existing stages, agents and configurations keep working: the
 the project directory `.agent-hub/` (`config.json`, `lock-rules.json`, `local/`), the default hub home
 `~/agent-hub` (and the older `~/.claude/agent-hub`), the watchdog's `# agent-hub-watchdog` cron marker and its
 `io.agent-hub.watchdog.*` launchd labels. Other pages mention them as they are.
+For one release the plugin also bridges sessions started before the rename (code marked `rename:transition`):
+it writes the markers `[agent-hub auto-handoff k/N]` and `[agent-hub watchdog]` as before the rename,
+names its skills and agents in both forms in hook texts, points a prompt `/agent-hub:<skill>` (before the rename)
+at `/delamain:<skill>`, and the agent-top mod answers `/agent-hub:agent-top` as before the rename. That code is
+removed in the next release, once no session started before 1.0 remains; readers of the old forms stay longer.
 
 ## How it works
 

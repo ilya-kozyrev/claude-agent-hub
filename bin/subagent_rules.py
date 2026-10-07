@@ -55,7 +55,7 @@ def plugin_name() -> str:
         return "delamain"
 
 
-def named(local: str, plugin: Optional[str] = None) -> str:
+def named(local: str, plugin: Optional[str] = None) -> str:  # rename:transition
     """A skill or agent of this plugin as the texts that hooks and tools inject must name it for one release: the
     current name and, because a session started before the rename knows the plugin only under the old name,
     `agent-hub:<same name>` with a short note (rename:keep). Built from plugin_name() and LEGACY_PLUGIN_NAME, like

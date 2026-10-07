@@ -58,7 +58,7 @@ MARKER_RE = re.compile(r"\[(?:delamain|agent-hub) auto-handoff (\d+)/(\d+)\]")  
 # The watchdog's wake prefix, as written. It stays on the former name for one release (rename:keep) because a hub that
 # still runs an older plugin copy has the older UserPromptSubmit hook, which does not know the new form and would take
 # the wake for the owner speaking. WATCHDOG_MARKERS is what owner_spoke reads: both forms.
-WATCHDOG_MARKER = "[agent-hub watchdog]"  # rename:keep: the former name for one release, older hooks read only it
+WATCHDOG_MARKER = "[agent-hub watchdog]"  # rename:keep rename:transition: the former name for one release, older hooks read only it
 WATCHDOG_MARKERS = (WATCHDOG_MARKER, "[delamain watchdog]")
 
 
@@ -67,7 +67,7 @@ def marker_text(k, limit) -> str:
     is not the owner speaking. It stays on the former name for one release (rename:keep) because a hub that still runs
     an older plugin copy has the older hook, which knows only that form and would reset the chain on the new one.
     MARKER_RE reads both; the switch to the new form comes in a later release."""
-    return f"[agent-hub auto-handoff {k}/{limit}]"  # rename:keep: the former name for one release, older hooks read only it
+    return f"[agent-hub auto-handoff {k}/{limit}]"  # rename:keep rename:transition: the former name for one release, older hooks read only it
 
 
 LINK_RE = re.compile(r"https?://claude\.ai/code/session_[A-Za-z0-9_-]+|claude\.ai/code/session_[A-Za-z0-9_-]+")

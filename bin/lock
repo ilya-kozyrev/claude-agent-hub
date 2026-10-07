@@ -92,7 +92,7 @@ def cmd_take(args) -> int:
     if args.kind not in known["resources"] and args.kind not in on_board:
         print(f"unknown resource {args.kind!r} here ({os.getcwd()}). Known: {', '.join(known['resources'])}.\n"
               "Add it to the repository's .agent-hub/lock-rules.json (`lock rules add`, or the skill "
-              f"{subagent_rules.named('setup')}), or to the hub home's lock-rules.json.", file=sys.stderr)
+              f"{subagent_rules.named('setup')}), or to the hub home's lock-rules.json.", file=sys.stderr)  # rename:transition
         for w in known["warnings"]:
             print(w, file=sys.stderr)
         return 2

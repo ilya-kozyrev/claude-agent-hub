@@ -253,7 +253,7 @@ export function onceArgs(a: CommandArgs): string[] {
  */
 const INSTALLED_PLUGIN = 'delamain'
 const DEV_PLUGIN = 'agent-top-dev'
-const LEGACY_COMMAND = 'agent-hub:agent-top' // rename:keep
+const LEGACY_COMMAND = 'agent-hub:agent-top' // rename:keep rename:transition
 
 /**
  * Whether `/command` is this module's: bare `agent-top`, `<this plugin>:agent-top`, and, in the installed plugin and in
