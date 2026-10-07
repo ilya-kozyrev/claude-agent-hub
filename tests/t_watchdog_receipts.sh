@@ -24,7 +24,7 @@ os.environ.update(CODEX_THREAD_ID=caller,CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Cod
 code=Path(os.environ['CODEX_HOME'])/'sessions';code.mkdir()
 paths={}
 for sid in (a,b):
- p=code/(sid+'.jsonl');paths[sid]=p
+ p=code/('rollout-'+sid+'.jsonl');paths[sid]=p
  p.write_text(json.dumps({'type':'session_meta','timestamp':(now-timedelta(hours=3)).isoformat(),
                           'payload':{'id':sid}})+'\n')
  os.utime(p,((now-timedelta(hours=1)).timestamp(),)*2)
@@ -106,10 +106,11 @@ wd.save_state(saved);clock(future)
 original=paths[a].read_text();progress(a,now+timedelta(minutes=1),malformed=True)
 assert not candidate('elsewhere')[0],'malformed evidence released an unknown outcome'
 paths[a].write_text(original);progress(a,now+timedelta(minutes=1))
-assert candidate('elsewhere')[0],'true own-turn progress did not re-arm native candidate'
+rearmed,why=candidate('elsewhere');assert rearmed,('true own-turn progress did not re-arm native candidate',why)
 tick('elsewhere');assert len(queues)==1 and queues[-1][3]==a
 print('PASS malformed evidence stays fenced; true own-turn progress re-arms native and CLI')
 # Legacy stage-only records must be retained when the first upgraded claim switches actor.
+paths[a].write_text(original);os.utime(paths[a],((now-timedelta(hours=1)).timestamp(),)*2)
 fresh();clock(now);register('origin',a);legacy=claim('origin');saved=wd.load_state();saved.pop('uuid_receipts')
 wd.save_state(saved);register('origin',b);claim('origin')
 assert a in wd.load_state()['uuid_receipts'] and not candidate('elsewhere')[0]
@@ -134,9 +135,10 @@ assert wd.load_state()['uuid_receipts'][b]['result']=='unknown'
 clock(future);assert not candidate('origin')[0]
 register('other-cli-stage',b);assert not candidate('other-cli-stage')[0]
 tick('other-cli-stage');assert len(queues)==1
-progress(b,now+timedelta(minutes=2));assert candidate('other-cli-stage')[0]
+progress(b,future+timedelta(minutes=1));clock(future+timedelta(hours=1))
+rearmed,why=candidate('other-cli-stage');assert rearmed,why
 print('PASS CLI timeout survives cached tick save, blocks both transports across stages, and own progress re-arms')
-for bad in ([],{a:None},{a:{'session':a,'result':'unexpected'}}):
+for bad in ([],{a:None},{a:{'session':a,'result':'unexpected'}},{a:{'session':b,'result':'unknown'}}):
  wd.save_state({'stages':{},'uuid_receipts':bad})
  assert not candidate('elsewhere')[0]
  tick('elsewhere');assert len(queues)==1

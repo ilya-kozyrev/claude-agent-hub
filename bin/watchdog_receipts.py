@@ -9,7 +9,7 @@ import importlib.machinery
 import importlib.util
 import json
 import sys
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import codex_rollouts
 import hubcore as hc
@@ -38,13 +38,12 @@ def recipient_activity(path, sid, since, now):
                 continue
             at = codex_rollouts.epoch(ev.get("timestamp")); started = payload.get("started_at")
             if (type(started) is int and at is not None and isinstance(payload.get("turn_id"), str) and payload["turn_id"]
-                    and started >= max(int(birth), int(since.timestamp()))
+                    and started >= max(birth, since.timestamp())
                     and since.timestamp() < at <= now.timestamp() and started <= at):
                 return True
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     return False
-
 
 
 def core():
@@ -75,6 +74,13 @@ def guard(wd, state, sid, now, *, stage=None, native=False):
     ledger = state.get("uuid_receipts", {})
     if not isinstance(ledger, dict):
         return "UUID receipt ledger is malformed; wake cancelled"
+    for key, value in ledger.items():
+        try:
+            if (not isinstance(value, dict) or str(UUID(key)) != key.lower()
+                    or str(value.get("session", "")).lower() != key.lower()):
+                return "UUID receipt ledger entry is malformed; wake cancelled"
+        except (ValueError, TypeError, AttributeError):
+            return "UUID receipt ledger entry is malformed; wake cancelled"
     records = [(None, value) for value in ledger.values()]
     for other_stage, saved in state["stages"].items():
         if "native_episode" in saved and saved["native_episode"] is not None:
@@ -82,7 +88,7 @@ def guard(wd, state, sid, now, *, stage=None, native=False):
         # Preserve pre-ledger CLI timeouts until recipient progress as well.
         hub = saved.get("hub")
         ep = hub.get("episode") if isinstance(hub, dict) else None
-        if isinstance(ep, dict) and "unknown" in str(ep.get("result", "")):
+        if isinstance(ep, dict) and str(ep.get("result", "")).startswith("failed: queue outcome unknown:"):
             records.append((other_stage, {**ep, "session": hub.get("session"), "result": "unknown"}))
     rollout = codex_rollouts.INDEX.session(sid)
     for other_stage, ep in records:
