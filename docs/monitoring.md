@@ -102,6 +102,9 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 Existing app hubs must run `hub takeover --session self` from the app once to record it. Reading runtime status uses
 the supported `codex app-server proxy` and read-only `thread/read`; it does not start a daemon or load a thread.
 Missing CLI/queue support, failed queue or timeout has no resume fallback. The queue boundary was checked on CLI 0.160.0.
+The CLI's shared daemon must reach the actual app runtime: Desktop attribution alone does not establish that
+transport. Desktop may use a separate app-server; if the shared-daemon proxy is unavailable or does not know the
+thread, this path stays notify-only. Fake transport controls do not prove live Desktop wake.
 
 Codex R4 accepts only persisted `task_complete.error.codex_error_info = server_overloaded`: an explicit final
 transient API failure, with a matching `task_started.turn_id` and `started_at`, from after this thread's creation.
@@ -137,6 +140,10 @@ as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain t
   When that record is older than `AGENT_HUB_SUCCESSOR_TIMEOUT` plus the wake time, the owner is notified once
   (`handoff stuck`) and nothing is started.
 - **A replaced hub starts clean:** the state is keyed by the hub's session id.
+- **A finished stage retires its hub.** After the finite work and external waits are complete, run
+  `roles retire hub --stage S --note "stage complete"` from that stage. The watchdog reads only the active hub
+  record and skips a retired one, even if old journal lines remain unconsumed. A `DONE` or `MERGED` line alone does
+  not close a multi-item stage; use retirement or a deliberate `watchdog quiet` pause.
 - **One tick at a time:** a non-blocking lock on `<state dir>/watchdog/lock`; a second tick prints "another tick is
   running" and exits 0.
 - **Dry run.** `watchdog run --dry-run [--stage S] [--json]` evaluates every rule and prints `[plan] …` lines, with
