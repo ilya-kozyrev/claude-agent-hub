@@ -11,7 +11,9 @@
   native kind, request/chain and original registration/takeover boundary remain intact. Self-only
   `hub desktop-recover` repairs a proven legacy refresh using the original full registration identity,
   exact shift/cwd and unchanged observed policy; ambiguous evidence and later/manual hubs fail without
-  mutation. Recovery creates no thread, reservation or shift and changes no settings.
+  mutation. Exact native self-refresh validates under one locked minimal path, without resource/queue/project
+  takeover side effects; incompatible resource instructions are rejected. Recovery creates no thread, reservation
+  or shift and changes no settings.
 
 - **The watchdog can wake a confirmed idle Codex app hub in its own thread.** `hub start`/`takeover` record app
   provenance only for the current UUID with both app markers and no detached worker identity. Runtime status is

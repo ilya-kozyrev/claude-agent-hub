@@ -211,7 +211,7 @@ assert p['observed']['model']=='observed-model' and p['observed']['effort']=='me
 assert p['requested']['model']=='gpt-6.1-sol' and p['requested']['sandbox_policy']['type']=='danger-full-access'
 assert p['observed']['sandbox_policy']['type']=='danger-full-access' and p['taken_over'] and state(stage)['chain']==1
 assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
-bind(req,'--thread-id',real); takeover(handoff,req,cwd=repo)
+bind(req,'--thread-id',real); takeover(handoff,req,cwd=pathlib.Path(p['cwd']))
 assert state(stage)['chain']==1
 print('PASS restricted home access leaves predecessor active; actual takeover reconciles identity/cwd and records observed settings separately')
 
@@ -269,7 +269,9 @@ def legacy_hub(*args, cwd=repo, freeze='2026-01-01T12:00:00+00:00'):
     # Saving through the real seam emits the old schema; only the newly added proof fields are omitted.
     code+="exec(\"original_save=ap.save_state\\ndef legacy_save(stage,data):\\n    p=data.get('pending') or {}\\n    p.pop('actual_thread_id',None); p.pop('registration',None)\\n    original_save(stage,data)\\nap.save_state=legacy_save\"); "
     code+="ap.desktop_identity_proof=lambda stage,request,session,**kw: (ap.load_state(stage),ap.load_state(stage)['pending'],hc.roles_load(stage)['roles']['hub']); "
-    code+="sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name='__main__')"
+    code+="sys.argv=sys.argv[2:]; g=runpy.run_path(sys.argv[0],run_name='legacy'); "
+    code+="g['main'].__globals__['native_self_refresh']=lambda a,stage,session,request: ap.on_takeover(stage,ap.load_state(stage)['pending']['n'],session=session,locked=True) or 0; "
+    code+="sys.exit(g['main'](sys.argv[1:]))"
     r=subprocess.run([sys.executable,'-c',code,str(root/'bin'),str(root/'bin/hub'),*map(str,args)],
                      cwd=cwd,env=env,capture_output=True,text=True)
     assert r.returncode==0,(r.returncode,r.stdout,r.stderr)

@@ -269,7 +269,12 @@ creation, the current **app agent** executes the full procedure below through bi
 
 A current verified native hub can refresh its host registration with `hub takeover --stage <S> --session self`
 from its verified cwd. Repeated same UUID/shift refreshes retain the full native ID, request, chain, observed
-settings and original registration/takeover timestamps. A different session or shift remains a replacement.
+settings and original registration/takeover timestamps. The completed native self-refresh is a separate operation
+under the state and role locks: it does not transfer resources, update the night queue, run project takeover
+callbacks, stop a predecessor or publish a new shift/start line. Explicit resource, metadata or location-changing
+flags are rejected on this path; use a separately authorized resource operation for resource work. A completed
+refresh requires the original verified cwd; it does not create or move to another worktree.
+A different manual session or shift keeps the normal takeover path.
 
 For a legacy self-refresh that shortened the completed request's ID and changed its kind to `manual`, the
 **current app hub itself** can run the following from its original verified cwd, using the reviewed plugin's
