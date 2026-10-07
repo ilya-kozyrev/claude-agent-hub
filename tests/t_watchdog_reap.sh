@@ -145,7 +145,7 @@ rm -r "$R/sbad"
 
 # ---- an auto-handoff.json that cannot be read: a pending successor may be hidden in it, so nothing is stopped
 mkrows; reset_log; mkdir -p "$R/sc"; "$B/roles" set --stage sc hub "$(sid d0000001)" --kind cli --tag hub-1 > /dev/null
-for bad in '{' '[]' '{"pending": 7}'; do
+for bad in '{' '[]' '{"pending": 7}' '{"pending":{"kind":"bg","id":7}}' '{"pending":{"kind":"bg","id":""}}'; do
   printf '%s' "$bad" > "$R/sc/auto-handoff.json"; reset_log
   WD run > "$R/corrupt.out" 2>&1; check $? 0 "auto-handoff.json $bad: the tick exits 0"
   check "$(stops)" "" "auto-handoff.json $bad: nothing is stopped"
@@ -154,6 +154,31 @@ done
 rm "$R/sc/auto-handoff.json"; reset_log; mkrows
 WD run > "$R/corrupt.out" 2>&1; check "$(stops)" "$EXPECT" "control: the same stage without the corrupt file does not hold R6 back"
 rm -r "$R/sc"
+
+# ---- `claude stop` is addressed by the 8-character id: a fresh listing right before it must show one and the same session
+NC=deadbeef-3333-4000-8000-000000000000; quiet_for "$NA" 30; quiet_for "$NC" 30
+rowsof(){ python3 - "$FAKE_WD_ROWS" "$LIVE" "$@" <<'PY'
+import json, sys
+out, live, *sids = sys.argv[1:]
+json.dump([{"id": x[:8], "sessionId": x, "kind": "background", "status": "idle", "state": "done", "pid": int(live), "cwd": "/tmp", "name": "hub"} for x in sids], open(out, "w"))
+PY
+}
+rowsof "$NA"; reset_log; check "$(tick)" 0 "short id, control: the retired hub A alone is listed, the tick exits 0"
+check "$(stops)" "stop deadbeef " "short id, control: A is stopped by its short id"
+"$B/roles" set --stage b worker3 "$NB" --kind headless --tag w3 > /dev/null          # B: a live role with A's first 8 characters
+rowsof "$NA"; reset_log; check "$(tick)" 0 "short id, protected prefix (B live, not listed): the tick exits 0"
+check "$(stops)" "" "short id, protected prefix: B's live role shares A's 8 characters, so A is not stopped by that id"
+rowsof "$NA" "$NB"; reset_log; check "$(tick)" 0 "short id, A and B both listed: the tick exits 0"
+check "$(stops)" "" "short id, A and B both listed with the id deadbeef: nothing is stopped"
+"$B/roles" retire --stage b worker3 --note "test" > /dev/null                         # B is no longer protected
+rowsof "$NA" "$NC"; reset_log; check "$(tick)" 0 "short id, two rows share the id: the tick exits 0"
+check "$(stops)" "" "short id, two listed sessions share the id deadbeef (C is neither retired nor protected): nothing is stopped"
+rowsof "$NA"; reset_log
+FAKE_WD_AGENTS_FAIL_FROM=2 WD run > "$R/fresh.out" 2>&1; check $? 0 "a failing fresh listing: the tick exits 0"
+check "$(stops)" "" "a failing fresh listing right before the stop: nothing is stopped"
+grep -q "a: not stopping retired hub-16 (deadbeef): \`claude agents --json\` failed just before the stop" "$R/fresh.out"; check $? 0 "…and one line says so"
+rowsof "$NA"; reset_log; check "$(tick)" 0 "control: with the listing healthy again A is stopped (the tick exits 0)"
+check "$(stops)" "stop deadbeef " "control: A is stopped once the fresh listing works"
 
 # ---- a quiet time set by the owner
 mkrows; reset_log

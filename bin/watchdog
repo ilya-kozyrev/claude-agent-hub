@@ -1050,7 +1050,10 @@ def strict_pending(stage: str):
         raise ReapAbort(f"{path} cannot be read ({type(e).__name__}: {first_line(str(e))})") from None
     if not isinstance(data, dict) or not isinstance(data.get("pending"), (dict, type(None))):
         raise ReapAbort(f"{path} has an unexpected shape")
-    return data.get("pending")
+    pend = data.get("pending")
+    if isinstance(pend, dict) and pend.get("id") is not None and not (isinstance(pend["id"], str) and pend["id"].strip()):
+        raise ReapAbort(f"{path} has a pending record whose id is not a session id")
+    return pend
 
 
 def reap_registry(stages: list):
@@ -1077,18 +1080,39 @@ def reap_registry(stages: list):
     return retired, protected
 
 
-def retired_hub_of(row: dict, stages: list):
-    """(stage, tag) when the row is the session of a retired hub that is protected nowhere, else None. A full-uuid
-    protection covers only that uuid, an 8-character one every session with that prefix: over-protecting is fine."""
+def retired_hub_of(row: dict):
+    """(stage, tag) when the row is the session of a retired hub that is protected nowhere, else None. The stages and
+    their registries are read afresh (a stage created meanwhile counts). A full-uuid protection covers only that uuid,
+    an 8-character one every session with that prefix: over-protecting is fine."""
     ident = (row.get("sessionId") or row.get("id") or "").strip()
     if not ident:
         return None
-    retired, protected = reap_registry(stages)
+    retired, protected = reap_registry(stage_names())
     if any(same_session(p, ident) for p in protected):
         return None
     for stage, tag, ids in retired:
         if any(same_session(x, ident) for x in ids):
             return stage, tag
+    return None
+
+
+def stop_blocker(cli, row: dict, cwd):
+    """(why, say) when the session of `row` must not be stopped now (`say`: worth a line in the output), else None. Called right before `claude stop`, which is addressed
+    by the 8-character id: a fresh `claude agents --json` (not the tick's cache) must list exactly one row with that id,
+    still a running background session with the same full sessionId, and no protected id (a live role of any stage, a
+    pending successor; full or short) may share the 8-character prefix. Raises ReapAbort when a registry cannot be read."""
+    short = (row.get("id") or (row.get("sessionId") or "")[:8]).strip()
+    fresh = autopilot.list_agents(cli.path, cwd)
+    if fresh is None:
+        return "`claude agents --json` failed just before the stop", True
+    same_id = [r for r in fresh if r.get("id") == short]
+    if len(same_id) != 1:
+        return f"{len(same_id)} listed sessions have the id {short}", False
+    now = same_id[0]
+    if now.get("kind") != "background" or not now.get("pid") or (now.get("sessionId") or "") != (row.get("sessionId") or ""):
+        return f"the session listed as {short} is not the one that was chosen", False
+    if any(p[:8] == short for p in reap_registry(stage_names())[1]):
+        return f"a live role or a pending successor shares the id {short}", False
     return None
 
 
@@ -1111,14 +1135,14 @@ def last_activity(row: dict):
     return None
 
 
-def rule_r6(tick: Tick, stages: list) -> None:
+def rule_r6(tick: Tick) -> None:
     """Stop (never remove) the background session of a retired hub that is live nowhere, once it has been quiet for the
     wake-after time. A busy status does not protect it: a left-over background command keeps a finished hub busy. The
     registries are read again right before each stop (a stop takes up to 30 s; the session may have become live meanwhile)."""
     if not flag("AGENT_HUB_WATCHDOG_REAP"):
         return
     try:
-        if not reap_registry(stages)[0]:
+        if not reap_registry(stage_names())[0]:
             return
         rows = claude_rows(tick)
         if not rows:
@@ -1132,7 +1156,7 @@ def rule_r6(tick: Tick, stages: list) -> None:
             ident = row.get("sessionId") or row.get("id") or ""
             if row.get("kind") != "background" or not row.get("pid") or not ident or ident in done:
                 continue
-            hit = retired_hub_of(row, stages)
+            hit = retired_hub_of(row)
             if hit is None:
                 continue
             stage, tag = hit
@@ -1149,8 +1173,15 @@ def rule_r6(tick: Tick, stages: list) -> None:
                 tick.say(stage, "R6", f"would stop the background session of retired {who}, quiet {mins} min")
                 continue
             cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
-            if retired_hub_of(row, stages) is None:  # re-read right before the stop: registered or pending since?
+            if retired_hub_of(row) is None:  # re-read right before the stop: registered or pending since?
                 continue
+            blocker = stop_blocker(cli, row, cwd)
+            if blocker:
+                if blocker[1]:
+                    tick.say(stage, "R6", f"not stopping retired {who}: {blocker[0]}")
+                continue
+            # accepted residual window: milliseconds between this last check and the stop; it takes an old retired session
+            # re-registered in exactly that window, and no lock protocol with the registry writers is worth that
             res = run([cli.path, "stop", row.get("id") or ident[:8]], 30, cwd)
             if res.returncode != 0:
                 tick.say(stage, "R6", f"stopping the background session of retired {who} failed: claude stop exit "
@@ -1189,7 +1220,7 @@ def cmd_run(a) -> int:
                 tick.state["stages"][stage] = {}
                 print(f"watchdog: stage {stage}: state reset after {type(e).__name__}: {first_line(str(e))}", file=sys.stderr)
         try:
-            rule_r6(tick, stage_names())
+            rule_r6(tick)
         except Exception as e:  # noqa: BLE001 — reaping must not stop the tick
             tick.say("machine", "error", f"{type(e).__name__}: {first_line(str(e))}")
         if not a.dry_run:
