@@ -492,6 +492,15 @@ class Start(Exception):
     """The background successor could not start; the message says why (it goes to the journal)."""
 
 
+def followthrough_summary() -> str:
+    """Point every successor surface at the hub skill's authoritative procedure."""
+    return """For Codex, apply the hub skill's Terminal follow-through: consume the report/result, verify resource ownership and
+remaining approved Business DoD, then start/resume next independent authorized ready work before waiting/final.
+Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
+continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
+finish only at completed DoD, explicit owner stop or a genuine business/authority boundary. Preserve source/scope."""
+
+
 class Successor:
     def __init__(self, stage: str, n: int, handoff: Path, model: str, mode: str, cwd: Path, k: int, limit: int,
                  succ: Optional[int] = None, effort: Optional[str] = None):
@@ -747,11 +756,11 @@ The owner may be away; they reach you through `ask` and `agent send hub-{self.su
 
 1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill), then run
    `{self.takeover_cmd()}`. `self` resolves this worker's own session id. Follow its digest and `{self.handoff}`.
-2. Run the digest's first `jwait` once unconditionally to replay handover events. Then work the finite handoff queue
-   to its completion/stop checks. Wait only while work or external events remain,
-   through the shell harness with the digest's jwait; preserve its execution id and exit status.
-   Keep individual tool waits bounded so you can read the inbox and respond. When nothing remains,
-   write a status line with `"$HUB_BIN/jlog"` and finish; `agent send` resumes this same Codex thread.
+2. Run the digest's first `jwait` once unconditionally to replay handover events.
+   {followthrough_summary()}
+   Wait only while work or external events remain, through the shell harness with the digest's jwait;
+   preserve its execution id and exit status. Keep individual tool waits bounded so you can read the inbox and respond.
+   At a verified stopping boundary, journal the result and finish; `agent send` resumes this same Codex thread.
 3. The executor footer's "hub" means the owner here: record questions with `ask add` and journal `@owner …`.
 4. Hand over at your context budget as your predecessor did. Preserve your engine, model and permission policy.
 
@@ -1386,9 +1395,10 @@ If you cannot read/write the stage home, report BLOCKED honestly and leave prede
 Run `AGENT_HUB_HOME={shlex.quote(str(hc.root()))} {takeover}` from your actual cwd.
 `self` must be your actual CODEX_THREAD_ID; a clientThreadId is not identity. Takeover reconciles the actual cwd/ID.
 Run the digest's first `jwait` once unconditionally to replay handover events; use the shell harness and preserve
-its execution session and exit status. Then work the finite handoff queue to its completion/stop checks.
-Wait only while work or external events remain.
-When nothing remains, journal DONE and finish. Owner questions use `ask`; consult the register, not copied decisions.
+its execution session and exit status.
+{followthrough_summary()}
+Wait only while work or external events remain; journal the result at a verified stopping boundary.
+Owner questions use `ask`; consult the register, not copied decisions.
 {marker_text(k, limit)}
 '''
         args = {'title': hc.hub_title(stage, succ), 'prompt': prompt}

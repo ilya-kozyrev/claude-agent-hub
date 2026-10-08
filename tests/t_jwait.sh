@@ -205,4 +205,67 @@ check $rc 0 "service line: the DONE line wakes the hub"
 grep -q 'DONE builder finished' $O/o9.out; check $? 0 "…and is delivered"
 grep -q 'chain reset' $J; check $? 0 "the chain reset line is in the journal (readable)"
 grep -q 'chain reset' $O/o9.out; check $? 1 "negative: the chain reset line does not wake a hub waiting on --tag hub"
+# Canonical digest argv at the transport seam: execute the emitted command, not a copied regex.
+python3 - "$B" <<'PYCONTROL'
+import datetime as dt, json, os, pathlib, runpy, shlex, subprocess, sys, tempfile
+root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root))
+import hubcore as hc
+hub = runpy.run_path(str(root / 'hub'), run_name='wake_control')
+with tempfile.TemporaryDirectory() as tmp:
+    os.environ.update(AGENT_HUB_HOME=tmp, HUB_STAGE='wake-control', HUB_TAG='hub-2',
+                      AGENT_HUB_JWAIT_FOR='1s')
+    os.environ.pop('AGENT_HUB_JWAIT_MATCH', None)
+    pathlib.Path(tmp, 'config.json').write_text(json.dumps({'AGENT_HUB_JWAIT_MATCH': r"CUSTOM_READY|quoted 'event'"}))
+    handoff = pathlib.Path(tmp, 'HANDOFF-wake-control.md')
+    handoff.write_text('## Business DoD\nFinish authorized fixture work.\n## 0. First steps\nReplay events.\n')
+    def emitted(since=None):
+        if since:
+            os.utime(handoff, (since.timestamp(), since.timestamp()))
+        digest = hub['digest']('wake-control', 2, 'fixture', handoff if since else None, [])
+        command = next(line for line in digest.splitlines() if line.startswith('jwait --journal '))
+        argv = shlex.split(command)
+        assert '--hub-events' in argv and '--match' not in argv, argv
+        argv[0] = str(root / 'jwait')
+        return argv + ['--settle', '0', '--caller', 'digest-control']
+    def run(argv, rc, present=(), absent=()):
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=8)
+        assert result.returncode == rc, (argv, result.returncode, result.stdout, result.stderr)
+        for text in present:
+            assert text in result.stdout, (text, result.stdout)
+        for text in absent:
+            assert text not in result.stdout, (text, result.stdout)
+    hc.journal_append('wake-control', 'executor', 'baseline-control')
+    argv = emitted()
+    run(argv, 3)  # establish the actual digest caller's cursor
+    since = hc.now() - dt.timedelta(minutes=1)
+    for word in ('DONE', 'STOP', 'BLOCKED', 'ENDED', 'REVIEWED', 'EXIT', 'MERGED', 'QUESTION', 'AWAITING ANSWER'):
+        hc.journal_append('wake-control', 'executor', word + ' transport-control')
+    hc.journal_append('wake-control', 'executor', 'CUSTOM_READY configured-control')
+    hc.journal_append('wake-control', 'executor', "quoted 'event' quoting-control")
+    hc.journal_append('wake-control', 'executor', '@wake-control-hub-2 addressed-control')
+    hc.journal_append('wake-control', 'executor', 'neutral-control')
+    hc.journal_append('wake-control', 'hub-2', 'DONE own-control')
+    hc.journal_append('wake-control', 'hub-2/child', 'STOP subtag-control')
+    hc.journal_append('wake-control', 'executor', '@hub-20 wrong-address-control')
+    delivered = tuple(word + ' transport-control' for word in
+                      ('DONE', 'STOP', 'BLOCKED', 'ENDED', 'REVIEWED', 'EXIT', 'MERGED', 'QUESTION', 'AWAITING ANSWER'))
+    excluded = ('neutral-control', 'own-control', 'subtag-control', 'wrong-address-control')
+    run(argv, 0, delivered + ('configured-control', 'quoting-control', 'addressed-control'), excluded)
+    run(argv, 3, absent=delivered)  # consumption suppresses redelivery
+    run(emitted(since), 0, delivered, excluded)  # handover --since explicitly replays seen events
+    run(argv, 3)
+    hc.journal_append('wake-control', 'executor', 'LEGACY_CUSTOM custom-control')
+    run(argv + ['--match', 'LEGACY_CUSTOM'], 0, ('custom-control',))
+    hc.journal_append('wake-control', 'executor', 'DONE legacy-terminal-control')
+    hc.journal_append('wake-control', 'executor', 'LEGACY_ONLY legacy-positive-control')
+    legacy = [str(root / 'jwait'), '--journal', '--stage', 'wake-control', '--caller', 'legacy-control',
+              '--since', since.isoformat(), '--match', 'LEGACY_ONLY', '--settle', '0', '--for', '1s']
+    run(legacy, 0, ('legacy-positive-control',), ('legacy-terminal-control',))
+    tags = [str(root / 'jwait'), '--journal', '--stage', 'wake-control', '--caller', 'tags-control',
+            '--since', since.isoformat(), '--tag', 'unaddressed', '--settle', '0', '--for', '1s']
+    run(tags, 3, absent=delivered)  # tags alone still do not add terminal words
+print('PASS digest --hub-events transport, exclusions, cursor/replay, extra words and legacy filters')
+PYCONTROL
+check $? 0 "canonical digest terminal transport controls"
 exit $fail

@@ -114,7 +114,7 @@ agent-top                                     # live console; agent-top --once f
 agent send builder "after the tests pass, open the PR"
 
 # 5. wait for its status line without polling (run in the background from Claude)
-jwait --journal --tag hub-1 --tag hub --match '\b(DONE|BLOCKED|EXIT|ENDED|REVIEWED|QUESTION)\b' --for 55m
+jwait --journal --tag hub-1 --tag hub --hub-events --for 55m
 
 # 6. stop it
 agent stop builder

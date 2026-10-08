@@ -152,15 +152,39 @@ owner resolution. Native APIs cannot set Full Access. CLI from Desktop is an exp
 the home-only opt-in documented in that procedure. An agent's --surface cli/--headless flag is not authorization;
 leave that opt-in to the owner. Terminal and detached auto/CLI handoffs keep their ordinary path.
 
-An automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
+A Codex automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
 written for one release; `[delamain auto-handoff k/N]` means the same): run its takeover command, then run the digest's
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
-checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
+checks under [Terminal follow-through](#terminal-follow-through); reconcile the snapshot against Business DoD.
+Wait only while work or external events remain; finish at its verified stopping boundary.
 Questions go to `ask add` with a default; hand over again when the budget requires it.
 
 Ordinary authorized fresh CLI executors start bounded, checkable independent work under their existing brief.
 Another hub's context shift or transfer is not a prerequisite. Wait only for an actual data, resource or permission
 dependency; preserve shared locks and existing owner decisions.
+
+## Terminal follow-through
+
+For Codex hubs, run this procedure after every executor terminal result (`MERGED`, `DONE`, `STOP`, `BLOCKED`, `EXIT`,
+`ENDED`, `REVIEWED`), including results replayed at takeover. These are inputs to coordination, not proof
+of success or automatic stage completion.
+
+1. Consume the actual report/result and its evidence; establish what finished, failed or stopped.
+2. Verify current resource ownership and the remaining approved Business DoD against its source and scope.
+   An executor's artifact/call-budget STOP ends its brief; continuation remains hub-owned within actual authority.
+   Actor-only SAFE_END describes that actor, not stage-wide resource freedom.
+3. Start or resume the next independent authorized ready work before waiting or finalizing. Distinguish dependencies
+   needed for preparation from those needed for final publication, merge, stage acceptance or production. A blocked
+   lane leaves independent lanes ready; respect the shared DB slot, locks and agreed sequence.
+4. If Business DoD remains and none is ready, record the exact remaining item, blocker, responsible owner or resource, and expected event
+   that makes it actionable; wait through the canonical digest command. Missing reports/ownership evidence are
+   concrete blockers to resolve, not successful completion. An empty handoff queue is a snapshot: reconcile it
+   against Business DoD and recover remaining authorized work before declaring DONE.
+
+The pass ends with work started/resumed, a concrete wait, or a verified stopping boundary: completed Business DoD,
+explicit owner stop, or a genuine business/authority boundary recorded with its source. Preserve that boundary;
+never fabricate READY, finance or production permission. A status or clarification message during active work
+gets an answer and the same loop resumes unless the owner cancels or changes scope.
 
 ## Waiting
 
@@ -176,10 +200,10 @@ Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
   `jwait` and handle its result before starting another. A detached successor uses the same foreground procedure.
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER' --for 55m` —
+- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 55m` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
-  (`AGENT_HUB_JWAIT_MATCH`) already added; copy it from there. `--for` defaults to 55m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
+  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. `--for` defaults to 55m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
   `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
   wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
@@ -189,7 +213,8 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
 - Sources and filters combine in one command. What was read is remembered: lines that arrived while you worked come
   with the next `jwait`.
 
-Wake up — handle the block — start the next `jwait`. Journal waits and alarms use `jwait`; keep one waiter and continue it through the shell harness.
+On a Codex hub wake, apply [Terminal follow-through](#terminal-follow-through) to terminal results; start the next `jwait`
+when waiting is justified. Journal waits and alarms use `jwait`; keep one waiter and continue it through the shell harness.
 
 **With the watchdog on** (the takeover digest says so; `docs/monitoring.md`): a hub that sleeps without a waiter is fine, the
 watchdog wakes it when lines addressed to it have waited 15 min — but keep one `jwait` anyway, it is the faster path. A
@@ -211,11 +236,19 @@ you need. When you go quiet on purpose (a long wait for the owner, a pause), say
   and signs you correctly. The answer reaches you only in your own journal: the other hub answers with
   `tell <your stage> "…"`; its `jwait` does not read your journal. A headless agent reads its inbox, so `tell` hands
   the text to `agent send` itself.
+  **Codex only:** follow [Immediate Codex tell delivery](../../docs/codex.md#immediate-codex-tell-delivery).
+  Handle a `pending` native-caller handoff immediately, before waiting or another action: verify the current
+  registry/full UUID, actual human authority for this communication and the supported native tool's current schema.
+  Then send the literal recipient/message once through that tool.
+  Record its real receipt against the request ID; an unknown result forbids retry. Tool acceptance alone proves
+  neither active same-turn steer nor immediate delivery; retain pending when capability or human proof is absent.
 - A direct cross-session message only when the journal cannot do (for example the other hub must act before its next
   wake-up), and only to the address from `tell <stage> --address` / `roles --stage <stage> get hub` — never to a session
   chosen by its name in a list (`ListAgents` or `codex agents`): a replaced hub can still run under the same name.
-  Codex: use the printed `agent send` for a detached hub, or `codex queue --thread <registered UUID> --message "…"`
-  when the CLI supports `queue`; use the UUID, never a display name.
+  Codex: use the printed `agent send` for a detached hub. For immediate non-detached input, follow
+  [Immediate Codex tell delivery](../../docs/codex.md#immediate-codex-tell-delivery) and handle pending native-caller
+  handoffs immediately. Explicit queued follow-ups may use `codex queue --thread <registered UUID> --message "…"`
+  when supported; queue acceptance does not establish immediate steer. Use the UUID, never a display name.
 - `roles list | get <role> | set <role> <id> | retire` — the stage's role registry with full session ids; `set` infers
   the kind from the id (`local_…` = Claude Desktop, a uuid = terminal). For Claude cross-session messaging, resolve the address with `roles get <role>`.
   For detached workers of either engine, use `agent send`; Codex has no Claude `SendMessage` API. `roles broadcast --to r1,r2|--all "text"` — registered recipients and one journal line `@r1 @r2 text`.

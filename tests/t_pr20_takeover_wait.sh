@@ -52,8 +52,9 @@ def setup(name, engine='claude'):
         'session': old, 'cli_session_id': old, 'tag': 'hub-1', 'kind': 'cli'}}}))
     handoff = stage / 'HANDOFF-hub-fixture.md'
     handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #2" — stage-a\n'
-                       '\n## 0. First steps\nTake over.\n## 2. Queue\n'
-                       'The finite queue is empty. No external work remains.\n')
+                       '\n## Business DoD\nComplete the approved fixture validation; source: owner fixture.\n'
+                       'Boundary: no merge or production authority.\n## 0. First steps\nTake over.\n## 2. Queue\n'
+                       'The finite queue snapshot is empty; reconcile outstanding validation against Business DoD.\n')
     return home, stage, handoff
 
 def command(*args):
@@ -175,6 +176,15 @@ def first_wait_contract(label, text):
     assert conditional >= 0 and instruction.start() < conditional, (
         f'L3: {label} must preserve conditional waits after unconditional handover replay')
 
+def followthrough_contract(label, text):
+    plain = text.replace('`', '').lower()
+    for phrase in ('terminal follow-through', 'business dod', 'report', 'resource ownership',
+                   'next independent authorized ready work', 'blocker', 'expected event',
+                   "executor's artifact/call-budget stop ends its brief", 'reconcile the finite queue snapshot',
+                   'explicit owner stop', 'genuine business/authority boundary', 'source/scope'):
+        assert phrase in plain, f'{label}: missing {phrase}'
+    assert 'when nothing remains' not in plain and 'queue is done' not in plain, label
+
 def l3_cli():
     _, _, handoff = setup('l3-cli', 'codex')
     # Even with an empty finite queue, the first digest wait replays a handover event.
@@ -191,7 +201,14 @@ def l3_cli():
     print('PASS L3_cli replay: empty finite queue still has an inherited BLOCKED event')
     successor = ap.CodexSuccessor('stage-a', 1, handoff, 'gpt-6.1-sol',
                                   'danger-full-access', tmp, 1, 10, effort='high')
-    first_wait_contract('generated CLI brief', successor.brief('fixture').read_text())
+    brief = successor.brief('fixture').read_text()
+    first_wait_contract('generated CLI brief', brief)
+    followthrough_contract('generated CLI brief', brief)
+    claude = ap.Successor('stage-a', 1, handoff, 'opus', 'default', tmp, 1, 10, effort='high')
+    claude_brief = claude.brief('fixture').read_text()
+    assert 'Terminal follow-through' not in claude_brief
+    assert 'When nothing is left to wait for' in claude_brief and 'Bash `timeout` 600000, `--for 9m`' in claude_brief
+
 
 def l3_desktop():
     _, _, handoff = setup('l3-desktop', 'codex')
@@ -204,6 +221,7 @@ def l3_desktop():
     brief = pathlib.Path(pending['brief']).read_text()
     assert brief == pending['create_args']['prompt']
     first_wait_contract('generated Desktop brief', brief)
+    followthrough_contract('generated Desktop brief', brief)
 
 def l3_skill():
     text = (root / 'skills/hub/SKILL.md').read_text().split('**Autopilot**', 1)[1].split('## Waiting', 1)[0]

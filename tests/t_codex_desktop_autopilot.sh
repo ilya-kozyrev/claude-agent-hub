@@ -237,6 +237,13 @@ assert args['target']=={'type':'project','projectId':'saved-project','environmen
 assert args['model']=='gpt-6.1-sol' and args['thinking']=='high'
 assert args['title']=='Hub stage-a #2 — Complete the fixture queue'
 assert '--desktop-request '+req in args['prompt'] and 'finite' in args['prompt'] and '--for 9m' not in args['prompt']
+prompt = args['prompt']
+for phrase in ('Terminal follow-through', 'remaining approved Business DoD', 'resource ownership',
+               'next independent authorized ready work', 'expected event',
+               "executor's artifact/call-budget STOP ends its brief", 'explicit owner stop', 'source/scope'):
+    assert phrase in prompt, (phrase, prompt)
+assert 'When nothing remains' not in prompt
+
 assert '[agent-hub auto-handoff 1/' in args['prompt'] and '[delamain auto-handoff' not in args['prompt']  # rename:keep  (the former name for one release: an older hub's hook reads only it)
 assert 'sandbox' not in args and 'approval' not in args
 assert json.loads(request(req).stdout)['already_dispatched']

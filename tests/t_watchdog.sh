@@ -624,7 +624,7 @@ bad = [t for t in yes if not f.accepts(t)] + [t for t in no if f.accepts(t)]
 assert not bad, bad
 PY
 check $? 0 "jwait.hub_filter: the digest jwait's tags and pattern; the hub's own lines left out, @hub / @hub-N / @<stage>-hub-N in"
-grep -q -- "--tag hub-1 --tag hub --match" "$R/take1.out"; check $? 0 "jwait.hub_filter: …the same tags that hub takeover prints in its first jwait command"
+grep -q -- "--tag hub-1 --tag hub --hub-events" "$R/take1.out"; check $? 0 "jwait.hub_filter: …the same tags that hub takeover prints in its first jwait command"
 mkdir -p "$R/sj/coordinator/work"
 "$B/jwait" --journal --stage sj --caller hub-9 --settle 1 --for 3s > "$R/j1.out" 2>&1; check $? 3 "jwait: the deadline passes (exit 3)"
 test -f "$R/.jwait-state/sj/hub-9.armed.json"; check $? 1 "jwait: the armed file is gone after exit 3"

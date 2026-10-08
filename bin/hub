@@ -193,7 +193,7 @@ import session_effort  # noqa: E402
 import subagents  # noqa: E402
 
 DIGEST_BYTES = 3072
-JWAIT_MATCH = hc.STATUS_WORDS  # the built-in wake words; the digest uses hc.status_pattern() (+ AGENT_HUB_JWAIT_MATCH)
+JWAIT_MATCH = hc.STATUS_WORDS  # the built-in wake words; digest --hub-events resolves hc.status_pattern() inside jwait
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -567,7 +567,7 @@ def roles_digest(stage: str) -> str:
 
 def jwait_command(stage: str, tag: str, since=None) -> str:
     since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
-    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --match {shlex.quote(hc.status_pattern())} "
+    return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --hub-events "
             f"{since_opt}--for {hc.jwait_for()} --note \"scheduled round\"")
 
 
@@ -1411,7 +1411,11 @@ Report progress against it with technical evidence separately.
 {facts_rows}
 
 ## 2. Queue
-<!-- By dependency; item = action | "done" check | stop condition | who (model). Blocked items carry the ask id. -->
+<!-- Finite snapshot of remaining authorized Business DoD with source/scope and explicit owner boundaries.
+     Next ready work first; separate preparation dependencies from publication/merge/stage/production gates.
+     Item = action | "done" check | brief stop condition | who (model).
+     Wait = exact item | blocker | owner/resource | expected event (ask id when applicable). -->
+Codex successor: apply the hub skill's Terminal follow-through; reconcile this snapshot against Business DoD before DONE.
 1. TODO
 
 ## 3. Night queue

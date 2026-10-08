@@ -82,7 +82,7 @@ try:
     assert calls()[-1]['env']['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'] is None
     assert calls()[-1]['env']['CODEX_APP_TOOLS_PIPE_PATH'] is None
     brief=(home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
-    assert 'finite handoff queue' in brief and '--for 9m' not in brief
+    assert 'finite queue snapshot' in brief and 'Terminal follow-through' in brief and '--for 9m' not in brief
     os.environ.pop('CODEX_INTERNAL_ORIGINATOR_OVERRIDE');os.environ.pop('CODEX_APP_TOOLS_PIPE_PATH')
     assert state(home)['pending']['engine']=='codex' and state(home)['chain']==1
     assert 'becomes never' in out and 'Remote Control' not in (home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()

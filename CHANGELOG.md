@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Codex `tell` supports immediate delivery through the public app-server proxy.** A verified active turn uses
+  exact-turn steer. For a recipient observed loaded idle, a `turn/start` acknowledgement records `accepted` with
+  `delivery_mode: "unverified"`; another client can activate after the final read, so a new turn is not guaranteed.
+  One signed journal line and the matching acknowledgement record the result. An unavailable runtime returns a pending native-caller handoff,
+  which the Codex hub handles immediately under verified human communication authority and the current registry.
+  Native tool acceptance does not establish active same-turn steer; unknown outcomes forbid retry. Claude delivery
+  and detached recipients retain their existing behavior. In an owned Desktop control, native input arrived during
+  the existing active turn; native idle delivery remains unverified.
+- **Codex hub terminal results trigger follow-through against Business DoD.** Hub, handoff and emitted Codex CLI/native
+  successor instructions consume reports, verify ownership, continue independent authorized ready work, or record
+  a concrete blocker and expected event. Executor brief stops and empty queue snapshots preserve the hub's remaining
+  goal and explicit owner boundaries; preparation dependencies stay separate from final publication and resource gates.
+  Claude successor instructions retain their existing behavior.
+- **Canonical hub waits use `jwait --hub-events`.** Standard terminal/question events and configured extra wake
+  words resolve inside the waiter, removing regex quoting from generated digest commands. Custom filters, default
+  file/non-hub waits, tags, exclusions and replay semantics remain compatible.
+
 ## 1.0.1 — 2026-10-08
 
 - **Автоматический native handoff учитывает уже данное разрешение владельца.** Перед `create_thread` агент
