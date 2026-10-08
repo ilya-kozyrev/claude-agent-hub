@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.2 — 2026-10-08
+
 - **Codex `tell` supports immediate delivery through the public app-server proxy.** A verified active turn uses
   exact-turn steer. For a recipient observed loaded idle, a `turn/start` acknowledgement records `accepted` with
   `delivery_mode: "unverified"`; another client can activate after the final read, so a new turn is not guaranteed.
