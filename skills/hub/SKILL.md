@@ -238,7 +238,8 @@ you need. When you go quiet on purpose (a long wait for the owner, a pause), say
   the text to `agent send` itself.
   **Codex only:** follow [Immediate Codex tell delivery](../../docs/codex.md#immediate-codex-tell-delivery).
   Handle a `pending` native-caller handoff immediately, before waiting or another action: verify the current
-  registry/full UUID and actual human authority for this communication, then use the supported native tool schema.
+  registry/full UUID, actual human authority for this communication and the supported native tool's current schema.
+  Then send the literal recipient/message once through that tool.
   Record its real receipt against the request ID; an unknown result forbids retry. Tool acceptance alone proves
   neither active same-turn steer nor immediate delivery; retain pending when capability or human proof is absent.
 - A direct cross-session message only when the journal cannot do (for example the other hub must act before its next
