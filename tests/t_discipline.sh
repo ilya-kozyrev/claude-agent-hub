@@ -241,7 +241,7 @@ PY
 n=$(wc -l < $R/jwait-forms.txt | tr -d ' '); [ "$n" -ge 4 ]; check $? 0 "jwait forms collected from the digest and the skill ($n)"
 i=0; while IFS= read -r f; do i=$((i+1)); for bg in 0 1; do denied "$f" $bg; check $? 1 "jwait form $i passes the guard (background=$bg)"; done; done < $R/jwait-forms.txt
 denied "until grep -q DONE journal.md; do sleep 20; done"; check $? 0 "jwait forms: positive control, a sleep loop is denied"
-# …also with a team's extra wake words (non-ASCII) from AGENT_HUB_JWAIT_MATCH in the digest's pattern
+# …also with configured non-ASCII extra wake words resolved internally by --hub-events
 echo '{"AGENT_HUB_JWAIT_MATCH": "WARTET AUF ANTWORT|RÉPONSE ATTENDUE|@hub (FRAGE|QUESTION)"}' > $R/config.json
 f=$(python3 - "$B" <<'PY'
 import datetime, importlib.machinery, importlib.util, sys
@@ -250,7 +250,7 @@ spec = importlib.util.spec_from_loader("hub_cli", loader); hub = importlib.util.
 print(hub.jwait_command("stage-a", "hub-17", datetime.datetime(2026, 1, 1, 14, 35)))
 PY
 )
-case "$f" in *"RÉPONSE ATTENDUE"*) check 0 0 "jwait form with extra words: the digest carries them";; *) check 1 0 "jwait form with extra words: the digest carries them ($f)";; esac
+case "$f" in *"--hub-events"*) check 0 0 "jwait form with extra words: the digest selects canonical hub events";; *) check 1 0 "jwait form lacks --hub-events ($f)";; esac
 for bg in 0 1; do denied "$f" $bg; check $? 1 "jwait form with extra non-ASCII words passes the guard (background=$bg)"; done
 rm $R/config.json
 
