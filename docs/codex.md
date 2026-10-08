@@ -132,7 +132,7 @@ loaded, resumed, forked or created, and no model/settings overrides are sent. Th
 and bounded output. See [public app-server protocol](https://learn.chatgpt.com/docs/app-server).
 
 `tell` prints a JSON receipt: `steered` requires a matching turn acknowledgement; `started` requires the returned
-new turn ID; `failed` means rejection or identity/turn change; `unknown` means an attempted mutation lacks a valid
+new turn ID with `inProgress` status; `failed` means rejection or identity/turn change; `unknown` means an attempted mutation lacks a valid
 acknowledgement. A failed/pending/unknown dispatch exits 1. Never retry an unknown send through another transport.
 `codex queue` is an explicit queued follow-up address, not immediate steer; [steering and queuing differ](https://learn.chatgpt.com/docs/prompting#steering-and-queuing).
 

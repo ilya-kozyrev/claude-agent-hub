@@ -24,8 +24,8 @@ A headless agent reads its inbox, not a journal: for a holder of kind headless t
 that command's code.
 The answer reaches you only in YOUR journal: the other hub answers with `tell <your stage> "…"`; its jwait does not read
 your stage's journal, and yours does not read its.
-The journal retains the audit trail between hubs; non-detached Codex delivery is immediate when supported. A direct message goes only to the registry address, never to a
-session picked by its name in a list. Text that starts with a dash goes after `--`.
+The journal retains the audit trail between hubs; non-detached Codex delivery is immediate when supported.
+A direct message goes only to the registry address, never to a session picked by its name in a list. Text that starts with a dash goes after `--`.
 --address: print only the direct address, write nothing (no text allowed).
 Hub home: `hub home` shows which and why. Exit: 0 ok, 1 stage or holder not found / write or delivery failed, 2 usage
 (no tag to sign with, empty text, text with --address).

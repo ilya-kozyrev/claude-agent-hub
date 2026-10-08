@@ -19,6 +19,9 @@ for line in sys.stdin:
     if method == 'initialized':
         continue
     result = {}
+    if method == 'initialize' and mode == 'reject-init':
+        print(json.dumps({'id': request['id'], 'error': {'code': -32600}}), flush=True)
+        continue
     if method == 'thread/read':
         reads += 1
         if mode == 'unavailable':
@@ -31,7 +34,7 @@ for line in sys.stdin:
             data = json.loads(path.read_text())
             data['roles']['hub']['session'] = 'cccccccc-3333-4333-8333-333333333333'
             path.write_text(json.dumps(data))
-        state = 'idle' if mode == 'idle' else 'notLoaded' if mode == 'notLoaded' else 'active'
+        state = 'idle' if mode in ('idle', 'idle-bad-ack') else 'notLoaded' if mode == 'notLoaded' else 'active'
         turn = 'turn-new' if mode == 'turn-race' and reads == 2 else 'turn-current'
         sid = request['params']['threadId'] if mode != 'wrong-uuid' else 'bbbbbbbb-2222-4222-8222-222222222222'
         result = {'thread': {'id': sid, 'status': {'type': state},
@@ -51,5 +54,5 @@ for line in sys.stdin:
         if mode == 'reject-turn':
             print(json.dumps({'id': request['id'], 'error': {'code': -32600, 'message': 'turn changed'}}), flush=True)
             continue
-        result = {'turnId': 'wrong-turn' if mode == 'wrong-turn' else 'turn-current'} if method == 'turn/steer' else {'turn': {'id': 'turn-idle-start', 'status': 'inProgress'}}
+        result = {'turnId': 'wrong-turn' if mode == 'wrong-turn' else 'turn-current'} if method == 'turn/steer' else {'turn': {'id': 'turn-idle-start', 'status': 'completed' if mode == 'idle-bad-ack' else 'inProgress'}}
     print(json.dumps({'id': request['id'], 'result': result}), flush=True)

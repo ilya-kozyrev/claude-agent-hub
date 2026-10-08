@@ -59,7 +59,7 @@ for mode in ('wrong-uuid', 'turn-race', 'takeover', 'reject-turn'):
     assert 'native_tool' not in result
     assert len(mutations()) == (1 if mode == 'reject-turn' else 0), (mode, requests())
 
-for mode in ('timeout', 'wrong-turn', 'malformed'):
+for mode in ('timeout', 'wrong-turn', 'malformed', 'idle-bad-ack'):
     setup(mode)
     with patch.object(ct, 'TIMEOUT', 0.5):
         started = time.monotonic()
@@ -68,7 +68,7 @@ for mode in ('timeout', 'wrong-turn', 'malformed'):
     assert result['state'] == 'unknown' and result['retry'] == 'forbidden', (mode, result)
     assert 'native_tool' not in result and len(mutations()) == 1
 
-for mode in ('notLoaded', 'missing-turn', 'hang-read', 'unavailable'):
+for mode in ('notLoaded', 'missing-turn', 'hang-read', 'unavailable', 'reject-init'):
     setup(mode)
     with patch.object(ct, 'TIMEOUT', 0.5):
         result = ct.dispatch('target', 'hub', rec, message, source)

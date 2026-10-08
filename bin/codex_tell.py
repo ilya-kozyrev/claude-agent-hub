@@ -149,7 +149,10 @@ def dispatch(stage, role, rec, message, source):
     attempted = False
     try:
         proxy = Proxy(rec.get('cwd'))
-        proxy.rpc('initialize', {'clientInfo': {'name': 'delamain_tell', 'version': '1'}})
+        try:
+            proxy.rpc('initialize', {'clientInfo': {'name': 'delamain_tell', 'version': '1'}})
+        except Rejected as exc:
+            raise Unavailable(str(exc)) from None
         proxy.send({'method': 'initialized'})
         state, turn_id = thread_state(proxy, sid)
         # Serialize the final registry check and mutation against normal role takeovers.
@@ -164,6 +167,8 @@ def dispatch(stage, role, rec, message, source):
             attempted = True  # a write/response failure from here may already have delivered
             result = proxy.rpc('turn/steer' if state == 'active' else 'turn/start', params)
         returned = result.get('turnId') if state == 'active' else result.get('turn', {}).get('id')
+        if state == 'idle' and result.get('turn', {}).get('status') != 'inProgress':
+            raise Unavailable('turn/start did not acknowledge an in-progress turn')
         if not isinstance(returned, str) or not returned or (state == 'active' and returned != turn_id):
             raise Unavailable('mutation acknowledgement did not match the expected turn')
         return {**receipt, 'state': 'steered' if state == 'active' else 'started', 'turn_id': returned}
@@ -180,4 +185,7 @@ def dispatch(stage, role, rec, message, source):
             return native_handoff(stage, role, rec, sid, message, source, str(exc))
     finally:
         if proxy is not None:
-            proxy.close()
+            try:
+                proxy.close()
+            except (OSError, subprocess.SubprocessError):
+                pass
