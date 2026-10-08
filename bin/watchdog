@@ -15,7 +15,7 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R2  an open question past its due time that has a default → one `[watchdog] @hub OVERDUE Q-…` line
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it
-  R4  a Claude hub whose last turn ended on an API error >= 15 min ago → wake it
+  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
@@ -184,19 +184,25 @@ def load_state() -> dict:
     with a warning, so one bad value cannot make every later tick fail on it."""
     try:
         data = json.loads((wd_dir() / "state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {"stages": {}}
+    except (OSError, ValueError):
+        # A damaged existing file may have contained unknown delivery receipts.
+        return {"stages": {}, "uuid_receipts": None}
     if not isinstance(data, dict):
         print("watchdog: state.json is not a JSON object: state reset", file=sys.stderr)
-        return {"stages": {}}
+        return {"stages": {}, "uuid_receipts": None}
     stages = data.get("stages")
     if not isinstance(stages, dict):
         if stages is not None or "stages" in data:
             print("watchdog: state.json `stages` is not an object: stages reset", file=sys.stderr)
         stages = {}
+        if "stages" in data:
+            data["uuid_receipts"] = None
     for name in [k for k, v in stages.items() if not isinstance(v, dict)]:
         print(f"watchdog: state.json entry of stage {name} is not an object: reset", file=sys.stderr)
         stages[name] = {}
+        data["uuid_receipts"] = None
     data["stages"] = stages
     return data
 
@@ -391,8 +397,19 @@ def status_line(stage: str) -> str:
     """One line for the takeover digest: what the watchdog does for this hub, or '' when it is off."""
     if not enabled():
         return ""
-    return (f"watchdog is on (a tick every {minutes(every())} min): a hub that is silent while lines addressed to it "
-            f"wait {minutes(wake_after())} min is woken; keep one `jwait`, and `watchdog quiet --stage {stage} "
+    rec = hc.roles_load(stage)["roles"].get("hub") or {}
+    if hc.detached(stage, rec):
+        action = "a stopped detached hub resumes its own session"
+    elif rec.get("engine") == "codex":
+        action = ("a confirmed idle Codex app hub queues its own thread; unknown states notify only; active is left alone"
+                  if rec.get("host") == "codex-app" and rec.get("kind") != "desktop"
+                  else "this Codex host is notify-only; app provenance and confirmed idle are required to wake")
+    elif rec.get("host") == "bg":
+        action = "an idle/stopped Claude background hub resumes its own session; unknown state notifies only"
+    else:
+        action = "a confirmed Claude background hub can resume; Desktop/terminal/unknown hosts notify only"
+    return (f"watchdog is on (a tick every {minutes(every())} min): after {minutes(wake_after())} min of silence "
+            f"with waiting work or an eligible final API error, {action}; keep one `jwait`, and `watchdog quiet --stage {stage} "
             f"--reason \"…\"` pauses it")
 
 
@@ -492,7 +509,10 @@ def observe(tick: Tick, stage: str, rec: dict) -> dict:
             return o
         o.update(busy=st.get("busy"), last=st.get("last_activity"), transport=st.get("transport") or "notify",
                  why=str(st.get("why") or ""))
-        if st.get("dead_turn"):
+        if isinstance(st.get("dead_turn"), dict):
+            o["codex_error"] = st["dead_turn"]
+            o["dead"] = (st["dead_turn"]["at"], st["dead_turn"]["error"])
+        elif st.get("dead_turn"):
             o["dead"] = (st.get("last_activity") or tick.now, str(st["dead_turn"]))
         return o
     # a Claude session: terminal, background or gone
@@ -841,7 +861,8 @@ def wake_hub(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
     mod = codex_module()
     if t in ("codex-queue", "codex-resume") and mod is not None:
         try:
-            res = mod.wake(stage, rec, text, tick.dry)
+            res = (mod.wake(stage, rec, text, tick.dry, expected_error=o["codex_error"], wd=sys.modules[__name__], tick=tick)
+                   if o.get("codex_error") else mod.wake(stage, rec, text, tick.dry, wd=sys.modules[__name__], tick=tick))
             return {"ok": bool(res.get("ok")), "how": str(res.get("how") or t), "detail": str(res.get("detail") or "")}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "how": t, "detail": f"watchdog_codex.wake failed: {type(e).__name__}"}
@@ -1302,6 +1323,17 @@ def main(argv: list) -> int:
     r.add_argument("--dry-run", action="store_true", help="print [plan] lines; write nothing")
     r.add_argument("--stage", default=None)
     r.add_argument("--json", action="store_true")
+    n = sub.add_parser("native-plan", help="read-only app-native candidates; never infers idle or sends")
+    n.add_argument("--stage", default=None)
+    n.add_argument("--json", action="store_true")
+    for name in ("native-claim", "native-ack"):
+        n = sub.add_parser(name, help="fenced local attempt protocol for the current app-native consumer")
+        n.add_argument("--stage", required=True)
+        n.add_argument("--session", required=True)
+        n.add_argument("--fingerprint", required=True)
+        if name == "native-ack":
+            n.add_argument("--attempt", required=True)
+            n.add_argument("--outcome", choices=("sent", "failed", "unknown", "completed-skip"), required=True)
     for name in ("install", "uninstall", "status"):
         s = sub.add_parser(name)
         s.add_argument("--scheduler", choices=("launchd", "cron"), default=None, help="default: launchd on macOS, cron elsewhere")
@@ -1313,6 +1345,9 @@ def main(argv: list) -> int:
     q.add_argument("--for", dest="for_", default=None, help="a duration: 8h")
     q.add_argument("--clear", action="store_true")
     a = p.parse_args(argv)
+    if a.cmd.startswith("native-"):
+        import watchdog_native
+        return watchdog_native.command(sys.modules[__name__], a)
     return {"run": cmd_run, "install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status,
             "notify-test": cmd_notify_test, "quiet": cmd_quiet}[a.cmd](a)
 

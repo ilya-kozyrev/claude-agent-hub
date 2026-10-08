@@ -158,13 +158,16 @@ on disk: use its captured result/status or explicitly permit the output location
 configuration. `workspace-write` is another supported sandbox. A sandboxed interactive coordinator may need
 `--add-dir <hub-home>` to write to the shared home. Full access needs no directory grant.
 
+See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
+
 ## Native Codex subagents
 
 Claude's `agents/worker-*.md` files remain Claude definitions. Codex uses standalone TOML files in
 `.codex/agents/` or `~/.codex/agents/`; the plugin manifest does not register them automatically.
 The setup skill offers four matching effort-pinned files under
 `skills/setup/resources/codex-agents/worker-*.toml`. Copy selected files into the project or personal agent directory
-without overwriting an existing definition. Their `model` is deliberately omitted: choose an available model at spawn.
+without overwriting an existing definition. Project definitions require a trusted project; verify that the native
+spawn tool exposes the installed roles before relying on them. Their `model` is deliberately omitted: choose an available model at spawn.
 See [native Codex subagent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 
 For detached executors, use `agent spawn --effort`; native TOML files govern in-session subagents, not that launcher.
@@ -194,7 +197,19 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   Outside Git it keeps the supplied directory.
   The Claude Desktop/Remote Control phone workflow stays Claude-specific.
 - Night queue files and permissions work with both engines. The watchdog (`watchdog install`) counts open night-queue
-  items as waiting work; a Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). The Claude Desktop scheduled nudge is
+  items as waiting work. A confirmed idle app hub registered by `hub start`/`takeover` as `host: codex-app` is woken
+  with `codex queue` in its own UUID; terminal/unknown hosts and unavailable runtime notify only. Registration requires
+  the current thread and both app markers described below, excluding detached workers; old records need an app-side
+  `hub takeover --session self` (same UUID/tag/shift). Detached hubs use `agent send`. Codex API-error recovery (R4)
+  covers only a final own-turn `task_complete.error.codex_error_info = server_overloaded`, with matching turn start
+  and no later user/turn boundary, rechecked before wake. Quota/auth/unknown errors and interruption never trigger R4.
+  See [host conditions](monitoring.md#which-host-is-woken-how).
+  The standalone CLI's shared-daemon proxy must reach the same app runtime; app markers and fake queue controls
+  alone do not prove live Desktop wake. The standalone tick remains notify-only for an unavailable/separate runtime. Once a finite stage
+  has no outstanding work or external waits, retire its active hub with `roles retire hub --stage S --note "stage complete"`.
+  An existing app-native heartbeat can bridge a separate runtime with `native-plan`/`native-claim`/`native-ack` and
+  supported native read/send tools; [procedure and limits](monitoring.md#codex-app-native-bridge).
+  The Claude Desktop scheduled nudge is
   deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 
 Only commands observed by enabled, trusted hooks can be guarded. External terminal commands and commands that

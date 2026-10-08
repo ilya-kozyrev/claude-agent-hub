@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The watchdog can wake a confirmed idle Codex app hub in its own thread.** `hub start`/`takeover` record app
+  provenance only for the current UUID with both app markers and no detached worker identity. Runtime status is
+  rechecked before `codex queue`; terminal/unknown hosts notify only, with no native resume fallback. The takeover
+  digest now describes host-specific support. Codex API-error recovery retries only a final own-turn
+  `server_overloaded` with matching start and no later user/turn boundary; quota/auth/unknown errors and interruption
+  remain excluded, and the failed turn is rechecked before queueing.
+  A fenced `native-plan`/`native-claim`/`native-ack` protocol supports a separately installed app-native heartbeat
+  when Desktop cannot be reached through the CLI daemon. It requires native idle/actionability checks, preserves
+  unknown delivery, deduplicates shared UUIDs across stages, and does not spend model calls itself; the native
+  automation consumer may be model-assisted. UUID receipts survive replacement by a different stage actor; both
+  native claims and CLI queues consult the same local fence. Unknown CLI outcomes also prevent native fallback,
+  and only verified recipient own-turn progress releases an uncertain delivery.
+
+- **Codex native delegation guards recognize CLI 0.160.0 namespace concatenation.** Spawn, followup and
+  messaging now reach the configured policies; level 0 blocks task reactivation without blocking pure messages.
+  Real CLI controls cover the declared manifest, nested shell/patch calls, native TOML effort and stdin limits.
+
 - **agent-top follows Delamain’s visual identity** in the terminal, Claude Code pane and HTML widget, with
   navy panels, ice-blue navigation and amber accents. Status colors, monochrome and limited-color terminals,
   narrow layouts and the pane’s focus controls remain supported.

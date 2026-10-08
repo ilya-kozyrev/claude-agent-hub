@@ -600,11 +600,16 @@ def watchdog_digest(stage: str) -> str:
 
 def session_host(stage: str, session: str, cli: str, kind: str, engine: str) -> str:
     """Where this hub runs, for the watchdog's choice of how to wake it: `desktop`, `detached` (a headless hub started
-    by `agent spawn`), `bg` (a `claude --bg` session) or `term` (a terminal session); "" when it cannot be told, and for
-    Codex hubs (the watchdog tells their threads apart itself). The CLI's own session file says bg or terminal."""
+    by `agent spawn`), `codex-app` (the current confirmed app thread), `bg` (a `claude --bg` session) or `term`
+    (a terminal session); "" when it cannot be told. Creation provenance in a rollout is not the current host."""
     if kind == "desktop":
         return "desktop"
     if engine == "codex":
+        if hc.detached(stage, {"session": session, "cli_session_id": cli}, engine="codex"):
+            return "detached"
+        if (engines.codex_desktop() and UUID_RE.fullmatch(cli or "")
+                and session == cli == os.environ.get("CODEX_THREAD_ID", "").strip()):
+            return "codex-app"
         return ""
     if hc.detached(stage, {"session": session, "cli_session_id": cli}):
         return "detached"
@@ -1141,8 +1146,14 @@ def _cmd_takeover(a) -> int:
                 data = hc.roles_load(stage)
                 data["roles"]["hub"]["engine"] = engines.selected()
                 host = session_host(stage, session, cli, kind, engines.selected())
+                if data["roles"]["hub"].get("host") == "codex-app" and host != "codex-app":
+                    data["roles"]["hub"].pop("cwd", None)
                 if host:
                     data["roles"]["hub"]["host"] = host  # the watchdog's way of waking it (bin/watchdog)
+                elif engines.selected() == "codex":
+                    data["roles"]["hub"].pop("host", None)
+                if host == "codex-app":
+                    data["roles"]["hub"]["cwd"] = os.getcwd()
                 if request:
                     pend = autopilot.load_state(stage)["pending"]
                     data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
