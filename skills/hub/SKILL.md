@@ -152,7 +152,7 @@ owner resolution. Native APIs cannot set Full Access. CLI from Desktop is an exp
 the home-only opt-in documented in that procedure. An agent's --surface cli/--headless flag is not authorization;
 leave that opt-in to the owner. Terminal and detached auto/CLI handoffs keep their ordinary path.
 
-An automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
+A Codex automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
 written for one release; `[delamain auto-handoff k/N]` means the same): run its takeover command, then run the digest's
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
 checks under [Terminal follow-through](#terminal-follow-through); reconcile the snapshot against Business DoD.
@@ -165,7 +165,7 @@ dependency; preserve shared locks and existing owner decisions.
 
 ## Terminal follow-through
 
-Run this procedure after every executor terminal result (`MERGED`, `DONE`, `STOP`, `BLOCKED`, `EXIT`,
+For Codex hubs, run this procedure after every executor terminal result (`MERGED`, `DONE`, `STOP`, `BLOCKED`, `EXIT`,
 `ENDED`, `REVIEWED`), including results replayed at takeover. These are inputs to coordination, not proof
 of success or automatic stage completion.
 
@@ -213,7 +213,7 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
 - Sources and filters combine in one command. What was read is remembered: lines that arrived while you worked come
   with the next `jwait`.
 
-On wake, apply [Terminal follow-through](#terminal-follow-through) to terminal results; start the next `jwait`
+On a Codex hub wake, apply [Terminal follow-through](#terminal-follow-through) to terminal results; start the next `jwait`
 when waiting is justified. Journal waits and alarms use `jwait`; keep one waiter and continue it through the shell harness.
 
 **With the watchdog on** (the takeover digest says so; `docs/monitoring.md`): a hub that sleeps without a waiter is fine, the

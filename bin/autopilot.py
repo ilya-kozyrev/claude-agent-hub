@@ -494,7 +494,7 @@ class Start(Exception):
 
 def followthrough_summary() -> str:
     """Point every successor surface at the hub skill's authoritative procedure."""
-    return """Apply the hub skill's Terminal follow-through: consume the report/result, verify resource ownership and
+    return """For Codex, apply the hub skill's Terminal follow-through: consume the report/result, verify resource ownership and
 remaining approved Business DoD, then start/resume next independent authorized ready work before waiting/final.
 Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
 continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
@@ -688,11 +688,9 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
 1. Load the hub skill (`/delamain:hub`) and take over: `{self.takeover_cmd()}`
    (`self` is this session: $CLAUDE_CODE_SESSION_ID, else the $AGENT_SESSION_ID `agent spawn` exports).
    Then follow the digest and the handoff `{self.handoff}`.
-2. Run the digest's first `jwait` once unconditionally to replay handover events.
-   {followthrough_summary()}
-   Wait only while work or external events remain. You are a `claude -p` run: the end of your turn ends the process,
-   and a background `jwait` dies with it. Use the digest's jwait in the foreground (Bash `timeout` 600000, `--for 9m`).
-   At a verified stopping boundary, journal the result and end your turn; `agent send` resumes this session.
+2. You are a `claude -p` run: the end of your turn ends the process, and a background `jwait` dies with it. Wait with
+   `"$HUB_BIN/jwait"` in the foreground (Bash `timeout` 600000, `--for 9m`). When nothing is left to wait for, write a
+   status line with `"$HUB_BIN/jlog"` and end your turn; `agent send` resumes this session.
 3. The footer below is written for executors: for you "the hub" is the owner — questions go to `ask add` and a
    `"$HUB_BIN/jlog" "@owner …"` line, never to chat.
 4. Your own context budget applies as it did to your predecessor: hand over the same way when it says so.

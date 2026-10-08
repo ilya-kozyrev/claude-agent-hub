@@ -205,7 +205,10 @@ def l3_cli():
     first_wait_contract('generated CLI brief', brief)
     followthrough_contract('generated CLI brief', brief)
     claude = ap.Successor('stage-a', 1, handoff, 'opus', 'default', tmp, 1, 10, effort='high')
-    followthrough_contract('generated Claude brief', claude.brief('fixture').read_text())
+    claude_brief = claude.brief('fixture').read_text()
+    assert 'Terminal follow-through' not in claude_brief
+    assert 'When nothing is left to wait for' in claude_brief and 'Bash `timeout` 600000, `--for 9m`' in claude_brief
+
 
 def l3_desktop():
     _, _, handoff = setup('l3-desktop', 'codex')

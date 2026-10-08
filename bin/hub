@@ -1415,7 +1415,7 @@ Report progress against it with technical evidence separately.
      Next ready work first; separate preparation dependencies from publication/merge/stage/production gates.
      Item = action | "done" check | brief stop condition | who (model).
      Wait = exact item | blocker | owner/resource | expected event (ask id when applicable). -->
-Apply the hub skill's Terminal follow-through; reconcile this snapshot against Business DoD before DONE.
+Codex successor: apply the hub skill's Terminal follow-through; reconcile this snapshot against Business DoD before DONE.
 1. TODO
 
 ## 3. Night queue
