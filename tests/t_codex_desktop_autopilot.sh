@@ -168,6 +168,38 @@ for authority_case, authority in (
     assert json.loads(request(req).stdout)['already_dispatched'], 'authority wording allowed duplicate dispatch'
 print('PASS emitted native prep/prompt carry authority sources without inferring a grant; inherited/absent/revoked fixtures preserve one request and predecessor')
 
+# A worktree-local revocation overrides a different main-checkout rule.
+home,stage,handoff=setup('authority-worktree')
+main_rules=repo/'.agent-hub/hub-rules.md'; main_rules.parent.mkdir(exist_ok=True)
+main_rules.write_text('Main-checkout grant remains active.\n')
+worktree_rules=actual/'.agent-hub/hub-rules.md'; worktree_rules.parent.mkdir(exist_ok=True)
+worktree_rules.write_text('Worktree owner revokes the home grant.\n')
+(home/'hub-rules.md').write_text('Home owner grants automatic context handoff.\n')
+prep=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',cwd=actual)
+assert str(worktree_rules) in prep.stdout and str(main_rules) not in prep.stdout, 'native prep misses predecessor worktree revocation layer'
+req=state(stage)['pending']['request_id']; saved=state(stage)
+replay=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',cwd=repo)
+assert str(worktree_rules) in replay.stdout and str(main_rules) not in replay.stdout, 'replay resolves authority from caller instead of predecessor'
+assert state(stage)==saved and roles(stage)['session']==old
+payload=json.loads(request(req).stdout)
+assert str(worktree_rules) in payload['create_thread']['prompt'] and str(main_rules) not in payload['create_thread']['prompt']
+assert json.loads(request(req).stdout)['already_dispatched'] and state(stage)['chain']==1
+# Legacy reservations lack provenance: never present main/current cwd as the predecessor's rule source.
+home,stage,handoff=setup('authority-legacy')
+prepare(handoff); legacy=state(stage); req=legacy['pending']['request_id']
+legacy['pending'].pop('predecessor_cwd',None)
+(stage/'auto-handoff.json').write_text(json.dumps(legacy))
+saved=state(stage)
+replay=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',cwd=actual)
+assert 'predecessor cwd' in replay.stdout and 'unknown' in replay.stdout and 'retain' in replay.stdout
+assert str(main_rules) not in replay.stdout and str(worktree_rules) not in replay.stdout
+assert state(stage)==saved and roles(stage)['session']==old
+payload=json.loads(request(req).stdout)
+assert 'predecessor cwd' in payload['create_thread']['prompt'] and 'unknown' in payload['create_thread']['prompt']
+assert json.loads(request(req).stdout)['already_dispatched'] and state(stage)['chain']==1
+worktree_rules.unlink(); worktree_rules.parent.rmdir(); main_rules.unlink()
+print('PASS worktree authority layer survives replay from main; legacy unknown provenance preserves request/predecessor and dispatch guard')
+
 home,stage,handoff=setup('desktop')
 filled=handoff.read_text(); handoff.write_text(filled.replace('Take over','TODO take over'))
 r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',ok=False)

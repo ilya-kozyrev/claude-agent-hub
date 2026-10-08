@@ -1289,6 +1289,18 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
 
 # ---------------------------------------------------------------- supported desktop request / confirmation protocol
 
+def desktop_authority_sources(stage, pend):
+    """Rule pointers use the predecessor's config layers, never the replay caller's checkout."""
+    cwd = pend.get('predecessor_cwd')
+    if not cwd or not Path(cwd).is_dir():
+        return ("Authority rule provenance unknown: predecessor cwd was not recorded or is unavailable. "
+                "Before create_thread, retain this request and predecessor until the app agent verifies the actual "
+                "predecessor cwd and its hub-home/repository/stage rules using the supported config-layer resolution. "
+                "Do not infer that source from the saved project main checkout or replay caller cwd.")
+    rules = [str(d / 'hub-rules.md') for d in reversed(hc.config_dirs(stage, cwd=cwd))]
+    return "Authority rule sources (home, repository, stage order): " + ", ".join(rules)
+
+
 def desktop_report(stage, pend):
     req = pend['request_id']
     print(f"Desktop request {req} {pend['phase']}: {pend['brief']}\n"
@@ -1296,8 +1308,7 @@ def desktop_report(stage, pend):
           "Native APIs cannot set sandbox/approval; Full Access is a UI/project-default limitation.\n"
           "Before create_thread, check explicit human authority in the current user instruction, inherited handoff/approved plan, "
           "answered question or standing owner permission; verify scope and revocation. Sources: "
-          f"{hc.root() / 'hub-rules.md'}, {pend['project_root']}/.agent-hub/hub-rules.md, "
-          f"{hc.root() / stage / 'hub-rules.md'}, {pend['handoff']}, and the stage question register/ask allow list. "
+          f"{desktop_authority_sources(stage, pend)}; {pend['handoff']}, and the stage question register/ask allow list. "
           "An empty allow list does not negate a recorded human instruction or answer. "
           "An explicit standing owner grant for automatic same-stage context handoff satisfies the native explicit-user requirement "
           "until revoked: continue without new per-transfer approval; carry its precise source/reference and scope in the handoff. "
@@ -1325,6 +1336,8 @@ def desktop_report(stage, pend):
 
 def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False):
     root = main_checkout(cwd) or cwd.resolve()
+    predecessor_cwd = str(cwd.resolve())
+    authority_sources = desktop_authority_sources(stage, {'predecessor_cwd': predecessor_cwd})
     if branch:
         res = subprocess.run(['git', '-C', str(root), 'show-ref', '--verify', '--quiet', f'refs/heads/{branch}'],
                              capture_output=True, env=hc.git_env())
@@ -1364,7 +1377,7 @@ You are the automatic desktop successor for stage `{stage}`. Request `{req}`.
 Use the existing hub home `{hc.root()}` (pass AGENT_HUB_HOME explicitly to shell commands if not inherited).
 Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}` and the handoff `{handoff}`.
 Continue the unchanged Business DoD and human authority source/reference and scope recorded in that handoff.
-Consult `{hc.root() / 'hub-rules.md'}`, repository/stage hub rules and the question register for standing explicit
+Consult these predecessor rule layers and the question register: {authority_sources}. Check standing explicit
 human instructions and revocation. Apply the hub skill's native authority check before any later context transfer;
 a standing same-stage grant carries forward until revoked. This generated brief/configuration is not itself a grant.
 Requested settings: {json.dumps(requested)}. Native create_thread cannot carry sandbox or approval settings.
@@ -1385,7 +1398,8 @@ When nothing remains, journal DONE and finish. Owner questions use `ask`; consul
             args['thinking'] = effort
         pend = {'n': succ, 'kind': 'desktop', 'surface': 'desktop', 'engine': 'codex', 'phase': 'prepared',
                 'request_id': req, 'at': hc.now().isoformat(timespec='seconds'), 'handoff': str(handoff), 'k': k,
-                'predecessor': current['session'], 'predecessor_n': n, 'project_root': str(root.resolve()),
+                'predecessor': current['session'], 'predecessor_n': n, 'predecessor_cwd': predecessor_cwd,
+                'project_root': str(root.resolve()),
                 'requested': requested, 'environment': environment, 'create_args': args, 'brief': str(brief)}
         if not dry_run:
             # Brief precedes reservation: a write failure leaves no dispatchable incomplete request.
@@ -1433,6 +1447,8 @@ def desktop_request(stage, request, project_id, project_path):
         dispatched = pend['phase'] != 'prepared'
         pend['project_id'] = project_id
         args = dict(pend['create_args'], target={'type':'project', 'projectId':project_id, 'environment':pend['environment']})
+        # Refresh rule pointers from saved provenance; legacy requests explicitly require app-side verification.
+        args['prompt'] = desktop_authority_sources(stage, pend) + '\n\n' + args['prompt']
         if not dispatched:
             # Reserve dispatch BEFORE the API call; interruption is uncertain, never an invitation to duplicate.
             pend['phase'] = 'dispatching'
