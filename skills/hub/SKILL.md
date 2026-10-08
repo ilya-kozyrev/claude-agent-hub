@@ -136,13 +136,17 @@ why, and wait for them ("cannot determine the effort" means your own effort is u
 with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
 yourself, never from a sub-agent.
 
-For **Codex Desktop**, --surface auto selects a native request only in an actual app hub (both app markers,
-no detached worker role); --surface cli explicitly keeps CLI. Immediately follow
-[the native launch procedure](../../docs/codex.md#desktop-autopilot): list_projects, desktop-request, create_thread,
-desktop-bind; desktop-fail records failures. Keep the predecessor active until desktop-status --verified succeeds
-after actual takeover; a clientThreadId is not a real session. Uncertain results retain the same request without a
-hidden CLI fallback. On ALARM, tell the owner one line: request unconfirmed and the handoff path; the owner confirms
-the thread or takes over by hand, then stop. Native APIs cannot set Full Access. CLI replacement uses --surface cli.
+For **Codex Desktop**, the following procedure governs prepared requests, start lines and ALARM.
+--surface auto selects a native request in an actual app hub (both app markers,
+no detached worker role). Native create_thread requires an explicit human request. When creation is unavailable
+or unauthorized, retain the request and keep the predecessor active while asking the owner for that request.
+Once explicitly authorized, execute [the native launch procedure](../../docs/codex.md#desktop-autopilot) completely:
+list_projects, desktop-request, create_thread, desktop-bind, actual takeover and desktop-status --verified.
+Keep the predecessor active until verification succeeds; a clientThreadId is not a real session. desktop-fail
+records failures; uncertain results and ALARM retain the same request and active predecessor while awaiting
+owner resolution. Native APIs cannot set Full Access. CLI from Desktop is an explicit owner choice enforced by
+the home-only opt-in documented in that procedure. An agent's --surface cli/--headless flag is not authorization;
+leave that opt-in to the owner. Terminal and detached auto/CLI handoffs keep their ordinary path.
 
 An automatic successor prompt carries the marker `[agent-hub auto-handoff k/N]` (the name before the rename, still
 written for one release; `[delamain auto-handoff k/N]` means the same): run its takeover command, then run the digest's

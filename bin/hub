@@ -139,8 +139,12 @@ which keeps the chain; so does a takeover of the shift the pending successor alr
 or by --replace); a hand-started session is recorded as kind `manual`, which `--replace` refuses to act on; any other
 takeover resets it.
 With --engine codex, --surface auto prepares a native desktop request in an actual app hub; the current app agent
-executes native list_projects/create_thread and desktop-request/bind/fail/status. Actual takeover verifies its own
-identity/cwd and observed policy; APIs cannot set Full Access. --surface cli or --headless starts a detached Codex hub in its own worktree from the main checkout, preserving
+executes native list_projects/create_thread and desktop-request/bind/fail/status only with an explicit human
+creation request. Unavailable/unauthorized native creation retains the request and active predecessor until verified.
+Actual takeover verifies its own identity/cwd and observed policy; APIs cannot set Full Access.
+In an app hub, --surface cli or --headless requires the owner's AGENT_HUB_DESKTOP_CLI_HANDOFF opt-in in
+the hub home's config.json (off by default); agent flags, environment and repository settings cannot grant it.
+Terminal/detached CLI selection starts a detached Codex hub in its own worktree from the main checkout, preserving
 model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
 Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
 effort prints the effort a Claude Code session runs at now and where it was read (bin/session_effort.py): the hook input,
@@ -1715,10 +1719,10 @@ def main(argv: list) -> int:
     sc.add_argument("--cwd", help="the successor's working directory (default: here)")
     sc.add_argument("--engine", choices=engines.ENGINES, help="successor engine (default: current host)")
     sc.add_argument("--surface", choices=("auto", "desktop", "cli"), default="auto",
-                    help="Codex launch surface: actual app hub -> desktop request; console/worker -> CLI")
+                    help="Codex launch surface: app -> native request; app CLI requires home owner opt-in; console/worker -> CLI")
     sc.add_argument("--desktop-worktree", action="store_true", help="native worktree only when explicitly requested by the owner")
     sc.add_argument("--branch", help="desktop worktree starting branch, only when explicitly requested and existing")
-    sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn) right away")
+    sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn); from Codex Desktop requires home owner opt-in")
     sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
                                                             "and start a headless one")
     sc.add_argument("--why", help="with --fallback: the reason for the journal")

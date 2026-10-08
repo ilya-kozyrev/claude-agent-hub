@@ -54,6 +54,8 @@ def stop(role="hub-2"):
     subprocess.run([str(root/'bin/agent'),'stop',role,'--stage','stage-a'], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 home,handoff,cwd = setup('inherit')
+# This fixture deliberately chooses CLI from Desktop to verify detached launch and env stripping.
+(home/'config.json').write_text(json.dumps({'AGENT_HUB_DESKTOP_CLI_HANDOFF':True}))
 os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
     rc,out=succeed(handoff,cwd,surface='cli')
@@ -175,6 +177,7 @@ print('PASS representative dry run writes no reservation or brief')
 
 ap.codex_rollouts.INDEX.records={};ap.codex_rollouts.INDEX.checked=time.monotonic()
 home,handoff,cwd=setup('default')
+(home/'config.json').write_text(json.dumps({'AGENT_HUB_DESKTOP_CLI_HANDOFF':True}))
 os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
     rc,out=succeed(handoff,cwd,headless=True)

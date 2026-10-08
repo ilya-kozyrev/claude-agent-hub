@@ -62,6 +62,85 @@ def takeover(handoff, req, ok=True, **kwargs):
         assert r.returncode==0, (r.returncode,r.stdout,r.stderr)
     return r
 
+# Drive the original incident argv and its default-auto alternative through hub's parser and succeed.
+# Only the final detached launcher is replaced; discovery, selection, reservation and reporting stay real.
+launcher=tmp/'surface-seam.py'
+launcher.write_text('''import json, os, pathlib, runpy, sys
+root=pathlib.Path(sys.argv[1]); sys.path.insert(0,str(root/'bin'))
+import autopilot as ap
+trace=pathlib.Path(os.environ['AGENT_HUB_HOME'])/'surface-trace.json'
+trace.write_text(json.dumps({'argv':sys.argv[2:]}))
+def launch(self, why):
+    data=json.loads(trace.read_text()); data['launch_argv']=self.dry_spawn_argv()
+    trace.write_text(json.dumps(data))
+    return {'role':f'hub-{self.succ}', 'brief':str(self.handoff)}
+ap.CodexSuccessor.start_headless=launch
+main=runpy.run_path(str(root/'bin/hub'))['main']
+raise SystemExit(ap.hc.run_main(main,sys.argv[2:]))
+''')
+sentinel=tmp/'must-not-launch'
+sentinel.write_text('#!/bin/sh\nexit 99\n'); sentinel.chmod(0o755)
+opt_in='AGENT_HUB_DESKTOP_CLI_HANDOFF'
+def surface_case(name, flags, *, permitted=False, native=False, owner=None, project=False, env_opt=False, host='app'):
+    home,stage,handoff=setup('surface-'+name)
+    if owner is not None: (home/'config.json').write_text(json.dumps({opt_in:owner}))
+    config=repo/'.agent-hub/config.json'; config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({opt_in:True}) if project else '{}')
+    case_env=dict(env)
+    if env_opt: case_env[opt_in]='true'
+    if host=='terminal':
+        for key in engines.CODEX_APP_ENV: case_env.pop(key,None)
+    elif host=='detached': case_env['AGENT_ROLE']='hub-1'
+    argv=['succeed','--stage','stage-a','--handoff',str(handoff),'--force','--engine','codex',
+          '--permission-mode','bypassPermissions','--cwd',str(repo),*flags]
+    r=subprocess.run([sys.executable,str(launcher),str(root),*argv],env=case_env,cwd=repo,capture_output=True,text=True)
+    trace=json.loads((home/'surface-trace.json').read_text())
+    assert trace['argv']==argv, 'surface discovery lost the original caller argv'
+    if native:
+        assert r.returncode==0 and 'launch_argv' not in trace, (name,r.returncode,r.stdout,r.stderr)
+        assert state(stage)['pending']['surface']=='desktop' and state(stage)['chain']==1
+        req=state(stage)['pending']['request_id']; before=(stage/'auto-handoff.json').read_bytes()
+        r=subprocess.run([sys.executable,str(launcher),str(root),*argv,'--again'],env=case_env,cwd=repo,capture_output=True,text=True)
+        assert r.returncode==0 and state(stage)['pending']['request_id']==req
+        assert (stage/'auto-handoff.json').read_bytes()==before and 'launch_argv' not in json.loads((home/'surface-trace.json').read_text())
+    elif permitted:
+        assert r.returncode==0 and 'launch_argv' in trace, (name,r.returncode,r.stdout,r.stderr)
+        assert '--engine' in trace['launch_argv'] and 'codex' in trace['launch_argv']
+        assert state(stage)['pending']['kind']=='headless' and state(stage)['chain']==1
+    else:
+        assert r.returncode!=0 and 'launch_argv' not in trace, ('Desktop CLI override reached launcher',name,r.returncode,trace)
+        assert opt_in in r.stderr and 'owner' in r.stderr, r.stderr
+        assert not (stage/'auto-handoff.json').exists(), 'refusal changed reservation/chain'
+    assert roles(stage)['session']==old and not (stage/'agents').exists()
+    config.unlink()
+    return home,stage,handoff
+
+surface_case('default-auto',[],native=True)
+surface_case('explicit-auto',['--surface','auto'],native=True)
+surface_case('explicit-desktop',['--surface','desktop'],native=True)
+surface_case('owner-auto-remains-native',[],owner=True,native=True)
+for name,flags in (('cli',['--surface','cli']),('headless',['--headless']),
+                   ('auto-headless',['--surface','auto','--headless']),
+                   ('engine-change',['--engine','claude','--surface','cli'])):
+    surface_case(name,flags)
+surface_case('repo-cannot-authorize',['--surface','cli'],project=True)
+surface_case('env-cannot-authorize',['--surface','cli'],env_opt=True)
+surface_case('home-false-wins',['--surface','cli'],owner=False,env_opt=True,project=True)
+for name,flags in (('owner-cli',['--surface','cli']),('owner-headless',['--headless'])):
+    surface_case(name,flags,owner=True,permitted=True)
+for host in ('terminal','detached'):
+    for surface in ('auto','cli'):
+        surface_case(host+'-'+surface,['--surface',surface],host=host,permitted=True)
+    surface_case(host+'-headless',['--headless'],host=host,permitted=True)
+home,stage,handoff=surface_case('revoked-owner',['--surface','cli'],owner=True,permitted=True)
+(home/'config.json').write_text(json.dumps({opt_in:False}))
+before=(stage/'auto-handoff.json').read_bytes()
+for flag in ('--replace','--fallback'):
+    r=hub('succeed','--stage','stage-a','--force','--handoff',handoff,flag,ok=False)
+    assert opt_in in r.stderr and (stage/'auto-handoff.json').read_bytes()==before
+    assert roles(stage)['session']==old and not (stage/'agents').exists()
+print('PASS actual succeed seam captures original argv; Desktop CLI/headless require home owner opt-in; repository/env cannot grant it; terminal/detached remain CLI')
+
 home,stage,handoff=setup('desktop')
 filled=handoff.read_text(); handoff.write_text(filled.replace('Take over','TODO take over'))
 r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',ok=False)
@@ -164,6 +243,7 @@ print('PASS concurrent prepares and bind/takeover reserve/migrate once under the
 
 # Force the TOCTOU seam: CLI sees no pending request, then desktop reserves another number before CLI locks.
 home,stage,handoff=setup('cli-desktop-race')
+(home/'config.json').write_text(json.dumps({opt_in:True}))  # Test the later reservation fence after valid owner opt-in.
 cli_handoff=stage/'HANDOFF-hub-cli.md'
 cli_handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
 original_env=dict(os.environ); os.environ.clear(); os.environ.update(env)
@@ -207,6 +287,7 @@ print('PASS CLI empty precheck then different-number Desktop insertion retains e
 # A completed desktop takeover or a later manual owner also wins after CLI's earlier caller/precheck.
 for owner_change in ('desktop-taken-over','manual-later-hub'):
     home,stage,handoff=setup(owner_change)
+    (home/'config.json').write_text(json.dumps({opt_in:True}))
     cli_handoff=stage/'HANDOFF-hub-cli.md'
     cli_handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
     original_env=dict(os.environ);os.environ.clear();os.environ.update(env)
@@ -253,11 +334,22 @@ rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium
 print('PASS explicit writable stage root permits actual workspace policy without claiming requested Full Access')
 
 home,stage,handoff=setup('retry'); prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
+(home/'config.json').write_text(json.dumps({opt_in:True}))  # Opt-in cannot convert an already reserved native request.
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','unknown result')
 prepare(handoff,'--again'); assert state(stage)['pending']['phase']=='uncertain'
+before=(stage/'auto-handoff.json').read_bytes()
+for flag in ('--fallback','--surface cli','--headless'):
+    r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',*shlex.split(flag),ok=False)
+    assert (stage/'auto-handoff.json').read_bytes()==before and roles(stage)['session']==old
+assert not (stage/'agents').exists()
 assert json.loads(request(req).stdout)['already_dispatched']
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','create API rejected before creating','--no-thread-created')
 prepare(handoff,'--again'); assert state(stage)['pending']['phase']=='prepared'
+assert roles(stage)['session']==old and not (stage/'agents').exists()
+before=(stage/'auto-handoff.json').read_bytes()
+for flags in (['--fallback'],['--surface','cli']):
+    hub('succeed','--stage','stage-a','--handoff',handoff,'--force',*flags,ok=False)
+    assert (stage/'auto-handoff.json').read_bytes()==before and roles(stage)['session']==old
 assert state(stage)['pending']['request_id']==req and state(stage)['chain']==1
 assert not json.loads(request(req).stdout)['already_dispatched']
 print('PASS uncertain launch never duplicates; confirmed no-create failure retries same reservation and chain')

@@ -1083,6 +1083,19 @@ def _release(stage: str, succ: int, k: int, at: Optional[str] = None) -> None:
         save_state(stage, data)
 
 
+def require_cli_handoff_permission():
+    """An app agent's CLI flag is not an owner's choice to leave the native surface."""
+    if not engines.codex_desktop():
+        return
+    # Read the trusted home directly: neither an agent's env nor a cloned repo can grant this permission.
+    allowed = hc.read_config(hc.root() / "config.json", project=False).get("AGENT_HUB_DESKTOP_CLI_HANDOFF")
+    if not hc.truthy(allowed):
+        raise hc.UsageError("Desktop handoff must stay native: keep the predecessor active and prepare/reuse "
+                            "--surface desktop while awaiting the owner's explicit native creation request. "
+                            "CLI from Desktop requires the owner's opt-in AGENT_HUB_DESKTOP_CLI_HANDOFF "
+                            "in the hub home's config.json; --surface cli/--headless/--force are not owner authorization.")
+
+
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
             headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
             succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None,
@@ -1103,6 +1116,8 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         surface = "cli"
     elif surface == "auto":
         surface = "desktop" if engine == "codex" and engines.codex_desktop() else "cli"
+    if surface == "cli":
+        require_cli_handoff_permission()
     if surface == "desktop" and engine != "codex":
         raise hc.UsageError("desktop surface requires --engine codex")
     if (branch or desktop_worktree) and surface != "desktop":
@@ -1273,11 +1288,13 @@ def desktop_report(stage, pend):
     print(f"Desktop request {req} {pend['phase']}: {pend['brief']}\n"
           "No successor is verified yet. Keep the predecessor active until actual takeover.\n"
           "Native APIs cannot set sandbox/approval; Full Access is a UI/project-default limitation.\n"
-          "Current app agent: call native list_projects; choose the unique saved project whose normalized "
+          "Native create_thread requires an explicit human request. If unavailable or unauthorized, retain this "
+          "request and keep the predecessor active while awaiting the owner; a CLI flag is not owner permission.\n"
+          "Once explicitly authorized, the current app agent calls native list_projects; choose the unique saved project whose normalized "
           f"main checkout is {pend['project_root']}. Then run:\n"
           f"  {tool('hub')} desktop-request --stage {stage} --request {req} "
           "--project-id <returned projectId> --project-path <returned project path>\n"
-          "Call native create_thread with its create_thread JSON only when already_dispatched=false. "
+          "With explicit human authorization, call native create_thread with its create_thread JSON only when already_dispatched=false. "
           "Persist the native result with desktop-bind --request <request> --stage <stage> "
           "--project-id <projectId> --thread-id <actual threadId> and/or --client-thread-id <clientThreadId>. "
           "A client ID is not a real thread ID. If pending, use supported app APIs/list_threads or successor "
@@ -1289,7 +1306,7 @@ def desktop_report(stage, pend):
           + f"\nAfter the start line verify `{tool('hub')} desktop-status --stage {stage} --request {req} --verified` "
             "before stopping; exit 0 requires the actual thread/cwd, observed policy and completed takeover. "
             f"On ALARM tell the owner one line: request {req} unconfirmed, handoff {pend['handoff']}; "
-            "the owner confirms the thread or takes the shift over by hand; then stop. Never create another thread for an uncertain result.")
+            "keep the predecessor active and retain the request while awaiting the owner. Never create another thread for an uncertain result.")
 
 
 def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False):
@@ -1555,6 +1572,7 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
             return 1
         if pend.get("surface") == "desktop":
             raise hc.UsageError("desktop request cannot fall back to a hidden CLI; use desktop-status/bind/fail on the same request")
+        require_cli_handoff_permission()
         if pend.get("taken_over"):
             print(f"hub-{pend.get('n')} already took over at {pend['taken_over'][:16]} — nothing to fall back from")
             return 0
