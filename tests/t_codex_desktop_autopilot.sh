@@ -211,9 +211,146 @@ assert p['observed']['model']=='observed-model' and p['observed']['effort']=='me
 assert p['requested']['model']=='gpt-6.1-sol' and p['requested']['sandbox_policy']['type']=='danger-full-access'
 assert p['observed']['sandbox_policy']['type']=='danger-full-access' and p['taken_over'] and state(stage)['chain']==1
 assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
-bind(req,'--thread-id',real); takeover(handoff,req,cwd=repo)
+bind(req,'--thread-id',real); takeover(handoff,req,cwd=pathlib.Path(p['cwd']))
 assert state(stage)['chain']==1
 print('PASS restricted home access leaves predecessor active; actual takeover reconciles identity/cwd and records observed settings separately')
+
+# Exact same-shift host refresh must retain the native request and registration boundary.
+saved=state(stage); registered=roles(stage)
+for _ in range(2):
+    hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=saved['pending']['cwd'])
+    refreshed=state(stage)
+    assert refreshed==saved, ('same-shift refresh corrupted native request', saved['pending']['id'],
+                             refreshed['pending'].get('id'), refreshed['pending'].get('kind'))
+    assert roles(stage)==registered, ('same-shift registration changed', registered, roles(stage))
+    assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+hub('start','--stage','stage-a','--session','self',cwd=saved['pending']['cwd'])
+assert state(stage)==saved and roles(stage)==registered
+print('PASS exact same UUID takeover/start refresh retains native request, chain, roles and takeover boundary')
+
+# Replay the frozen pre-fix on_takeover at the real hub seam, with the legacy state schema.
+# Keep this fixture self-contained: CI shallow checkouts need no historical commit or model call.
+LEGACY_TAKEOVER = r'''def on_takeover(stage: str, n: int, auto: bool = False, session: str = "", locked: bool = False) -> None:
+    """Called by `hub takeover` once it is done: the pending automatic successor (its takeover carries
+    --auto-handoff, which only `hub succeed` writes) keeps the chain; so does a takeover of the shift that successor
+    already took over (a replacement of it, by hand or by `hub succeed --replace`): the record stays and only its
+    session id is rewritten. Any other takeover resets the chain — a takeover by hand means the owner is involved,
+    even when it gets the number of a successor that has not taken over yet."""
+    with contextlib.nullcontext() if locked else state_lock(stage):
+        data = load_state(stage)
+        pend = data.get("pending") or {}
+        if pend.get("n") == n and (auto or pend.get("taken_over")):
+            changed = False
+            if not pend.get("taken_over"):
+                pend["taken_over"] = hc.now().isoformat(timespec="seconds")
+                changed = True
+            if not auto and session and (pend.get("id") != session[:8] or pend.get("kind") != "manual"):
+                # a session started by hand holds the shift now: the launch the record described (a background
+                # session, a headless role) is gone, and `--replace` must not act on it
+                pend["id"], pend["kind"], changed = session[:8], "manual", True
+                for key in ("role", "link", "worktree", "bg_id", "why"):
+                    pend.pop(key, None)
+            if changed:
+                save_state(stage, data)
+            return
+        if not data["chain"] and not pend:
+            return
+        was = data["chain"]
+        data["chain"], data["pending"] = 0, None
+        save_state(stage, data)
+    if was:
+        hc.journal_append(stage, f"hub-{n}", f"auto-handoff chain reset ({was} → 0): a takeover by hand")
+
+'''
+def legacy_hub(*args, cwd=repo, freeze='2026-01-01T12:00:00+00:00'):
+    code="import runpy,sys; sys.path.insert(0,sys.argv[1]); import hubcore as hc; import autopilot as ap; "
+    code+=f"hc.now=lambda: hc.dt.datetime.fromisoformat({freeze!r}); "
+    code+=f"exec({LEGACY_TAKEOVER!r},ap.__dict__); "
+    # Saving through the real seam emits the old schema; only the newly added proof fields are omitted.
+    code+="exec(\"original_save=ap.save_state\\ndef legacy_save(stage,data):\\n    p=data.get('pending') or {}\\n    p.pop('actual_thread_id',None); p.pop('registration',None)\\n    original_save(stage,data)\\nap.save_state=legacy_save\"); "
+    code+="ap.desktop_identity_proof=lambda stage,request,session,**kw: (ap.load_state(stage),ap.load_state(stage)['pending'],hc.roles_load(stage)['roles']['hub']); "
+    code+="sys.argv=sys.argv[2:]; g=runpy.run_path(sys.argv[0],run_name='legacy'); "
+    code+="g['main'].__globals__['native_self_refresh']=lambda a,stage,session,request: ap.on_takeover(stage,ap.load_state(stage)['pending']['n'],session=session,locked=True) or 0; "
+    code+="sys.exit(g['main'](sys.argv[1:]))"
+    r=subprocess.run([sys.executable,'-c',code,str(root/'bin'),str(root/'bin/hub'),*map(str,args)],
+                     cwd=cwd,env=env,capture_output=True,text=True)
+    assert r.returncode==0,(r.returncode,r.stdout,r.stderr)
+    return r
+home,stage,handoff=setup('legacy-recovery')
+legacy_hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--desktop-worktree')
+req=state(stage)['pending']['request_id']
+legacy_hub('desktop-request','--stage','stage-a','--request',req,'--project-id','saved-project','--project-path',repo)
+legacy_hub('desktop-bind','--stage','stage-a','--request',req,'--thread-id',real)
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+legacy_hub('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,
+           '--desktop-request',req,cwd=actual)
+original=state(stage); registered=roles(stage)
+assert 'registration' not in original['pending'] and 'actual_thread_id' not in original['pending']
+legacy_hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,freeze=registered['set_at'])
+corrupted=state(stage); refreshed=roles(stage)
+assert corrupted['pending']['id']==real[:8] and corrupted['pending']['kind']=='manual'
+assert refreshed==registered, ('legacy role boundary unexpectedly changed',registered,refreshed)
+r=hub('desktop-status','--stage','stage-a','--request',req,'--verified',ok=False)
+assert 'later hub' in r.stdout+r.stderr, (r.stdout,r.stderr)
+
+def recover(ok=True, token=None, cwd=actual):
+    before=((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())
+    r=hub('desktop-recover','--stage','stage-a','--request',token or req,cwd=cwd,ok=ok)
+    if not ok:
+        assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==before
+    return r
+# Every negative checks byte-exact state and registration before/after the command.
+recover(ok=False,token='stale-token')
+recover(ok=False,cwd=repo)
+rollout(real,{'type':'workspace-write','writable_roots':[str(actual)]},model='observed-model',effort='medium')
+recover(ok=False)
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+same_prefix='22222222-9999-4999-8999-999999999999'
+rollout(same_prefix,{'type':'danger-full-access'},model='observed-model',effort='medium')
+for updates in ({'session':same_prefix,'cli_session_id':same_prefix}, {'tag':'hub-9'},
+                {'set_at':'2001-01-01T00:00:00+00:00'}, {'host':'term'}, {'engine':'claude'}):
+    (stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(refreshed,**updates)}}))
+    env['CODEX_THREAD_ID']=updates.get('session',real)
+    recover(ok=False)
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':refreshed}}))
+env['CODEX_THREAD_ID']=real
+# Missing original journal proof cannot be replaced by same-prefix discovery.
+journal=next((stage/'coordinator/work').glob('journal-*.md')); saved_journal=journal.read_bytes()
+journal.write_text('\n'.join(line for line in saved_journal.decode().splitlines() if 'desktop request '+req+' prepared' not in line)+'\n')
+recover(ok=False)
+journal.write_text('')
+recover(ok=False)
+journal.write_bytes(saved_journal+b'\n- 00:00 [hub-2] start: "Other" (22222222-9999-4999-8999-999999999999, sid 22222222) replaced; locks: none; roles updated\n')
+recover(ok=False)
+journal.write_bytes(saved_journal)
+markers={key:env.pop(key) for key in engines.CODEX_APP_ENV if key in env}
+recover(ok=False)
+env.update(markers)
+recover()
+repaired=state(stage); restored=roles(stage)
+for key in ('request_id','n','at','taken_over','k','client_thread_id','requested','observed','project_id','cwd'):
+    assert repaired['pending'].get(key)==original['pending'].get(key),key
+assert repaired['chain']==original['chain'] and repaired['pending']['id']==real and repaired['pending']['kind']=='desktop'
+assert restored['session']==real and restored['tag']==registered['tag'] and restored['set_at']==registered['set_at']
+assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+recover(); assert state(stage)==repaired and roles(stage)==restored
+hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual)
+assert state(stage)==repaired and roles(stage)==restored
+print('PASS frozen legacy takeover corruption recovers once from exact full registration proof; stale/prefix/shift/policy/cwd/host conflicts reject without mutation')
+
+# Retained native binding is authoritative even if the current record is changed to a prefix collision.
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(restored,session=same_prefix,cli_session_id=same_prefix)}}))
+env['CODEX_THREAD_ID']=same_prefix
+recover(ok=False)
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':restored}}))
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'workspace-write','writable_roots':[str(actual)]},model='observed-model',effort='medium')
+before=((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())
+hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,ok=False)
+assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==before
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+print('PASS original binding rejects UUID collision and refresh policy mismatch before state/role mutation')
 
 home,stage,handoff=setup('takeover-first'); prepare(handoff,'--desktop-worktree'); req=state(stage)['pending']['request_id']; request(req)
 env['CODEX_THREAD_ID']=real; takeover(handoff,req,cwd=actual)

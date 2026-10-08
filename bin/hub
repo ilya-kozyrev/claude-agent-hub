@@ -906,6 +906,13 @@ def cmd_start(a) -> int:
         raise hc.UsageError(f"stage {stage} has a handoff ({prev.name}) — use `hub takeover --stage {stage} --session …`")
     check_naming(stage, a.goal, rerun=bool(rec))
     a.n = a.n or n or 1
+    pending = autopilot.load_state(stage).get('pending') or {}
+    if native_refresh_candidate(pending, rec or {}, session, a.n):
+        # Route before start's location/project work. Recheck the exact token under the mutex,
+        # even if another takeover removes/replaces the pending record before we acquire it.
+        a.desktop_refresh_request = pending['request_id']
+        a.handoff, a.start, a.auto_handoff = None, True, False
+        return cmd_takeover(a)
     if (code := locate(a, stage, a.n)) is not None:
         return code
     if not a.dry_run:
@@ -925,6 +932,38 @@ def cmd_takeover(a) -> int:
         raise
 
 
+def native_refresh_candidate(pending, current, session, n) -> bool:
+    """Classify a completed native self-refresh, including its stale original actor, without proving it."""
+    return bool(pending.get("surface") == "desktop" and pending.get("taken_over")
+                and (n is None or n == pending.get("n"))
+                and (session in (pending.get("id"), pending.get("actual_thread_id"))
+                     or current.get("session") == session and current.get("surface") == "desktop"))
+
+
+def native_self_refresh(a, stage, session, request) -> int:
+    """Called under the state mutex; proof and completion never enter the generic takeover Plan."""
+    # Use parsed actions so argparse abbreviations cannot silently discard a requested operation.
+    # main-merge-until has a default, so retain the explicit option check even for that same value.
+    explicit_until = any(arg.split("=", 1)[0].startswith("--") and arg.split("=", 1)[0] != "--"
+                         and "--main-merge-until".startswith(arg.split("=", 1)[0]) for arg in a.argv)
+    if (a.take_main_merge or a.skip_lock or explicit_until or a.goal is not None
+            or a.name is not None or a.repo is not None or a.no_project):
+        raise hc.UsageError("native self-refresh cannot transfer resources or change metadata/location; "
+                            "run an independently authorized resource operation separately")
+    with hc.roles_lock(stage):
+        _, pending, _ = autopilot.desktop_identity_proof(stage, request, session)
+        if getattr(a, "desktop_request", None):
+            if not a.auto_handoff:
+                raise hc.UsageError("--desktop-request requires --auto-handoff")
+            if a.handoff is None or Path(a.handoff).expanduser().resolve() != Path(pending['handoff']).resolve():
+                raise hc.Failure("takeover handoff differs from the desktop reservation")
+        # The proof requires this exact host/cwd already registered. Nothing needs rewriting:
+        # no locks, queue, project callbacks, predecessor stop, shift, start line or reservation.
+        print(f"Native hub-{pending['n']} self-refresh verified; request and registration retained"
+              + (" (dry run)" if a.dry_run else ""))
+    return 0
+
+
 def locked_takeover(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir() and not (getattr(a, "start", False) and a.dry_run):
@@ -936,6 +975,12 @@ def locked_takeover(a) -> int:
         pending = autopilot.load_state(a.stage).get("pending") or {}
         if a.auto_handoff and pending.get("surface") == "desktop" and not request:
             raise hc.UsageError("desktop automatic takeover requires --desktop-request from its brief")
+        session = resolve_self(a.session)
+        current = hc.roles_load(stage)['roles'].get('hub') or {}
+        expected_refresh = getattr(a, "desktop_refresh_request", None)
+        if expected_refresh or native_refresh_candidate(pending, current, session, a.n):
+            with autopilot.state_lock(stage) if a.dry_run else contextlib.nullcontext():
+                return native_self_refresh(a, stage, session, expected_refresh or request or pending['request_id'])
         if request:
             if a.n is not None and a.n != pending.get("n"):
                 raise hc.UsageError("desktop takeover number must match the reserved successor")
@@ -1739,8 +1784,9 @@ def main(argv: list) -> int:
     db = sub.add_parser("desktop-bind", help="confirm native client/actual identity without claiming takeover")
     df = sub.add_parser("desktop-fail", help="record native failure without an invisible CLI fallback")
     ds = sub.add_parser("desktop-status", help="show requested/observed identity and verified takeover")
+    dc = sub.add_parser("desktop-recover", help="repair proven same-shift native identity from the current app hub")
     ds.add_argument("--verified", action="store_true", help="exit 1 until the actual takeover verifies")
-    for dp in (dr, db, df, ds):
+    for dp in (dr, db, df, ds, dc):
         dp.add_argument("--stage", required=True)
         dp.add_argument("--request", required=True)
     dr.add_argument("--project-id", required=True)
@@ -1783,6 +1829,7 @@ def main(argv: list) -> int:
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
+            "desktop-recover": lambda a: autopilot.desktop_recover(hc.check_stage(a.stage), a.request),
             "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
             "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),
             "desktop-bind": lambda a: autopilot.desktop_bind(hc.check_stage(a.stage), a.request, a.thread_id, a.client_thread_id, a.project_id),

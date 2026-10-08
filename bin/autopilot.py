@@ -207,6 +207,12 @@ def on_takeover(stage: str, n: int, auto: bool = False, session: str = "", locke
     with contextlib.nullcontext() if locked else state_lock(stage):
         data = load_state(stage)
         pend = data.get("pending") or {}
+        if (pend.get("surface") == "desktop" and pend.get("kind") == "desktop"
+                and pend.get("taken_over") and pend.get("n") == n and session == pend.get("id")
+                and hc.roles_load(stage)["roles"].get("hub", {}).get("session") == session
+                and hc.roles_load(stage)["roles"].get("hub", {}).get("tag") == f"hub-{n}"):
+            # Refreshing the exact native successor is not a manual replacement.
+            return
         if pend.get("n") == n and (auto or pend.get("taken_over")):
             changed = False
             if not pend.get("taken_over"):
@@ -1446,6 +1452,7 @@ def desktop_bind(stage, request, thread_id=None, client_thread_id=None, project_
             raise hc.Failure('actual thread identity cannot be reclassified as a client ID')
         if thread_id:
             pend['id'] = thread_id
+            pend.setdefault('actual_thread_id', thread_id)
         if client_thread_id:
             pend['client_thread_id'] = client_thread_id
         if not pend.get('taken_over') and pend['phase'] != 'taking-over':
@@ -1474,6 +1481,10 @@ def desktop_fail(stage, request, why, no_thread_created=False):
 def desktop_preflight(stage, request, session, handoff):
     """Called under the state lock before ANY takeover mutation; later hubs and failed policy stay untouched."""
     data, pend = desktop_pending(stage, request)
+    if pend.get('taken_over'):
+        if handoff is None or Path(handoff).resolve() != Path(pend['handoff']).resolve():
+            raise hc.Failure('takeover handoff differs from the desktop reservation')
+        return desktop_identity_proof(stage, request, session, allow_move=True)[1]
     cwd = Path.cwd().resolve()
     if (not engines.codex_desktop() or session != os.environ.get('CODEX_THREAD_ID')
             or session in (pend['predecessor'], pend.get('client_thread_id'))):
@@ -1509,10 +1520,136 @@ def desktop_preflight(stage, request, session, handoff):
         probe.unlink()
     except OSError as e:
         raise hc.Failure(f'cannot write stage home: {e}; predecessor remains active') from None
+    pend.setdefault('actual_thread_id', session)
     pend['id'], pend['cwd'], pend['observed'] = session, str(cwd), observed
     pend['phase'] = 'taking-over'
     save_state(stage, data)
     return pend
+
+
+
+DESKTOP_REGISTRATION_KEYS = ('session', 'cli_session_id', 'tag', 'set_at', 'surface', 'engine',
+                             'host', 'cwd', 'project_id', 'observed')
+
+
+def desktop_registration(current):
+    return {key: current.get(key) for key in DESKTOP_REGISTRATION_KEYS}
+
+
+def desktop_identity_proof(stage, request, session, recovery=False, allow_move=False):
+    """Read-only self proof. Never accept a prefix or relax desktop_pending's later-hub fence."""
+    data = load_state(stage)
+    pend = data.get('pending') or {}
+    current = hc.roles_load(stage)['roles'].get('hub') or {}
+    if (pend.get('surface') != 'desktop' or pend.get('request_id') != request
+            or pend.get('phase') != 'taken-over' or not pend.get('taken_over')):
+        raise hc.Failure('recovery/refresh needs this completed desktop request')
+    if (not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", session or '')
+            or not engines.codex_desktop() or session != hc.session_id()
+            or current.get('session') != session or current.get('cli_session_id') != session
+            or current.get('tag') != f"hub-{pend.get('n')}"
+            or current.get('engine') != 'codex' or current.get('host') != 'codex-app'
+            or session in (pend.get('predecessor'), pend.get('client_thread_id'))):
+        raise hc.Failure('desktop recovery/refresh requires the exact current app hub UUID and shift')
+    if recovery:
+        if pend.get('kind') not in ('desktop', 'manual') or pend.get('id') not in (session, session[:8]):
+            raise hc.Failure('not the recognized same-hub native identity corruption')
+    elif pend.get('kind') != 'desktop' or pend.get('id') != session:
+        raise hc.Failure('native identity is damaged; use desktop-recover from the current hub')
+    binding = pend.get('actual_thread_id')
+    if binding and binding != session:
+        raise hc.Failure('original actual UUID conflicts with this hub; no state changed')
+    registration = pend.get('registration')
+    if registration:
+        if (registration.get('session') != session or registration.get('cli_session_id') != session
+                or registration.get('tag') != current.get('tag')
+                or registration.get('set_at') != current.get('set_at')
+                or registration.get('cwd') != pend.get('cwd')
+                or registration.get('project_id') != pend.get('project_id')
+                or registration.get('surface') != 'desktop'
+                or registration.get('observed') != pend.get('observed')):
+            raise hc.Failure('original native registration boundary differs; no state changed')
+    elif recovery:
+        # Legacy records have no immutable UUID. Require the original full registration line,
+        # not a prefix match against discovered threads. Journal timestamps have minute precision.
+        try:
+            boundary = hc.dt.datetime.fromisoformat(pend['taken_over'])
+        except (ValueError, TypeError):
+            raise hc.Failure('invalid legacy takeover boundary; no state changed') from None
+        if current.get('set_at') != pend['taken_over']:
+            raise hc.Failure('legacy registration/takeover boundary is ambiguous; no state changed')
+        try:
+            lines = hc.journal_path(stage, boundary.date()).read_text(encoding='utf-8').splitlines()
+        except OSError:
+            raise hc.Failure('original registration journal unavailable; no state changed') from None
+        try:
+            prepared_at = hc.dt.datetime.fromisoformat(pend['at'])
+            prepared_lines = hc.journal_path(stage, prepared_at.date()).read_text(encoding='utf-8').splitlines()
+        except (OSError, ValueError, TypeError, KeyError):
+            raise hc.Failure('original request preparation proof unavailable; no state changed') from None
+        preparation = re.compile(rf"^auto-handoff {pend.get('k')}/[0-9]+: " + re.escape(
+            hc.one_line(f"desktop request {request} prepared, handoff {pend.get('handoff')}")) + r"$")
+        if prepared_at > boundary or not any(
+                parsed and parsed[0] == prepared_at.strftime('%H:%M')
+                and parsed[1] == f"hub-{pend.get('predecessor_n')}" and preparation.fullmatch(parsed[2])
+                for line in prepared_lines if (parsed := hc.parse_journal_line(line))):
+            raise hc.Failure('legacy request does not match its original reservation; no state changed')
+        identities = set()
+        original = False
+        pattern = re.compile(r'^start: "[^"\n]*" \(([0-9a-fA-F-]{36}), sid [0-9a-fA-F]{8}\) ')
+        for line in lines:
+            parsed = hc.parse_journal_line(line)
+            if not parsed or parsed[1] != current['tag']:
+                continue
+            match = pattern.match(parsed[2])
+            if match:
+                identities.add(match[1])
+                original |= (parsed[0] == boundary.strftime('%H:%M') and match[1] == session
+                             and '; locks:' in parsed[2] and 'roles updated' in parsed[2])
+        if not original or identities != {session}:
+            raise hc.Failure('legacy original full UUID registration is absent or ambiguous; no state changed')
+    if not recovery and (current.get('surface') != 'desktop' or current.get('project_id') != pend.get('project_id')
+          or current.get('observed') != pend.get('observed')):
+        raise hc.Failure('native registration evidence differs; no state changed')
+    cwd = Path.cwd().resolve()
+    if (not pend.get('cwd') or not allow_move and str(cwd) != pend['cwd']
+            or current.get('cwd') != pend['cwd']
+            or not pend.get('project_id')
+            or str((main_checkout(cwd) or cwd).resolve()) != pend.get('project_root')):
+        raise hc.Failure('actual cwd/project differs from the native takeover; no state changed')
+    observed = codex_context()
+    if not observed.get('_rollout_found'):
+        raise hc.Failure('actual desktop rollout settings unavailable; no state changed')
+    observed = {key: observed.get(key) for key in ('model', 'effort', 'approval_policy')} | {
+        'sandbox_policy': engines.sandbox_policy(observed.get('sandbox_policy'))}
+    if observed != pend.get('observed'):
+        raise hc.Failure('observed native settings differ from verified takeover; no state changed')
+    policy = observed['sandbox_policy']
+    roots = [cwd] + [Path(p).resolve() for p in policy.get('writable_roots', [])]
+    if not (policy['type'] == 'danger-full-access' or policy['type'] == 'workspace-write'
+            and any(hc.root().resolve().is_relative_to(p) for p in roots)):
+        raise hc.Failure('observed sandbox cannot write the stage home; no state changed')
+    return data, pend, current
+
+
+def desktop_recover(stage, request):
+    """The current native hub alone repairs a proven legacy self-refresh; no takeover or launch."""
+    with state_lock(stage):
+        data, pend, current = desktop_identity_proof(stage, request, hc.session_id(), recovery=True)
+        with hc.roles_lock(stage):
+            roles = hc.roles_load(stage)
+            if roles['roles'].get('hub') != current:
+                raise hc.Failure('hub registration changed during proof; no state changed')
+            restored = dict(current, surface='desktop', project_id=pend['project_id'], observed=pend['observed'])
+            pend['id'], pend['kind'] = current['session'], 'desktop'
+            pend.setdefault('actual_thread_id', current['session'])
+            pend.setdefault('registration', desktop_registration(restored))
+            # Identity is repaired first; interruption before role restoration is safely repeatable.
+            save_state(stage, data)
+            roles['roles']['hub'] = restored
+            hc.roles_save(stage, roles)
+    print('Desktop identity recovered for the exact current hub; request, chain and takeover boundary retained')
+    return 0
 
 
 def desktop_status(stage, request, verified=False):
@@ -1531,6 +1668,7 @@ def desktop_complete(stage, request):
     data, pend = desktop_pending(stage, request)
     pend['taken_over'] = pend.get('taken_over') or hc.now().isoformat(timespec='seconds')
     pend['phase'] = 'taken-over'
+    pend.setdefault('registration', desktop_registration(hc.roles_load(stage)['roles'].get('hub') or {}))
     save_state(stage, data)
 
 
