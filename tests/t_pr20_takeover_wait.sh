@@ -52,8 +52,9 @@ def setup(name, engine='claude'):
         'session': old, 'cli_session_id': old, 'tag': 'hub-1', 'kind': 'cli'}}}))
     handoff = stage / 'HANDOFF-hub-fixture.md'
     handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #2" — stage-a\n'
-                       '\n## 0. First steps\nTake over.\n## 2. Queue\n'
-                       'The finite queue is empty. No external work remains.\n')
+                       '\n## Business DoD\nComplete the approved fixture validation; source: owner fixture.\n'
+                       'Boundary: no merge or production authority.\n## 0. First steps\nTake over.\n## 2. Queue\n'
+                       'The finite queue snapshot is empty; reconcile outstanding validation against Business DoD.\n')
     return home, stage, handoff
 
 def command(*args):
@@ -179,7 +180,8 @@ def followthrough_contract(label, text):
     plain = text.replace('`', '').lower()
     for phrase in ('terminal follow-through', 'business dod', 'report', 'resource ownership',
                    'next independent authorized ready work', 'blocker', 'expected event',
-                   "executor's artifact/call-budget stop ends its brief"):
+                   "executor's artifact/call-budget stop ends its brief", 'reconcile the finite queue snapshot',
+                   'explicit owner stop', 'genuine business/authority boundary', 'source/scope'):
         assert phrase in plain, f'{label}: missing {phrase}'
     assert 'when nothing remains' not in plain and 'queue is done' not in plain, label
 

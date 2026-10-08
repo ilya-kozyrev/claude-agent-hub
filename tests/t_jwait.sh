@@ -217,8 +217,14 @@ with tempfile.TemporaryDirectory() as tmp:
                       AGENT_HUB_JWAIT_FOR='1s')
     os.environ.pop('AGENT_HUB_JWAIT_MATCH', None)
     pathlib.Path(tmp, 'config.json').write_text(json.dumps({'AGENT_HUB_JWAIT_MATCH': r"CUSTOM_READY|quoted 'event'"}))
+    handoff = pathlib.Path(tmp, 'HANDOFF-wake-control.md')
+    handoff.write_text('## Business DoD\nFinish authorized fixture work.\n## 0. First steps\nReplay events.\n')
     def emitted(since=None):
-        argv = shlex.split(hub['jwait_command']('wake-control', 'hub-2', since))
+        if since:
+            os.utime(handoff, (since.timestamp(), since.timestamp()))
+        digest = hub['digest']('wake-control', 2, 'fixture', handoff if since else None, [])
+        command = next(line for line in digest.splitlines() if line.startswith('jwait --journal '))
+        argv = shlex.split(command)
         assert '--hub-events' in argv and '--match' not in argv, argv
         argv[0] = str(root / 'jwait')
         return argv + ['--settle', '0', '--caller', 'digest-control']
