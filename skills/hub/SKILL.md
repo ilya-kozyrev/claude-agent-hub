@@ -236,6 +236,11 @@ you need. When you go quiet on purpose (a long wait for the owner, a pause), say
   and signs you correctly. The answer reaches you only in your own journal: the other hub answers with
   `tell <your stage> "…"`; its `jwait` does not read your journal. A headless agent reads its inbox, so `tell` hands
   the text to `agent send` itself.
+  **Codex only:** follow [Immediate Codex tell delivery](../../docs/codex.md#immediate-codex-tell-delivery).
+  Handle a `pending` native-caller handoff immediately, before waiting or another action: verify the current
+  registry/full UUID and actual human authority for this communication, then use the supported native tool schema.
+  Record its real receipt against the request ID; an unknown result forbids retry. Tool acceptance alone proves
+  neither active same-turn steer nor immediate delivery; retain pending when capability or human proof is absent.
 - A direct cross-session message only when the journal cannot do (for example the other hub must act before its next
   wake-up), and only to the address from `tell <stage> --address` / `roles --stage <stage> get hub` — never to a session
   chosen by its name in a list (`ListAgents` or `codex agents`): a replaced hub can still run under the same name.
