@@ -232,10 +232,24 @@ unfinished native reservation cannot change surface. `--surface desktop` prepare
 calling a CLI or accessing any app socket. It never silently falls back to CLI.
 
 Desktop auto handoff prepares the native successor request and keeps the predecessor active until verified.
-Native `create_thread` is restricted to explicit human requests. If creation is unavailable or lacks that
-authorization, retain the native reservation and predecessor, ask the owner for the native creation request,
-and wait. Preparation is pending work, not a completed handoff. Once the owner explicitly authorizes native
-creation, the current **app agent** executes the full procedure below through bind, takeover and verified status:
+Before native `create_thread`, the current **app agent** checks explicit human authority: the current user
+instruction, an inherited handoff or approved plan with its human source, an existing answered owner question,
+or standing owner permission. Read `hub-rules.md` from the resolved hub home, repository and stage, and check
+the question register and `ask allow --list --stage <S>` for scope and revocation. An empty allow list does not
+cancel an explicit answered question or human instruction elsewhere. Configuration, agent flags and an agent's
+wish to continue are not proof of human authority.
+
+A standing explicit owner instruction authorizing automatic same-stage context handoffs satisfies the native
+API's explicit-user requirement until revoked: continue without another per-transfer approval. Record its exact
+source/reference and scope in the handoff and carry that pointer into the native takeover brief, preserving the
+Business DoD. The grant covers one successor for that active stage's context transfer; a new business scope,
+unrelated task, parallel duplicate coordinator or paused/completed stage needs its own authority. If authority
+is absent or revoked, retain the request and predecessor and ask once for the missing scope; do independent
+authorized work while it is pending. If transport, access or identity is unavailable, retain the same request
+and report that concrete blocker. Neither case permits a CLI fallback, policy override, automatic retry or
+duplicate creation. Preparation remains pending work until verified takeover.
+
+Under matching human authority, the app agent executes the full procedure through bind, takeover and verified status:
 
 1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file>`. Keep its request token.
    The command reserves one successor/chain count and writes its takeover brief. Preparation is not launch success.
