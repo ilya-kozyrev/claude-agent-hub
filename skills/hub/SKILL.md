@@ -244,8 +244,10 @@ you need. When you go quiet on purpose (a long wait for the owner, a pause), say
 - A direct cross-session message only when the journal cannot do (for example the other hub must act before its next
   wake-up), and only to the address from `tell <stage> --address` / `roles --stage <stage> get hub` — never to a session
   chosen by its name in a list (`ListAgents` or `codex agents`): a replaced hub can still run under the same name.
-  Codex: use the printed `agent send` for a detached hub, or `codex queue --thread <registered UUID> --message "…"`
-  when the CLI supports `queue`; use the UUID, never a display name.
+  Codex: use the printed `agent send` for a detached hub. For immediate non-detached input, follow
+  [Immediate Codex tell delivery](../../docs/codex.md#immediate-codex-tell-delivery) and handle pending native-caller
+  handoffs immediately. Explicit queued follow-ups may use `codex queue --thread <registered UUID> --message "…"`
+  when supported; queue acceptance does not establish immediate steer. Use the UUID, never a display name.
 - `roles list | get <role> | set <role> <id> | retire` — the stage's role registry with full session ids; `set` infers
   the kind from the id (`local_…` = Claude Desktop, a uuid = terminal). For Claude cross-session messaging, resolve the address with `roles get <role>`.
   For detached workers of either engine, use `agent send`; Codex has no Claude `SendMessage` API. `roles broadcast --to r1,r2|--all "text"` — registered recipients and one journal line `@r1 @r2 text`.

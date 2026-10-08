@@ -7,7 +7,8 @@
   matching acknowledgement record the result. An unavailable runtime returns a pending native-caller handoff,
   which the Codex hub handles immediately under verified human communication authority and the current registry.
   Native tool acceptance does not establish active same-turn steer; unknown outcomes forbid retry. Claude delivery
-  and detached recipients retain their existing behavior. Native active steer has not been validated by this change.
+  and detached recipients retain their existing behavior. In an owned Desktop control, native input arrived during
+  the existing active turn; native idle delivery remains unverified.
 - **Codex hub terminal results trigger follow-through against Business DoD.** Hub, handoff and emitted Codex CLI/native
   successor instructions consume reports, verify ownership, continue independent authorized ready work, or record
   a concrete blocker and expected event. Executor brief stops and empty queue snapshots preserve the hub's remaining
