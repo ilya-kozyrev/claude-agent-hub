@@ -15,7 +15,8 @@ session list: a replaced hub can still run under the same display name. Then:
      `agent send` for a detached holder (including one promoted to hub), or `codex queue --thread <UUID>` on a CLI
      with queue support for explicit queued follow-ups, never a Claude session name.
 For a non-detached Codex recipient tell dispatches immediately through the existing public app-server proxy:
-active turns use turn/steer with exact expectedTurnId; loaded idle threads use turn/start. Unavailable runtimes
+active turns use turn/steer with exact expectedTurnId; observed loaded idle threads use turn/start with delivery
+mode unverified (the acknowledgement may refer to a turn another client started). Unavailable runtimes
 produce a pending native-caller handoff: the caller must execute the supported native send immediately, before
 waiting or any next action, after verifying human authority and the current registry UUID. A handoff alone is
 not delivery. Failed/pending/unknown dispatch exits 1; unknown sends must not be retried through another transport.
@@ -162,7 +163,7 @@ def main(argv: list) -> int:
                                          {"tag": tag, "journal_path": str(hc.journal_path(stage)), "journal_line": line})
             print("codex tell receipt: " + json.dumps(result, ensure_ascii=False))
             # Pending native work is not successful delivery. Never silently retry unknown sends.
-            return 0 if result["state"] in ("steered", "started") else 1
+            return 0 if result["state"] in ("steered", "accepted") else 1
     print("\n".join(address_lines(stage, args.role, rec)))
     return 0
 

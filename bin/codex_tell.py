@@ -140,7 +140,7 @@ def native_handoff(stage, role, rec, sid, message, source, reason):
 
 
 def dispatch(stage, role, rec, message, source):
-    """Return a receipt; only matched public acknowledgements establish steered/started."""
+    """Return exact-turn steered or mode-unverified accepted acknowledgements."""
     sid = rec.get('cli_session_id') or rec.get('session')
     receipt = {'state': 'failed', 'transport': 'public-proxy', 'thread_id': sid, 'source': source}
     if not isinstance(sid, str) or not UUID.fullmatch(sid):
@@ -171,7 +171,10 @@ def dispatch(stage, role, rec, message, source):
             raise Unavailable('turn/start did not acknowledge an in-progress turn')
         if not isinstance(returned, str) or not returned or (state == 'active' and returned != turn_id):
             raise Unavailable('mutation acknowledgement did not match the expected turn')
-        return {**receipt, 'state': 'steered' if state == 'active' else 'started', 'turn_id': returned}
+        if state == 'active':
+            return {**receipt, 'state': 'steered', 'turn_id': returned}
+        # turn/start has no atomic expected-idle condition: another client may have begun this turn.
+        return {**receipt, 'state': 'accepted', 'turn_id': returned, 'delivery_mode': 'unverified'}
     except Rejected as exc:
         return {**receipt, 'reason': str(exc)}
     except (Unavailable, hc.Failure, hc.UsageError, OSError, subprocess.SubprocessError,

@@ -40,11 +40,24 @@ def mutations():
     return [r for r in requests() if r['method'] in ('turn/start', 'turn/steer')]
 
 
-for mode, state in (('active', 'steered'), ('idle', 'started')):
+# Regression: idle observed twice does not establish that this request created the acknowledged turn.
+setup('idle-to-active')
+result = ct.dispatch('target', 'hub', rec, message, source)
+assert result['state'] == 'accepted' and result['delivery_mode'] == 'unverified', result
+assert result['turn_id'] == 'turn-other-client' and result['thread_id'] == sid, result
+assert len(mutations()) == 1 and mutations()[0]['method'] == 'turn/start', requests()
+assert 'expectedTurnId' not in mutations()[0]['params']
+assert sum(r['method'] == 'thread/read' for r in requests()) == 2
+
+for mode, state in (('active', 'steered'), ('idle', 'accepted')):
     setup(mode)
     result = ct.dispatch('target', 'hub', rec, message, source)
     assert result['state'] == state, result
     assert result['thread_id'] == sid and result['source'] == source
+    if mode == 'idle':
+        assert result['delivery_mode'] == 'unverified'
+    else:
+        assert result['turn_id'] == 'turn-current' and 'delivery_mode' not in result
     assert len(mutations()) == 1
     request = mutations()[0]
     assert request['params']['threadId'] == sid
@@ -102,7 +115,7 @@ for identity in ('short', 'display-name', 'client_id'):
 # End-to-end tell: a single journal line, source attribution, QUESTION and literal native payload.
 os.environ['HUB_TAG'] = 'sender'
 os.environ['HUB_STAGE'] = 'sender-stage'
-for mode, exit_code in (('active', 0), ('idle', 0), ('notLoaded', 1), ('timeout', 1)):
+for mode, exit_code in (('active', 0), ('idle', 0), ('idle-to-active', 0), ('notLoaded', 1), ('timeout', 1)):
     setup(mode)
     before = hc.journal_path('target').read_text() if hc.journal_path('target').exists() else ''
     completed = subprocess.run([str(Path(sys.argv[1]) / 'tell'), 'target', '--question', 'do this'],
@@ -114,6 +127,12 @@ for mode, exit_code in (('active', 0), ('idle', 0), ('notLoaded', 1), ('timeout'
     line = next(s for s in completed.stdout.splitlines() if s.startswith('codex tell receipt: '))
     receipt = json.loads(line.removeprefix('codex tell receipt: '))
     assert receipt['source']['journal_line'].endswith('@hub QUESTION do this')
+    if mode in ('idle', 'idle-to-active'):
+        assert receipt['state'] == 'accepted' and receipt['delivery_mode'] == 'unverified', receipt
+        assert len(mutations()) == 1 and mutations()[0]['method'] == 'turn/start'
+        assert receipt['turn_id'] == ('turn-other-client' if mode == 'idle-to-active' else 'turn-idle-start')
+    if mode == 'active':
+        assert receipt['state'] == 'steered' and receipt['turn_id'] == 'turn-current'
     if mode == 'notLoaded':
         assert receipt['message'] == 'QUESTION do this (from sender-stage-sender)', receipt
         assert receipt['state'] == 'pending'
@@ -134,4 +153,4 @@ with patch.object(tell.codex_sessions, 'detached', return_value={'role': 'worker
      patch.object(tell.codex_tell, 'dispatch', side_effect=AssertionError('detached dispatch forbidden')):
     assert tell.main(['target', 'existing detached behavior']) == 0
 assert not requests()
-print('PASS active exact-turn steer; loaded idle; UUID/turn/takeover guards; unknown no retry; pending native human proof/receipt; one audit; detached and address preserved')
+print('PASS active exact-turn steer; idle and post-final-read idle-to-active acknowledged with mode unverified; UUID/turn/takeover guards; unknown no retry; pending native human proof/receipt; one audit; detached and address preserved')

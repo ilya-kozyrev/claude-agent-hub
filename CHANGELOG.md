@@ -3,8 +3,9 @@
 ## Unreleased
 
 - **Codex `tell` supports immediate delivery through the public app-server proxy.** A verified active turn uses
-  exact-turn steer; a loaded idle recipient starts a turn in the existing thread. One signed journal line and a
-  matching acknowledgement record the result. An unavailable runtime returns a pending native-caller handoff,
+  exact-turn steer. For a recipient observed loaded idle, a `turn/start` acknowledgement records `accepted` with
+  `delivery_mode: "unverified"`; another client can activate after the final read, so a new turn is not guaranteed.
+  One signed journal line and the matching acknowledgement record the result. An unavailable runtime returns a pending native-caller handoff,
   which the Codex hub handles immediately under verified human communication authority and the current registry.
   Native tool acceptance does not establish active same-turn steer; unknown outcomes forbid retry. Claude delivery
   and detached recipients retain their existing behavior. In an owned Desktop control, native input arrived during

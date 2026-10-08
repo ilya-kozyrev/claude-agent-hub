@@ -126,14 +126,17 @@ needed. See [non-interactive Codex](https://learn.chatgpt.com/docs/non-interacti
 To another stage's hub, use `tell <stage> "…"`. For a non-detached Codex recipient, it retains one signed journal
 line as audit and attempts immediate delivery through `codex app-server proxy` to the existing runtime only.
 After public `initialize`/`initialized`, `thread/read` must return the exact full registry UUID. An active thread
-with one known in-progress turn receives `turn/steer` with that exact `expectedTurnId`; a loaded idle thread receives
-`turn/start` in the same existing thread. The registry and runtime are checked again before sending. No thread is
+with one known in-progress turn receives `turn/steer` with that exact `expectedTurnId`; a thread observed loaded idle
+receives `turn/start` in the same existing thread. The registry and runtime are checked again before sending. No thread is
 loaded, resumed, forked or created, and no model/settings overrides are sent. The proxy has a five-second deadline
 and bounded output. See [public app-server protocol](https://learn.chatgpt.com/docs/app-server).
 
-`tell` prints a JSON receipt: `steered` requires a matching turn acknowledgement; `started` requires the returned
-new turn ID with `inProgress` status; `failed` means rejection or identity/turn change; `unknown` means an attempted mutation lacks a valid
-acknowledgement. A failed/pending/unknown dispatch exits 1. Never retry an unknown send through another transport.
+`tell` prints a JSON receipt: `steered` requires a matching active-turn acknowledgement. An idle-path acknowledgement
+with a nonempty turn ID and `inProgress` status returns `accepted`, with `delivery_mode: "unverified"`: it confirms
+acceptance without proving whether input started a turn or steered one. Another client can start after the final read;
+`turn/start` has no atomic expected-idle condition. `steered`/`accepted` exit 0. `failed` means rejection or identity/turn
+change; `unknown` means an attempted mutation lacks a valid acknowledgement. Failed/pending/unknown dispatches exit 1.
+Never retry an unknown send through another transport.
 `codex queue` is an explicit queued follow-up address, not immediate steer; [steering and queuing differ](https://learn.chatgpt.com/docs/prompting#steering-and-queuing).
 
 The shared CLI proxy may not reach the Desktop runtime. Before any mutation, an unavailable runtime produces a
