@@ -141,6 +141,33 @@ for flag in ('--replace','--fallback'):
     assert roles(stage)['session']==old and not (stage/'agents').exists()
 print('PASS actual succeed seam captures original argv; Desktop CLI/headless require home owner opt-in; repository/env cannot grant it; terminal/detached remain CLI')
 
+# Authority is evaluated by the app agent, not fabricated from --force/config by the CLI.
+# Exercise the actual emitted preparation and create prompt with inherited, absent and revoked sources.
+for authority_case, authority in (
+    ('inherited', 'Explicit human instruction fixture-owner-chat, D-FIXTURE-001: one automatic same-stage context successor until revoked.'),
+    ('absent', 'No human native creation instruction is recorded.'),
+    ('revoked', 'D-FIXTURE-002 revokes D-FIXTURE-001; retain the predecessor and ask once.'),
+):
+    home,stage,handoff=setup('authority-'+authority_case)
+    rules=home/'hub-rules.md'; rules.write_text(authority+'\n')
+    handoff.write_text(handoff.read_text()+'\n## Authority\nSource: '+str(rules)+'; '+authority+'\n')
+    prep=prepare(handoff)
+    req=state(stage)['pending']['request_id']
+    emitted=json.loads(request(req).stdout)
+    prompt=emitted['create_thread']['prompt']
+    # Actual source pointers must survive both dispatch instructions and successor prompt.
+    assert str(rules) in prep.stdout, 'native preparation hides the standing human authority source'
+    assert str(rules) in prompt and str(handoff) in prompt, 'takeover loses authority source pointers'
+    for text in (prep.stdout,prompt):
+        assert 'standing' in text.lower() and 'scope' in text.lower() and 'revok' in text.lower(), text
+    assert 'without' in prep.stdout and 'per-transfer' in prep.stdout, 'inherited grant still needs a fresh transfer approval'
+    assert 'ask once' in prep.stdout and 'unrelated' in prep.stdout, 'missing/revoked/new scope has no owner-request boundary'
+    assert authority not in prompt, 'CLI copied source contents instead of passing pointers for app evaluation'
+    assert not emitted['already_dispatched'] and state(stage)['chain']==1
+    assert roles(stage)['session']==old and not (stage/'agents').exists()
+    assert json.loads(request(req).stdout)['already_dispatched'], 'authority wording allowed duplicate dispatch'
+print('PASS emitted native prep/prompt carry authority sources without inferring a grant; inherited/absent/revoked fixtures preserve one request and predecessor')
+
 home,stage,handoff=setup('desktop')
 filled=handoff.read_text(); handoff.write_text(filled.replace('Take over','TODO take over'))
 r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',ok=False)

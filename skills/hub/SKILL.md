@@ -138,9 +138,13 @@ yourself, never from a sub-agent.
 
 For **Codex Desktop**, the following procedure governs prepared requests, start lines and ALARM.
 --surface auto selects a native request in an actual app hub (both app markers,
-no detached worker role). Native create_thread requires an explicit human request. When creation is unavailable
-or unauthorized, retain the request and keep the predecessor active while asking the owner for that request.
-Once explicitly authorized, execute [the native launch procedure](../../docs/codex.md#desktop-autopilot) completely:
+no detached worker role). Before create_thread, check the human authority sources and scope in
+[the native launch procedure](../../docs/codex.md#desktop-autopilot), including hub-home rules and answered questions.
+An explicit standing owner grant for automatic same-stage context handoff satisfies the native explicit-user
+requirement until revoked; proceed without a new per-transfer question. Carry the precise human source/reference
+and scope in the handoff. Absent/revoked authority or new business scope: retain the request and predecessor,
+ask once, and continue independent authorized work. Unavailable transport/access/identity: report that blocker
+and retain the same request. Under matching authority, execute the native launch procedure completely:
 list_projects, desktop-request, create_thread, desktop-bind, actual takeover and desktop-status --verified.
 Keep the predecessor active until verification succeeds; a clientThreadId is not a real session. desktop-fail
 records failures; uncertain results and ALARM retain the same request and active predecessor while awaiting
@@ -153,6 +157,10 @@ written for one release; `[delamain auto-handoff k/N]` means the same): run its 
 first `jwait` once unconditionally to replay handover events. Work the finite handoff queue to its completion/stop
 checks and wait only while work or external events remain. When nothing remains, journal DONE and finish.
 Questions go to `ask add` with a default; hand over again when the budget requires it.
+
+Ordinary authorized fresh CLI executors start bounded, checkable independent work under their existing brief.
+Another hub's context shift or transfer is not a prerequisite. Wait only for an actual data, resource or permission
+dependency; preserve shared locks and existing owner decisions.
 
 ## Waiting
 

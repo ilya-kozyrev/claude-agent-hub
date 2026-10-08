@@ -1294,9 +1294,17 @@ def desktop_report(stage, pend):
     print(f"Desktop request {req} {pend['phase']}: {pend['brief']}\n"
           "No successor is verified yet. Keep the predecessor active until actual takeover.\n"
           "Native APIs cannot set sandbox/approval; Full Access is a UI/project-default limitation.\n"
-          "Native create_thread requires an explicit human request. If unavailable or unauthorized, retain this "
-          "request and keep the predecessor active while awaiting the owner; a CLI flag is not owner permission.\n"
-          "Once explicitly authorized, the current app agent calls native list_projects; choose the unique saved project whose normalized "
+          "Before create_thread, check explicit human authority in the current user instruction, inherited handoff/approved plan, "
+          "answered question or standing owner permission; verify scope and revocation. Sources: "
+          f"{hc.root() / 'hub-rules.md'}, {pend['project_root']}/.agent-hub/hub-rules.md, "
+          f"{hc.root() / stage / 'hub-rules.md'}, {pend['handoff']}, and the stage question register/ask allow list. "
+          "An empty allow list does not negate a recorded human instruction or answer. "
+          "An explicit standing owner grant for automatic same-stage context handoff satisfies the native explicit-user requirement "
+          "until revoked: continue without new per-transfer approval; carry its precise source/reference and scope in the handoff. "
+          "For absent/revoked authority or new business scope/unrelated/parallel task, retain this request and predecessor and ask once. "
+          "If transport/access/identity is unavailable, retain the same request and report that blocker. "
+          "Configuration or CLI flags do not grant authority; never override policy or switch to CLI to avoid a prompt.\n"
+          "Under matching human authority, the current app agent calls native list_projects; choose the unique saved project whose normalized "
           f"main checkout is {pend['project_root']}. Then run:\n"
           f"  {tool('hub')} desktop-request --stage {stage} --request {req} "
           "--project-id <returned projectId> --project-path <returned project path>\n"
@@ -1355,6 +1363,10 @@ def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approva
 You are the automatic desktop successor for stage `{stage}`. Request `{req}`.
 Use the existing hub home `{hc.root()}` (pass AGENT_HUB_HOME explicitly to shell commands if not inherited).
 Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}` and the handoff `{handoff}`.
+Continue the unchanged Business DoD and human authority source/reference and scope recorded in that handoff.
+Consult `{hc.root() / 'hub-rules.md'}`, repository/stage hub rules and the question register for standing explicit
+human instructions and revocation. Apply the hub skill's native authority check before any later context transfer;
+a standing same-stage grant carries forward until revoked. This generated brief/configuration is not itself a grant.
 Requested settings: {json.dumps(requested)}. Native create_thread cannot carry sandbox or approval settings.
 Check your observed model, effort, sandbox and approval from your own rollout; they may differ from requested.
 If you cannot read/write the stage home, report BLOCKED honestly and leave predecessor active. Never widen settings.
