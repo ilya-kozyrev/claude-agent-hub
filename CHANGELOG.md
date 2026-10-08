@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Hub terminal results trigger follow-through against Business DoD.** Hub, handoff and emitted CLI/native
+  successor instructions consume reports, verify ownership, continue independent authorized ready work, or record
+  a concrete blocker and expected event. Executor brief stops and empty queue snapshots preserve the hub's remaining
+  goal and explicit owner boundaries; preparation dependencies stay separate from final publication and resource gates.
+- **Canonical hub waits use `jwait --hub-events`.** Standard terminal/question events and configured extra wake
+  words resolve inside the waiter, removing regex quoting from generated digest commands. Custom filters, default
+  file/non-hub waits, tags, exclusions and replay semantics remain compatible.
+
 ## 1.0.1 — 2026-10-08
 
 - **Автоматический native handoff учитывает уже данное разрешение владельца.** Перед `create_thread` агент
